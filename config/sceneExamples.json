@@ -1,62 +1,162 @@
 [
   {
-    "title": "楼道堆放鞋柜、纸箱，影响通行",
+    "title": "楼道杂物清理",
     "watermarkCategory": "安全管理类",
     "workContent": "清理楼道杂物",
-    "keywords": ["楼道杂物", "已通知清理", "具体楼栋单元"]
+    "workItemSuggestion": "楼道杂物清理",
+    "processStatusSuggestion": "已通知",
+    "photoStageSuggestion": "近景问题",
+    "keywords": ["楼道杂物", "影响通行", "已通知", "复查"],
+    "remarkTemplate": "具体位置发现楼道杂物，已通知相关业主清理，后续将跟进复查。"
   },
   {
-    "title": "业主从楼上拉线给电动车充电",
+    "title": "飞线充电治理",
     "watermarkCategory": "安全管理类",
     "workContent": "治理飞线充电",
-    "keywords": ["飞线充电", "已劝阻", "复查"]
+    "workItemSuggestion": "飞线充电治理",
+    "processStatusSuggestion": "已劝阻",
+    "photoStageSuggestion": "现场照片",
+    "keywords": ["飞线充电", "安全隐患", "已劝阻", "复查"],
+    "remarkTemplate": "具体位置发现飞线充电现象，现场已进行劝阻并提醒安全风险。"
   },
   {
-    "title": "地库车辆停在消防通道",
+    "title": "消防通道违停",
     "watermarkCategory": "机动车违规管理",
     "workContent": "占用消防通道",
-    "keywords": ["消防通道", "车牌号", "已联系车主"]
+    "workItemSuggestion": "车辆违停取证",
+    "processStatusSuggestion": "已通知",
+    "photoStageSuggestion": "现场照片",
+    "keywords": ["消防通道", "车辆违停", "已联系车主", "现场记录"],
+    "remarkTemplate": "具体位置发现车辆占用消防通道，已联系车主挪移并做好现场记录。"
   },
   {
-    "title": "电动车停在单元门口影响出入",
+    "title": "电动车乱停乱放",
     "watermarkCategory": "电动摩托车违规管理",
     "workContent": "乱停乱放",
-    "keywords": ["单元门口", "阻碍通行", "已挪移"]
+    "workItemSuggestion": "电动车乱停乱放治理",
+    "processStatusSuggestion": "已整改",
+    "photoStageSuggestion": "处理结果",
+    "keywords": ["电动车停放", "乱停乱放", "阻碍通行", "已挪移"],
+    "remarkTemplate": "具体位置发现电动车乱停乱放，已提醒车主规范停放并恢复通行。"
   },
   {
-    "title": "单元门闭门器损坏",
+    "title": "闭门器维修",
     "watermarkCategory": "工程类专用",
     "workContent": "门窗维修",
-    "keywords": ["闭门器", "单元门", "已更换", "待维修"]
+    "workItemSuggestion": "闭门器维修",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "处理结果",
+    "keywords": ["闭门器", "单元门", "门窗维修", "已维修"],
+    "remarkTemplate": "具体位置发现闭门器损坏，已安排工程人员处理。"
   },
   {
-    "title": "楼层公共照明不亮",
+    "title": "公共照明维修",
     "watermarkCategory": "工程类专用",
     "workContent": "水电设施设备维修",
-    "keywords": ["公共照明", "灯具更换", "楼层位置"]
+    "workItemSuggestion": "公共照明维修",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "处理结果",
+    "keywords": ["公共照明", "灯具更换", "水电维修", "已恢复"],
+    "remarkTemplate": "具体位置发现公共照明异常，已安排工程人员检修并记录处理情况。"
   },
   {
-    "title": "不确定是什么公共设施损坏",
+    "title": "公共设施设备维修",
     "watermarkCategory": "工程类专用",
     "workContent": "公共设施设备维修",
-    "keywords": ["公共设施", "损坏部位", "处理状态"]
+    "workItemSuggestion": "公共设施设备维修",
+    "processStatusSuggestion": "处理中",
+    "photoStageSuggestion": "处理过程",
+    "keywords": ["公共设施", "设备维修", "损坏部位", "处理状态"],
+    "remarkTemplate": "具体位置发现相关设施设备问题，已安排工程人员处理。"
   },
   {
-    "title": "例行检查设备房",
+    "title": "设备房巡检",
     "watermarkCategory": "巡查检查类",
     "workContent": "设备房巡检",
-    "keywords": ["设备房", "巡检正常", "巡检异常", "日期"]
+    "workItemSuggestion": "设备房巡检",
+    "processStatusSuggestion": "正常",
+    "photoStageSuggestion": "日常巡查",
+    "keywords": ["设备房", "巡检正常", "巡检异常", "日常巡查"],
+    "remarkTemplate": "具体位置完成设备房巡检，现场状态正常/异常，已做好记录。"
   },
   {
-    "title": "消防栓箱检查",
+    "title": "消防设施巡检",
     "watermarkCategory": "巡查检查类",
     "workContent": "消防设施巡检",
-    "keywords": ["消防栓", "压力", "配件", "正常", "缺失"]
+    "workItemSuggestion": "消防设施巡检",
+    "processStatusSuggestion": "正常",
+    "photoStageSuggestion": "日常巡查",
+    "keywords": ["消防设施", "消防栓", "灭火器", "巡检正常"],
+    "remarkTemplate": "具体位置完成消防设施巡检，现场状态正常/异常，已做好记录。"
   },
   {
-    "title": "只是拍现场证明，不知道归入哪类",
+    "title": "环境卫生巡查",
+    "watermarkCategory": "巡查检查类",
+    "workContent": "环境卫生巡查",
+    "workItemSuggestion": "环境卫生巡查",
+    "processStatusSuggestion": "正常",
+    "photoStageSuggestion": "日常巡查",
+    "keywords": ["环境卫生", "公区巡查", "巡查正常", "巡查异常"],
+    "remarkTemplate": "具体位置完成环境卫生巡查，现场状态正常/异常，已做好记录。"
+  },
+  {
+    "title": "垃圾清运",
+    "watermarkCategory": "绿化保洁类",
+    "workContent": "垃圾处理",
+    "workItemSuggestion": "垃圾清运",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "处理结果",
+    "keywords": ["垃圾清运", "垃圾处理", "环境整治", "已完成"],
+    "remarkTemplate": "具体位置已完成垃圾清运处理，现场环境已恢复整洁。"
+  },
+  {
+    "title": "绿化修剪",
+    "watermarkCategory": "绿化保洁类",
+    "workContent": "公区绿化养护",
+    "workItemSuggestion": "绿化修剪",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "完成照",
+    "keywords": ["绿化修剪", "绿化养护", "公区绿化", "完成照"],
+    "remarkTemplate": "具体位置已完成绿化修剪养护，现场效果已拍照留存。"
+  },
+  {
+    "title": "消杀作业",
+    "watermarkCategory": "绿化保洁类",
+    "workContent": "蚊、蝇、鼠、蟑防治",
+    "workItemSuggestion": "消杀作业",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "处理过程",
+    "keywords": ["消杀作业", "四害防治", "环境消杀", "已完成"],
+    "remarkTemplate": "具体位置已开展消杀作业，现场过程已拍照留存。"
+  },
+  {
+    "title": "资料整理归档",
+    "watermarkCategory": "客服工作类",
+    "workContent": "资料整理归档",
+    "workItemSuggestion": "资料整理归档",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "现场照片",
+    "keywords": ["资料整理", "资料归档", "客服工作", "已完成"],
+    "remarkTemplate": "具体位置完成资料整理归档，相关资料已按要求留存。"
+  },
+  {
+    "title": "小区宣传通知",
+    "watermarkCategory": "会议/培训/宣传/外联",
+    "workContent": "小区宣传/通知通告/活动",
+    "workItemSuggestion": "小区宣传通知",
+    "processStatusSuggestion": "已完成",
+    "photoStageSuggestion": "现场照片",
+    "keywords": ["小区宣传", "通知通告", "宣传栏", "现场照片"],
+    "remarkTemplate": "具体位置已完成小区宣传通知张贴或现场宣传，相关情况已拍照留存。"
+  },
+  {
+    "title": "时间地点水印现场确认",
     "watermarkCategory": "时间地点水印",
     "workContent": "标题/内容自定义",
-    "keywords": ["现场确认", "事项名称", "具体地点"]
+    "workItemSuggestion": "现场确认",
+    "processStatusSuggestion": "正常",
+    "photoStageSuggestion": "现场照片",
+    "keywords": ["现场确认", "具体地点", "事项名称", "时间地点"],
+    "remarkTemplate": "具体位置进行现场确认，事项为：工作事项，请结合照片留存记录。"
   }
 ]

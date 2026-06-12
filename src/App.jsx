@@ -4,7 +4,9 @@ import ArchiveForm from './components/ArchiveForm.jsx';
 import PhotoPreviewTable from './components/PhotoPreviewTable.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import SceneHintBox from './components/SceneHintBox.jsx';
+import SmartAssistPanel from './components/SmartAssistPanel.jsx';
 import { getSuggestedKeywords } from './utils/formatters.js';
+import { addRecentRecord, clearRecentRecords, loadRecentRecords } from './utils/recentRecords.js';
 import { validateArchiveReady } from './utils/validators.js';
 
 const defaultForm = {
@@ -29,10 +31,12 @@ export default function App() {
   const [archiveRoot, setArchiveRoot] = useState('');
   const [photos, setPhotos] = useState([]);
   const [previewItems, setPreviewItems] = useState([]);
+  const [recentRecords, setRecentRecords] = useState([]);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹和归档根目录。' });
   const [isBusy, setIsBusy] = useState(false);
 
   useEffect(() => {
+    setRecentRecords(loadRecentRecords());
     window.archiveAssistant
       .loadConfigs()
       .then((loadedConfigs) => {
@@ -42,18 +46,54 @@ export default function App() {
       .catch((error) => setStatus({ type: 'error', text: `配置加载失败：${error.message}` }));
   }, []);
 
-  function updateForm(nextPatch) {
+  function updateForm(nextPatch, options = {}) {
     setForm((current) => {
       const next = { ...current, ...nextPatch };
-      if (nextPatch.watermarkCategory && configs?.watermarkCategories?.[nextPatch.watermarkCategory]) {
+      if (nextPatch.watermarkCategory && !nextPatch.workContent && configs?.watermarkCategories?.[nextPatch.watermarkCategory]) {
         next.workContent = configs.watermarkCategories[nextPatch.watermarkCategory].items[0] || '';
       }
-      if (nextPatch.workContent || nextPatch.watermarkCategory) {
+      if (!options.preserveKeywords && (nextPatch.workContent || nextPatch.watermarkCategory || nextPatch.workItem || nextPatch.location || nextPatch.processStatus)) {
         next.keywords = getSuggestedKeywords(next, configs);
       }
       return next;
     });
     setPreviewItems([]);
+  }
+
+  function applyScene(scene) {
+    updateForm({
+      watermarkCategory: scene.watermarkCategory,
+      workContent: scene.workContent,
+      workItem: scene.workItemSuggestion || scene.title,
+      processStatus: scene.processStatusSuggestion || form.processStatus,
+      photoStage: scene.photoStageSuggestion || form.photoStage,
+      keywords: (scene.keywords || []).join('、'),
+      remark: fillSceneTemplate(scene.remarkTemplate || '', form, scene)
+    }, { preserveKeywords: true });
+    setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。请补充具体位置后生成预览。` });
+  }
+
+  function applyRecentRecord(record) {
+    updateForm({
+      project: record.project,
+      department: record.department,
+      photoSource: record.photoSource,
+      watermarkCategory: record.watermarkCategory,
+      workContent: record.workContent,
+      location: record.location,
+      workItem: record.workItem,
+      photoStage: record.photoStage,
+      processStatus: record.processStatus,
+      keywords: record.keywords,
+      remark: record.remark
+    }, { preserveKeywords: true });
+    setStatus({ type: 'success', text: '已套用最近使用记录，可继续修改后生成预览。' });
+  }
+
+  function clearRecentRecordList() {
+    const next = clearRecentRecords();
+    setRecentRecords(next);
+    setStatus({ type: 'success', text: '最近使用记录已清空。' });
   }
 
   async function selectPhotoFolder() {
@@ -126,6 +166,9 @@ export default function App() {
     try {
       const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewItems });
       setPreviewItems(result.items);
+      if (result.successCount > 0) {
+        setRecentRecords((records) => addRecentRecord(records, form));
+      }
       setStatus({
         type: result.success ? 'success' : 'warning',
         text: result.success
@@ -217,6 +260,16 @@ export default function App() {
         <SceneHintBox form={form} categoryConfig={selectedCategoryConfig} sceneExamples={configs?.sceneExamples || []} />
       </section>
 
+      <SmartAssistPanel
+        configs={configs}
+        form={form}
+        updateForm={updateForm}
+        recentRecords={recentRecords}
+        onApplyScene={applyScene}
+        onApplyRecent={applyRecentRecord}
+        onClearRecent={clearRecentRecordList}
+      />
+
       <section className="action-strip">
         <button onClick={scanPhotos} disabled={isBusy || !photoFolder}>扫描照片</button>
         <button onClick={buildPreview} disabled={isBusy || photos.length === 0}>生成归档预览</button>
@@ -233,4 +286,10 @@ export default function App() {
       />
     </main>
   );
+}
+
+function fillSceneTemplate(template, currentForm, scene) {
+  return String(template)
+    .replaceAll('具体位置', currentForm.location || '具体位置')
+    .replaceAll('工作事项', scene.workItemSuggestion || currentForm.workItem || '工作事项');
 }

@@ -269,6 +269,125 @@ td select,
   margin: 18px 0;
 }
 
+.assist-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin: 18px 0;
+}
+
+.assist-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.assist-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  color: var(--navy);
+  cursor: pointer;
+  list-style: none;
+}
+
+.assist-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.assist-panel summary strong,
+.assist-panel summary small {
+  display: block;
+}
+
+.assist-panel summary small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.scene-picker,
+.keyword-cloud,
+.template-list,
+.recent-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+
+.scene-chip,
+.keyword-chip,
+.mini-button,
+.template-card,
+.recent-card {
+  box-shadow: none;
+}
+
+.scene-chip {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 210px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: #fbfdff;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.scene-chip:hover,
+.template-card:hover,
+.recent-card:hover {
+  color: #fff;
+  background: var(--navy);
+}
+
+.scene-chip small,
+.recent-card small,
+.recent-card span {
+  color: var(--muted);
+}
+
+.scene-chip:hover small,
+.recent-card:hover small,
+.recent-card:hover span {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.keyword-chip {
+  padding: 8px 12px;
+  color: var(--navy);
+  background: #eef5ff;
+  border: 1px solid #cfe0f5;
+}
+
+.keyword-chip.active {
+  color: #fff;
+  background: var(--orange);
+  border-color: var(--orange);
+}
+
+.mini-button {
+  padding: 7px 12px;
+  color: var(--navy);
+  background: #fff;
+  border: 1px solid var(--line);
+}
+
+.template-card,
+.recent-card {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 260px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: #fbfdff;
+  border: 1px solid var(--line);
+  text-align: left;
+  line-height: 1.6;
+}
+
 .preview-panel {
   padding-bottom: 14px;
 }
@@ -344,7 +463,8 @@ td small {
 @media (max-width: 1100px) {
   .hero-card,
   .path-grid,
-  .workspace-grid {
+  .workspace-grid,
+  .assist-grid {
     grid-template-columns: 1fr;
   }
 
