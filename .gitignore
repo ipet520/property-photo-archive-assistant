@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+.electron-cache/
+.npm-cache/
+.runtime/
+*.log
+照片归档台账.xlsx
+.DS_Store
+Thumbs.db

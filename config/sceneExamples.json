@@ -1,0 +1,62 @@
+[
+  {
+    "title": "楼道堆放鞋柜、纸箱，影响通行",
+    "watermarkCategory": "安全管理类",
+    "workContent": "清理楼道杂物",
+    "keywords": ["楼道杂物", "已通知清理", "具体楼栋单元"]
+  },
+  {
+    "title": "业主从楼上拉线给电动车充电",
+    "watermarkCategory": "安全管理类",
+    "workContent": "治理飞线充电",
+    "keywords": ["飞线充电", "已劝阻", "复查"]
+  },
+  {
+    "title": "地库车辆停在消防通道",
+    "watermarkCategory": "机动车违规管理",
+    "workContent": "占用消防通道",
+    "keywords": ["消防通道", "车牌号", "已联系车主"]
+  },
+  {
+    "title": "电动车停在单元门口影响出入",
+    "watermarkCategory": "电动摩托车违规管理",
+    "workContent": "乱停乱放",
+    "keywords": ["单元门口", "阻碍通行", "已挪移"]
+  },
+  {
+    "title": "单元门闭门器损坏",
+    "watermarkCategory": "工程类专用",
+    "workContent": "门窗维修",
+    "keywords": ["闭门器", "单元门", "已更换", "待维修"]
+  },
+  {
+    "title": "楼层公共照明不亮",
+    "watermarkCategory": "工程类专用",
+    "workContent": "水电设施设备维修",
+    "keywords": ["公共照明", "灯具更换", "楼层位置"]
+  },
+  {
+    "title": "不确定是什么公共设施损坏",
+    "watermarkCategory": "工程类专用",
+    "workContent": "公共设施设备维修",
+    "keywords": ["公共设施", "损坏部位", "处理状态"]
+  },
+  {
+    "title": "例行检查设备房",
+    "watermarkCategory": "巡查检查类",
+    "workContent": "设备房巡检",
+    "keywords": ["设备房", "巡检正常", "巡检异常", "日期"]
+  },
+  {
+    "title": "消防栓箱检查",
+    "watermarkCategory": "巡查检查类",
+    "workContent": "消防设施巡检",
+    "keywords": ["消防栓", "压力", "配件", "正常", "缺失"]
+  },
+  {
+    "title": "只是拍现场证明，不知道归入哪类",
+    "watermarkCategory": "时间地点水印",
+    "workContent": "标题/内容自定义",
+    "keywords": ["现场确认", "事项名称", "具体地点"]
+  }
+]
