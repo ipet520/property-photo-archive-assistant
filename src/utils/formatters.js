@@ -8,12 +8,22 @@ export function getSuggestedKeywords(form, configs) {
   if (!configs) return form.keywords || '';
 
   const direct = configs.keywords.filter((keyword) => {
-    return form.workContent?.includes(keyword) || form.watermarkCategory?.includes(keyword);
+    return (
+      form.workContent?.includes(keyword) ||
+      form.watermarkCategory?.includes(keyword) ||
+      form.location?.includes(keyword) ||
+      form.workItem?.includes(keyword)
+    );
   });
 
   const fromScenes = configs.sceneExamples
     .filter((scene) => scene.watermarkCategory === form.watermarkCategory && scene.workContent === form.workContent)
     .flatMap((scene) => scene.keywords);
 
-  return Array.from(new Set([...direct, ...fromScenes])).slice(0, 6).join('、');
+  const fromCurrentWork = [form.workContent, form.workItem]
+    .filter(Boolean)
+    .map((value) => String(value).trim())
+    .filter((value) => value.length >= 2);
+
+  return Array.from(new Set([...fromScenes, ...direct, ...fromCurrentWork])).slice(0, 8).join('、');
 }

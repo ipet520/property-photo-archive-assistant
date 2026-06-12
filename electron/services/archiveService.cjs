@@ -79,16 +79,16 @@ async function archivePhotos(archivePlan) {
 }
 
 function validatePreviewPayload(form, photos, archiveRoot) {
-  if (!archiveRoot) throw new Error('请先选择归档根目录');
+  if (!String(archiveRoot || '').trim()) throw new Error('请先选择归档根目录');
   if (!Array.isArray(photos) || photos.length === 0) throw new Error('请先扫描照片');
-  if (!form?.project) throw new Error('请选择项目');
-  if (!form?.department) throw new Error('请选择部门');
-  if (!form?.watermarkCategory) throw new Error('请选择水印分类');
-  if (!form?.workContent) throw new Error('请选择工作内容');
-  if (!form?.date) throw new Error('请选择日期');
-  if (!form?.location) throw new Error('请填写具体位置');
-  if (!form?.workItem) throw new Error('请填写工作事项');
-  if (!form?.photoStage) throw new Error('请选择照片阶段');
+  if (!String(form?.project || '').trim()) throw new Error('请选择项目');
+  if (!String(form?.department || '').trim()) throw new Error('请选择部门');
+  if (!String(form?.watermarkCategory || '').trim()) throw new Error('请选择水印分类');
+  if (!String(form?.workContent || '').trim()) throw new Error('请选择工作内容');
+  if (!String(form?.date || '').trim()) throw new Error('请选择日期');
+  if (!String(form?.location || '').trim()) throw new Error('请填写具体位置');
+  if (!String(form?.workItem || '').trim()) throw new Error('请填写工作事项');
+  if (!String(form?.photoStage || '').trim()) throw new Error('请选择照片阶段');
 }
 
 function mergePhotoOverrides(form, photo) {
@@ -104,14 +104,14 @@ function buildTargetDirectory(archiveRoot, item) {
   const date = dayjs(item.date);
   return path.join(
     archiveRoot,
-    sanitizeSegment(item.project),
+    sanitizeSegment(item.project, 40),
     date.format('YYYY'),
     `${date.format('MM')}月`,
-    sanitizeSegment(item.department),
-    sanitizeSegment(item.watermarkCategory),
-    sanitizeSegment(item.workContent),
-    sanitizeSegment(`${item.date}_${item.location}_${item.workItem}`),
-    sanitizeSegment(item.photoStage)
+    sanitizeSegment(item.department, 20),
+    sanitizeSegment(item.watermarkCategory, 40),
+    sanitizeSegment(item.workContent, 50),
+    sanitizeSegment(`${item.date}_${item.location}_${item.workItem}`, 90),
+    sanitizeSegment(item.photoStage, 30)
   );
 }
 
@@ -126,13 +126,13 @@ function buildFileName(item, extension, index) {
     item.photoStage,
     String(index).padStart(3, '0')
   ];
-  const baseName = truncateFileName(parts.map(sanitizeSegment).join('_'), 165);
+  const baseName = truncateFileName(parts.map((part) => sanitizeSegment(part, 45)).join('_'), 150);
   return `${baseName}${extension}`;
 }
 
-function sanitizeSegment(value) {
+function sanitizeSegment(value, maxLength = 80) {
   const text = String(value || '').replace(ILLEGAL_FILENAME_CHARS, ' ').replace(/\s+/g, ' ').trim();
-  return text || '未填写';
+  return truncateFileName(text || '未填写', maxLength);
 }
 
 function truncateFileName(value, maxLength) {

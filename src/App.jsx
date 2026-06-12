@@ -37,7 +37,7 @@ export default function App() {
       .loadConfigs()
       .then((loadedConfigs) => {
         setConfigs(loadedConfigs);
-        setStatus({ type: 'success', text: '默认配置已加载，可以开始归档。' });
+      setStatus({ type: 'success', text: '默认配置已加载，可以开始归档。请先选择照片文件夹和归档根目录。' });
       })
       .catch((error) => setStatus({ type: 'error', text: `配置加载失败：${error.message}` }));
   }, []);
@@ -95,7 +95,7 @@ export default function App() {
   }
 
   async function buildPreview() {
-    const validation = validateArchiveReady(form, photos, archiveRoot);
+    const validation = validateArchiveReady(form, photos, archiveRoot, photoFolder);
     if (!validation.valid) {
       setStatus({ type: 'error', text: validation.message });
       return;
@@ -105,7 +105,7 @@ export default function App() {
     try {
       const preview = await window.archiveAssistant.buildArchivePreview({ form, photos, archiveRoot });
       setPreviewItems(preview);
-      setStatus({ type: 'success', text: `预览已生成，请确认 ${preview.length} 张照片的目标路径。` });
+      setStatus({ type: 'success', text: `预览已生成，共 ${preview.length} 张照片。请检查新文件名、目标路径和照片阶段后再确认归档。` });
     } catch (error) {
       setStatus({ type: 'error', text: `预览生成失败：${error.message}` });
     } finally {
@@ -128,13 +128,37 @@ export default function App() {
       setPreviewItems(result.items);
       setStatus({
         type: result.success ? 'success' : 'warning',
-        text: `归档完成：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。`
+        text: result.success
+          ? `归档成功：已复制 ${result.successCount} 张照片，原图仍保留在原文件夹，台账已追加。`
+          : `归档完成但有失败：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。请查看预览表格中的失败原因。`
       });
     } catch (error) {
       setStatus({ type: 'error', text: `归档失败：${error.message}` });
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function openArchiveRoot() {
+    if (!archiveRoot) {
+      setStatus({ type: 'error', text: '请先选择归档根目录。' });
+      return;
+    }
+    const result = await window.archiveAssistant.openPath(archiveRoot);
+    setStatus(result.success
+      ? { type: 'success', text: '已打开归档文件夹。' }
+      : { type: 'error', text: `打开归档文件夹失败：${result.message || '请检查目录是否存在。'}` });
+  }
+
+  async function openLedger() {
+    if (!archiveRoot) {
+      setStatus({ type: 'error', text: '请先选择归档根目录。' });
+      return;
+    }
+    const result = await window.archiveAssistant.openLedger(archiveRoot);
+    setStatus(result.success
+      ? { type: 'success', text: '已打开照片归档台账。' }
+      : { type: 'error', text: `打开照片台账失败：${result.message || '请先完成一次归档生成台账。'}` });
   }
 
   async function updatePreviewItem(id, patch) {
@@ -194,11 +218,11 @@ export default function App() {
       </section>
 
       <section className="action-strip">
-        <button onClick={scanPhotos} disabled={isBusy}>扫描照片</button>
+        <button onClick={scanPhotos} disabled={isBusy || !photoFolder}>扫描照片</button>
         <button onClick={buildPreview} disabled={isBusy || photos.length === 0}>生成归档预览</button>
         <button onClick={archivePhotos} disabled={isBusy || previewItems.length === 0} className="primary">确认归档</button>
-        <button onClick={() => archiveRoot && window.archiveAssistant.openPath(archiveRoot)} className="ghost">打开归档文件夹</button>
-        <button onClick={() => archiveRoot && window.archiveAssistant.openLedger(archiveRoot)} className="ghost">打开照片台账</button>
+        <button onClick={openArchiveRoot} disabled={!archiveRoot} className="ghost">打开归档文件夹</button>
+        <button onClick={openLedger} disabled={!archiveRoot} className="ghost">打开照片台账</button>
       </section>
 
       <PhotoPreviewTable
