@@ -8,7 +8,9 @@ const { getLedgerPath } = require('./services/excelService.cjs');
 
 const { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
-const runtimeDir = path.join(__dirname, '..', '.runtime');
+const runtimeDir = isDev
+  ? path.join(__dirname, '..', '.runtime')
+  : path.join(app.getPath('documents'), '物业工作照片归档助手', '.runtime');
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');

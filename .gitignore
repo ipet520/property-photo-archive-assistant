@@ -1,7 +1,9 @@
 node_modules/
 dist/
+release/
 .cache/
 .electron-cache/
+.electron-builder-cache/
 .npm-cache/
 .runtime/
 *.log

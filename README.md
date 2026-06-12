@@ -37,6 +37,24 @@ npm.cmd run dev
 npm run build
 ```
 
+## Windows 打包
+
+V1.1.1 起支持使用 electron-builder 打包 Windows 可执行程序：
+
+```bash
+npm run dist
+```
+
+打包产物默认输出到 `release/`：
+
+- `release/物业工作照片归档助手-1.1.1-portable.exe`：便携版，可直接运行。
+- `release/物业工作照片归档助手-1.1.1-setup.exe`：NSIS 安装包。
+- `release/win-unpacked/物业工作照片归档助手.exe`：未压缩调试版。
+
+打包后配置文件会随程序放入 `resources/config`，用于读取项目、部门、水印分类、常见场景、关键词等默认配置。照片台账不会写入程序安装目录，仍写入用户选择的归档根目录。
+
+如果便携版在受限电脑上无法启动，请确认系统临时目录 `TEMP/TMP` 可写；程序运行缓存会写入“用户文档/物业工作照片归档助手/.runtime”，避免写入安装目录。
+
 ## 归档流程
 
 1. 选择照片文件夹。
