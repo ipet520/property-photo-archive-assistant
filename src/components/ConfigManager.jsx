@@ -14,7 +14,7 @@ const CONFIG_TABS = [
 
 const CONFIG_LABELS = Object.fromEntries(CONFIG_TABS.map((tab) => [tab.key, tab.label]));
 
-export default function ConfigManager({ open, onClose, onSaved }) {
+export default function ConfigManager({ open, embedded = false, onClose, onSaved }) {
   const [activeTab, setActiveTab] = useState('projects');
   const [configs, setConfigs] = useState(null);
   const [paths, setPaths] = useState(null);
@@ -120,9 +120,8 @@ export default function ConfigManager({ open, onClose, onSaved }) {
 
   const active = CONFIG_TABS.find((tab) => tab.key === activeTab);
 
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <section className="config-manager">
+  const content = (
+    <section className={`config-manager ${embedded ? 'embedded' : ''}`}>
         <header className="config-header">
           <div>
             <p className="eyebrow">V1.2.1</p>
@@ -132,7 +131,7 @@ export default function ConfigManager({ open, onClose, onSaved }) {
           <div className="config-header-actions">
             <button className="ghost" onClick={loadConfigs} disabled={isSaving}>重新加载</button>
             <button className="primary" onClick={saveAll} disabled={!configs || isSaving}>保存并刷新主界面</button>
-            <button className="ghost" onClick={onClose}>关闭</button>
+            {!embedded && <button className="ghost" onClick={onClose}>关闭</button>}
           </div>
         </header>
 
@@ -189,6 +188,13 @@ export default function ConfigManager({ open, onClose, onSaved }) {
           </div>
         </div>
       </section>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      {content}
     </div>
   );
 }
