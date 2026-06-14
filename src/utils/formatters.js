@@ -11,6 +11,8 @@ export function getSuggestedKeywords(form, configs) {
     .filter((scene) => scene.watermarkCategory === form.watermarkCategory && scene.workContent === form.workContent)
     .flatMap((scene) => scene.keywords || []);
 
+  const workItemKeywords = configs.watermarkCategories?.[form.watermarkCategory]?.itemMeta?.[form.workContent]?.keywords || [];
+
   const direct = configs.keywords.filter((keyword) => {
     return (
       form.workContent?.includes(keyword) ||
@@ -28,7 +30,7 @@ export function getSuggestedKeywords(form, configs) {
 
   const statusKeywords = form.processStatus ? [form.processStatus] : [];
 
-  return uniqueKeywords([...sceneKeywords, ...direct, ...fromCurrentWork, ...statusKeywords]).slice(0, 10).join('、');
+  return uniqueKeywords([...workItemKeywords, ...sceneKeywords, ...direct, ...fromCurrentWork, ...statusKeywords]).slice(0, 10).join('、');
 }
 
 export function splitKeywords(value) {
@@ -58,12 +60,14 @@ export function toggleKeyword(currentValue, keyword) {
   return joinKeywords([...current, keyword]);
 }
 
-export function buildRemarkTemplates(form, sceneExamples = []) {
+export function buildRemarkTemplates(form, sceneExamples = [], configs = null) {
   const matchedScene = sceneExamples.find(
     (scene) => scene.watermarkCategory === form.watermarkCategory && scene.workContent === form.workContent
   );
+  const matchedWorkItem = configs?.watermarkCategories?.[form.watermarkCategory]?.itemMeta?.[form.workContent];
 
   const templates = [
+    matchedWorkItem?.remarkTemplate,
     matchedScene?.remarkTemplate,
     form.workContent?.includes('楼道杂物') && '具体位置发现楼道杂物，已通知相关业主清理，后续将跟进复查。',
     form.workContent?.includes('飞线充电') && '具体位置发现飞线充电现象，现场已进行劝阻并提醒安全风险。',

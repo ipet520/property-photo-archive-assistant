@@ -4,7 +4,18 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
-const { loadConfigs } = require('./services/configService.cjs');
+const {
+  loadConfigs,
+  loadUserConfigs,
+  saveUserConfig,
+  saveAllUserConfigs,
+  resetConfigsToDefault,
+  exportConfigs,
+  importConfigs,
+  backupConfigs,
+  getConfigPaths,
+  validateConfig
+} = require('./services/configService.cjs');
 const { getLedgerPath } = require('./services/excelService.cjs');
 const {
   loadSettings,
@@ -17,21 +28,33 @@ const {
 
 const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, shell } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
-const runtimeDir = isDev
-  ? path.join(__dirname, '..', '.runtime')
-  : path.join(app.getPath('documents'), '物业工作照片归档助手', '.runtime');
+const appDataFolderName = '物业工作照片归档助手';
+const runtimeDir = resolveRuntimeDir();
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
 app.commandLine.appendSwitch('disable-gpu-sandbox');
 app.commandLine.appendSwitch('disable-dev-shm-usage');
-fs.mkdirSync(runtimeDir, { recursive: true });
 app.commandLine.appendSwitch('user-data-dir', path.join(runtimeDir, 'userData'));
 app.commandLine.appendSwitch('disk-cache-dir', path.join(runtimeDir, 'cache'));
 app.setPath('userData', path.join(runtimeDir, 'userData'));
 app.setPath('sessionData', path.join(runtimeDir, 'sessionData'));
 app.setPath('logs', path.join(runtimeDir, 'logs'));
 app.setPath('crashDumps', path.join(runtimeDir, 'crashDumps'));
+
+function resolveRuntimeDir() {
+  const preferredRuntimeDir = isDev
+    ? path.join(__dirname, '..', '.runtime')
+    : path.join(app.getPath('documents'), appDataFolderName, '.runtime');
+  try {
+    fs.mkdirSync(preferredRuntimeDir, { recursive: true });
+    return preferredRuntimeDir;
+  } catch {
+    const fallbackRuntimeDir = path.join(app.getPath('temp'), appDataFolderName, '.runtime');
+    fs.mkdirSync(fallbackRuntimeDir, { recursive: true });
+    return fallbackRuntimeDir;
+  }
+}
 
 function createWindow() {
   const mainWindow = new BrowserWindow({
@@ -53,6 +76,16 @@ function createWindow() {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  }
+}
+
+function getWritableDocumentsPath() {
+  const preferredDocumentsPath = app.getPath('documents');
+  try {
+    fs.mkdirSync(path.join(preferredDocumentsPath, appDataFolderName), { recursive: true });
+    return preferredDocumentsPath;
+  } catch {
+    return app.getPath('userData');
   }
 }
 
@@ -88,6 +121,20 @@ function createChineseMenu() {
         { role: 'zoomOut', label: '缩小' },
         { type: 'separator' },
         { role: 'togglefullscreen', label: '全屏' }
+      ]
+    },
+    {
+      label: '设置',
+      submenu: [
+        {
+          label: '配置管理中心',
+          click: () => {
+            const targetWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+            if (targetWindow) {
+              targetWindow.webContents.send('app:openConfigManager');
+            }
+          }
+        }
       ]
     },
     {
@@ -157,7 +204,40 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
-ipcMain.handle('configs:load', async () => loadConfigs());
+ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
+ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));
+ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => saveUserConfig(getWritableDocumentsPath(), configName, data));
+ipcMain.handle('configs:saveAllUserConfigs', async (_event, configs) => saveAllUserConfigs(getWritableDocumentsPath(), configs));
+ipcMain.handle('configs:resetToDefault', async () => resetConfigsToDefault(getWritableDocumentsPath()));
+ipcMain.handle('configs:backup', async () => backupConfigs(getWritableDocumentsPath()));
+ipcMain.handle('configs:getPaths', async () => getConfigPaths(getWritableDocumentsPath()));
+ipcMain.handle('configs:validate', async (_event, configName, data) => validateConfig(configName, data));
+ipcMain.handle('configs:export', async () => {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const defaultPath = path.join(
+    app.getPath('documents'),
+    `物业工作照片归档助手配置备份_${timestamp}.json`
+  );
+  const result = await dialog.showSaveDialog({
+    title: '导出配置',
+    defaultPath,
+    filters: [{ name: 'JSON 配置文件', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  return exportConfigs(getWritableDocumentsPath(), result.filePath);
+});
+ipcMain.handle('configs:import', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '导入配置',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON 配置文件', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
+  const imported = await importConfigs(getWritableDocumentsPath(), result.filePaths[0]);
+  return { success: true, sourceFile: result.filePaths[0], ...imported };
+});
 ipcMain.handle('archive:buildPreview', async (_event, payload) => buildArchivePreview(payload));
 ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => archivePhotos(archivePlan));
 
@@ -167,11 +247,11 @@ ipcMain.handle('system:openPath', async (_event, targetPath) => {
   return error ? { success: false, message: error } : { success: true };
 });
 
-ipcMain.handle('settings:load', async () => loadSettings(app.getPath('documents')));
-ipcMain.handle('settings:save', async (_event, settings) => saveSettings(app.getPath('documents'), settings));
-ipcMain.handle('settings:updateLastPhotoFolder', async (_event, folderPath) => updateLastPhotoFolder(app.getPath('documents'), folderPath));
-ipcMain.handle('settings:updateLastArchiveRoot', async (_event, folderPath) => updateLastArchiveRoot(app.getPath('documents'), folderPath));
-ipcMain.handle('settings:setDefaultArchiveRoot', async (_event, folderPath) => setDefaultArchiveRoot(app.getPath('documents'), folderPath));
+ipcMain.handle('settings:load', async () => loadSettings(getWritableDocumentsPath()));
+ipcMain.handle('settings:save', async (_event, settings) => saveSettings(getWritableDocumentsPath(), settings));
+ipcMain.handle('settings:updateLastPhotoFolder', async (_event, folderPath) => updateLastPhotoFolder(getWritableDocumentsPath(), folderPath));
+ipcMain.handle('settings:updateLastArchiveRoot', async (_event, folderPath) => updateLastArchiveRoot(getWritableDocumentsPath(), folderPath));
+ipcMain.handle('settings:setDefaultArchiveRoot', async (_event, folderPath) => setDefaultArchiveRoot(getWritableDocumentsPath(), folderPath));
 ipcMain.handle('system:validatePathExists', async (_event, targetPath) => validatePathExists(targetPath));
 
 ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
@@ -182,5 +262,6 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
 
 ipcMain.handle('app:getPaths', async () => ({
   userData: app.getPath('userData'),
-  documents: app.getPath('documents')
+  documents: app.getPath('documents'),
+  writableDocuments: getWritableDocumentsPath()
 }));

@@ -13,7 +13,7 @@ export default function SmartAssistPanel({
 
   const suggestedKeywords = splitKeywords(getSuggestedKeywords(form, configs));
   const activeKeywords = splitKeywords(form.keywords);
-  const remarkTemplates = buildRemarkTemplates(form, configs.sceneExamples);
+  const remarkTemplates = buildRemarkTemplates(form, configs.sceneExamples, configs);
 
   function toggleSuggestedKeyword(keyword) {
     updateForm({ keywords: toggleKeyword(form.keywords, keyword) }, { preserveKeywords: true });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import ArchiveForm from './components/ArchiveForm.jsx';
+import ConfigManager from './components/ConfigManager.jsx';
 import PhotoPreviewTable from './components/PhotoPreviewTable.jsx';
 import StatusBar from './components/StatusBar.jsx';
 import SceneHintBox from './components/SceneHintBox.jsx';
@@ -33,6 +34,7 @@ export default function App() {
   const [photos, setPhotos] = useState([]);
   const [previewItems, setPreviewItems] = useState([]);
   const [recentRecords, setRecentRecords] = useState([]);
+  const [isConfigManagerOpen, setIsConfigManagerOpen] = useState(false);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹和归档根目录。' });
   const [isBusy, setIsBusy] = useState(false);
 
@@ -41,10 +43,16 @@ export default function App() {
     Promise.all([window.archiveAssistant.loadConfigs(), window.archiveAssistant.loadSettings()])
       .then(([loadedConfigs, loadedSettings]) => {
         setConfigs(loadedConfigs);
+        setForm((current) => reconcileFormWithConfigs(current, loadedConfigs));
         setSettings(loadedSettings);
         restoreSavedPaths(loadedSettings);
       })
       .catch((error) => setStatus({ type: 'error', text: `配置加载失败：${error.message}` }));
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = window.archiveAssistant.onOpenConfigManager?.(() => setIsConfigManagerOpen(true));
+    return () => unsubscribe?.();
   }, []);
 
   function restoreSavedPaths(loadedSettings) {
@@ -77,6 +85,12 @@ export default function App() {
       const next = { ...current, ...nextPatch };
       if (nextPatch.watermarkCategory && !nextPatch.workContent && configs?.watermarkCategories?.[nextPatch.watermarkCategory]) {
         next.workContent = configs.watermarkCategories[nextPatch.watermarkCategory].items[0] || '';
+      }
+      if (nextPatch.watermarkCategory && configs?.watermarkCategories?.[nextPatch.watermarkCategory]) {
+        const items = configs.watermarkCategories[nextPatch.watermarkCategory].items || [];
+        if (!items.includes(next.workContent)) {
+          next.workContent = items[0] || '';
+        }
       }
       if (!options.preserveKeywords && (nextPatch.workContent || nextPatch.watermarkCategory || nextPatch.workItem || nextPatch.location || nextPatch.processStatus)) {
         next.keywords = getSuggestedKeywords(next, configs);
@@ -284,6 +298,13 @@ export default function App() {
       : { type: 'error', text: `打开照片台账失败：${result.message || '请先完成一次归档生成台账。'}` });
   }
 
+  async function handleConfigsSaved(runtimeConfigs) {
+    setConfigs(runtimeConfigs);
+    setForm((current) => reconcileFormWithConfigs(current, runtimeConfigs));
+    setPreviewItems([]);
+    setStatus({ type: 'success', text: '配置已更新，归档表单已刷新。' });
+  }
+
   async function updatePreviewItem(id, patch) {
     const nextItems = previewItems.map((item) => (item.id === id ? { ...item, ...patch } : item));
     setPreviewItems(nextItems);
@@ -316,6 +337,7 @@ export default function App() {
             将马克水印相机、手机相册、微信导出的工作照片，按项目、部门、分类、位置和日期标准化归档，并自动生成照片台账。
           </p>
         </div>
+        <button className="hero-config-button" onClick={() => setIsConfigManagerOpen(true)}>配置管理</button>
       </section>
 
       <StatusBar status={status} isBusy={isBusy} />
@@ -391,6 +413,12 @@ export default function App() {
         photoStages={configs?.photoStages || []}
         onChangeItem={updatePreviewItem}
       />
+
+      <ConfigManager
+        open={isConfigManagerOpen}
+        onClose={() => setIsConfigManagerOpen(false)}
+        onSaved={handleConfigsSaved}
+      />
     </main>
   );
 }
@@ -399,4 +427,21 @@ function fillSceneTemplate(template, currentForm, scene) {
   return String(template)
     .replaceAll('具体位置', currentForm.location || '具体位置')
     .replaceAll('工作事项', scene.workItemSuggestion || currentForm.workItem || '工作事项');
+}
+
+function reconcileFormWithConfigs(current, configs) {
+  if (!configs) return current;
+  const next = { ...current };
+  next.photoSource = pickValid(next.photoSource, configs.photoSources);
+  next.project = pickValid(next.project, configs.projects);
+  next.department = pickValid(next.department, configs.departments);
+  next.watermarkCategory = pickValid(next.watermarkCategory, Object.keys(configs.watermarkCategories || {}));
+  next.workContent = pickValid(next.workContent, configs.watermarkCategories?.[next.watermarkCategory]?.items || []);
+  next.photoStage = pickValid(next.photoStage, configs.photoStages);
+  next.processStatus = pickValid(next.processStatus, configs.processStatuses);
+  return next;
+}
+
+function pickValid(value, options = []) {
+  return options.includes(value) ? value : (options[0] || value || '');
 }

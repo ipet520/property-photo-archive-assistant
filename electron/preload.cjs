@@ -5,6 +5,20 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
   loadConfigs: () => ipcRenderer.invoke('configs:load'),
+  loadUserConfigs: () => ipcRenderer.invoke('configs:loadUserConfigs'),
+  saveUserConfig: (configName, data) => ipcRenderer.invoke('configs:saveUserConfig', configName, data),
+  saveAllUserConfigs: (configs) => ipcRenderer.invoke('configs:saveAllUserConfigs', configs),
+  resetConfigsToDefault: () => ipcRenderer.invoke('configs:resetToDefault'),
+  exportConfigs: () => ipcRenderer.invoke('configs:export'),
+  importConfigs: () => ipcRenderer.invoke('configs:import'),
+  backupConfigs: () => ipcRenderer.invoke('configs:backup'),
+  getConfigPaths: () => ipcRenderer.invoke('configs:getPaths'),
+  validateConfig: (configName, data) => ipcRenderer.invoke('configs:validate', configName, data),
+  onOpenConfigManager: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on('app:openConfigManager', listener);
+    return () => ipcRenderer.removeListener('app:openConfigManager', listener);
+  },
   buildArchivePreview: (payload) => ipcRenderer.invoke('archive:buildPreview', payload),
   archivePhotos: (archivePlan) => ipcRenderer.invoke('archive:archivePhotos', archivePlan),
   loadSettings: () => ipcRenderer.invoke('settings:load'),

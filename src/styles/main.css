@@ -61,6 +61,13 @@ button.ghost {
   box-shadow: none;
 }
 
+button.danger,
+.mini-button.danger {
+  color: #fff;
+  background: #c23b3b;
+  border-color: #c23b3b;
+}
+
 button.primary {
   background: linear-gradient(135deg, var(--orange), #ffae4d);
 }
@@ -105,6 +112,14 @@ button.primary {
   margin: 0;
   color: rgba(255, 255, 255, 0.84);
   line-height: 1.8;
+}
+
+.hero-config-button {
+  align-self: flex-end;
+  color: var(--navy);
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18);
+  white-space: nowrap;
 }
 
 .hero-actions {
@@ -482,6 +497,222 @@ td small {
   min-width: 160px;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(9, 24, 44, 0.5);
+  backdrop-filter: blur(8px);
+}
+
+.config-manager {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  width: min(1420px, 96vw);
+  max-height: 92vh;
+  overflow: hidden;
+  border: 1px solid rgba(219, 227, 239, 0.95);
+  border-radius: 28px;
+  background: #f7f9fc;
+  box-shadow: 0 28px 80px rgba(9, 24, 44, 0.3);
+}
+
+.config-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px;
+  color: #fff;
+  background:
+    linear-gradient(135deg, rgba(23, 54, 93, 0.98), rgba(39, 77, 125, 0.95)),
+    radial-gradient(circle at 92% 18%, rgba(242, 140, 40, 0.76), transparent 22%);
+}
+
+.config-header h2 {
+  margin: 4px 0 8px;
+  font-size: 30px;
+}
+
+.config-header p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.config-header-actions,
+.config-toolbar,
+.config-backup-actions,
+.config-row-actions,
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-message {
+  margin: 14px 18px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  color: var(--navy);
+  background: #eef5ff;
+}
+
+.config-message.error {
+  color: #8d2020;
+  background: #ffecec;
+}
+
+.config-message.success {
+  color: #12613f;
+  background: #e9f8f1;
+}
+
+.config-layout {
+  display: grid;
+  grid-template-columns: 230px 1fr;
+  gap: 18px;
+  min-height: 0;
+  padding: 18px;
+}
+
+.config-nav {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow: auto;
+}
+
+.config-nav button {
+  width: 100%;
+  padding: 12px 14px;
+  color: var(--navy);
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  text-align: left;
+}
+
+.config-nav button.active {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
+.config-content {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.config-section {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: #fff;
+}
+
+.config-section h3 {
+  margin: 0 0 6px;
+  color: var(--navy);
+}
+
+.config-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.config-table {
+  display: grid;
+  gap: 8px;
+  overflow-x: auto;
+}
+
+.config-table-head,
+.config-table-row {
+  display: grid;
+  grid-template-columns: 58px 78px repeat(4, minmax(150px, 1fr)) 92px 260px;
+  gap: 8px;
+  align-items: center;
+  min-width: 1080px;
+}
+
+.config-table-head {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.config-table-row {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fbfdff;
+}
+
+.config-table-row input,
+.config-table-row textarea,
+.config-form-grid input,
+.config-form-grid select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 10px;
+  color: var(--text);
+  background: #fff;
+}
+
+.config-table-row input[type="checkbox"],
+.config-table-row input[type="radio"] {
+  width: auto;
+}
+
+.config-category-picker {
+  max-width: 360px;
+  margin-bottom: 14px;
+}
+
+.scene-config-list {
+  display: grid;
+  gap: 12px;
+}
+
+.scene-config-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fbfdff;
+}
+
+.scene-config-card .config-row-actions {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.config-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.config-paths {
+  display: grid;
+  gap: 10px;
+  margin: 18px 0;
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  color: var(--muted);
+  background: #fbfdff;
+  word-break: break-all;
+}
+
 @media (max-width: 1100px) {
   .hero-card,
   .path-grid,
@@ -496,6 +727,15 @@ td small {
 
   .form-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .config-layout,
+  .config-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .config-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
