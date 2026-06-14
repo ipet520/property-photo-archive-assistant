@@ -286,9 +286,6 @@ export function useArchiveWorkspace() {
       return false;
     }
 
-    const confirmed = window.confirm('确认开始归档？系统只会复制照片，不会移动或删除原图。');
-    if (!confirmed) return false;
-
     setIsBusy(true);
     try {
       const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewItems });

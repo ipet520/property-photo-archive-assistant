@@ -51,6 +51,7 @@ export default function QuickArchivePage({ archiveState }) {
   const [photoPagination, setPhotoPagination] = useState({ page: 1, pageSize: 10 });
   const [previewPagination, setPreviewPagination] = useState({ page: 1, pageSize: 10 });
   const [resultPagination, setResultPagination] = useState({ page: 1, pageSize: 10 });
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const workAreaRef = useRef(null);
   const resultItems = archiveState.previewItems.filter((item) => item.status === '归档成功' || item.status === '归档失败');
   const resultStats = getResultStats(resultItems);
@@ -58,6 +59,7 @@ export default function QuickArchivePage({ archiveState }) {
   const hasArchiveResult = resultItems.length > 0;
   const archiveButtonLabel = getArchiveButtonLabel(archiveState.previewItems.length, resultStats, hasArchiveResult);
   const rightPanelHint = getRightPanelHint(archiveState, resultStats, hasArchiveResult);
+  const confirmation = getArchiveConfirmationData(archiveState);
 
   useEffect(() => {
     setPhotoPagination((current) => clampPagination(current, archiveState.photos.length));
@@ -108,11 +110,21 @@ export default function QuickArchivePage({ archiveState }) {
   async function archiveAndShowResult() {
     const success = await archiveState.archivePhotos();
     if (success) {
+      setConfirmDialogOpen(false);
       setResultPagination((current) => ({ ...current, page: 1 }));
       setActiveTab(TAB_KEYS.result);
       setPhotoAreaMode('expanded');
       scrollWorkAreaIntoView();
     }
+  }
+
+  function requestArchiveConfirmation() {
+    if (archiveState.previewItems.length === 0) {
+      archiveState.setStatus({ type: 'error', text: '请先生成归档预览。' });
+      return;
+    }
+    if (hasArchiveResult) return;
+    setConfirmDialogOpen(true);
   }
 
   function collapsePhotoArea() {
@@ -253,13 +265,21 @@ export default function QuickArchivePage({ archiveState }) {
             <button onClick={buildPreviewAndShowTab} disabled={archiveState.isBusy || !archiveState.archiveRoot || archiveState.photos.length === 0}>
               生成归档预览 <span>{archiveState.previewItems.length}</span>
             </button>
-            <button className="primary" onClick={archiveAndShowResult} disabled={archiveState.isBusy || !archiveState.archiveRoot || archiveState.previewItems.length === 0 || hasArchiveResult}>
+            <button className="primary" onClick={requestArchiveConfirmation} disabled={archiveState.isBusy || !archiveState.archiveRoot || archiveState.previewItems.length === 0 || hasArchiveResult}>
               {archiveButtonLabel}
             </button>
             {rightPanelHint && <div className={`operation-status ${archiveState.status.type}`}>{rightPanelHint}</div>}
           </div>
         </aside>
       </section>
+      {confirmDialogOpen && (
+        <ArchiveConfirmDialog
+          confirmation={confirmation}
+          isBusy={archiveState.isBusy}
+          onCancel={() => setConfirmDialogOpen(false)}
+          onConfirm={archiveAndShowResult}
+        />
+      )}
     </div>
   );
 }
@@ -455,6 +475,59 @@ function PaginationBar({ paginationInfo, setPagination, scopeLabel }) {
           条
         </label>
       </div>
+    </div>
+  );
+}
+
+function ArchiveConfirmDialog({ confirmation, isBusy, onCancel, onConfirm }) {
+  return (
+    <div className="archive-confirm-backdrop" role="presentation">
+      <section className="archive-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="archive-confirm-title">
+        <div className="archive-confirm-heading">
+          <div>
+            <p className="eyebrow">归档前确认</p>
+            <h2 id="archive-confirm-title">确认执行归档？</h2>
+          </div>
+          <strong>{confirmation.count} 张</strong>
+        </div>
+
+        <div className="archive-confirm-section">
+          <h3>本次归档信息</h3>
+          <dl className="archive-confirm-grid">
+            {confirmation.fields.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd title={value}>{value || '未填写'}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+
+        {confirmation.fallbackNotes.length > 0 && (
+          <div className="archive-confirm-section warning">
+            <h3>字段兜底提示</h3>
+            <ul>
+              {confirmation.fallbackNotes.map((note) => <li key={note}>{note}</li>)}
+            </ul>
+          </div>
+        )}
+
+        <div className="archive-confirm-section safe">
+          <h3>安全说明</h3>
+          <ul>
+            <li>原始照片将保留，不移动、不删除、不压缩。</li>
+            <li>分页只影响查看，本次将归档全部已生成预览记录，不只是当前页。</li>
+            <li>归档成功后将追加 Excel 台账记录。</li>
+          </ul>
+        </div>
+
+        <div className="archive-confirm-actions">
+          <button type="button" className="ghost" onClick={onCancel} disabled={isBusy}>返回修改</button>
+          <button type="button" className="primary" onClick={onConfirm} disabled={isBusy}>
+            {isBusy ? '正在归档...' : '确认归档'}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
@@ -772,6 +845,38 @@ function getRightPanelHint(archiveState, resultStats, hasArchiveResult) {
   if (archiveState.previewItems.length > 0) return '预览已生成，请核对后确认';
   if (archiveState.photos.length > 0) return `已扫描 ${archiveState.photos.length} 张`;
   return '';
+}
+
+function getArchiveConfirmationData(archiveState) {
+  const form = archiveState.form;
+  const locationFilled = Boolean(String(form.location || '').trim());
+  const workItemFilled = Boolean(String(form.workItem || '').trim());
+  const finalLocation = locationFilled ? form.location : '现场';
+  const finalWorkItem = workItemFilled ? form.workItem : form.workContent;
+
+  return {
+    count: archiveState.previewItems.length,
+    fallbackNotes: [
+      !locationFilled && '位置/区域未填写，已默认使用“现场”。',
+      !workItemFilled && '事项名称未填写，已默认使用“工作内容”。'
+    ].filter(Boolean),
+    fields: [
+      ['本次归档照片数量', `${archiveState.previewItems.length} 张`],
+      ['项目', form.project],
+      ['部门', form.department],
+      ['照片来源', form.photoSource],
+      ['水印分类', form.watermarkCategory],
+      ['工作内容', form.workContent],
+      ['位置/区域', finalLocation],
+      ['事项名称', finalWorkItem],
+      ['照片阶段', form.photoStage],
+      ['处理状态', form.processStatus],
+      ['关键词', form.keywords || '未填写'],
+      ['备注', form.remark || '未填写'],
+      ['归档根目录', archiveState.archiveRoot || '未选择'],
+      ['Excel 台账', '归档成功后追加写入照片归档台账.xlsx']
+    ]
+  };
 }
 
 function getCurrentStep(archiveState, resultItems) {
