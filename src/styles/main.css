@@ -171,6 +171,28 @@ button.primary {
   word-break: break-all;
 }
 
+.path-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.path-actions button {
+  padding: 9px 12px;
+  font-size: 13px;
+}
+
+.path-select {
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: var(--text);
+  background: #fbfdff;
+}
+
 .panel {
   padding: 24px;
 }

@@ -11,7 +11,7 @@ import { validateArchiveReady } from './utils/validators.js';
 
 const defaultForm = {
   photoSource: '马克水印相机',
-  project: '澜湾新区二期',
+  project: '潇湘新区二期',
   department: '工程',
   watermarkCategory: '工程类专用',
   workContent: '公共设施设备维修',
@@ -29,6 +29,7 @@ export default function App() {
   const [form, setForm] = useState(defaultForm);
   const [photoFolder, setPhotoFolder] = useState('');
   const [archiveRoot, setArchiveRoot] = useState('');
+  const [settings, setSettings] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [previewItems, setPreviewItems] = useState([]);
   const [recentRecords, setRecentRecords] = useState([]);
@@ -37,14 +38,39 @@ export default function App() {
 
   useEffect(() => {
     setRecentRecords(loadRecentRecords());
-    window.archiveAssistant
-      .loadConfigs()
-      .then((loadedConfigs) => {
+    Promise.all([window.archiveAssistant.loadConfigs(), window.archiveAssistant.loadSettings()])
+      .then(([loadedConfigs, loadedSettings]) => {
         setConfigs(loadedConfigs);
-      setStatus({ type: 'success', text: '默认配置已加载，可以开始归档。请先选择照片文件夹和归档根目录。' });
+        setSettings(loadedSettings);
+        restoreSavedPaths(loadedSettings);
       })
       .catch((error) => setStatus({ type: 'error', text: `配置加载失败：${error.message}` }));
   }, []);
+
+  function restoreSavedPaths(loadedSettings) {
+    const notices = [];
+    if (loadedSettings.pathStatus?.lastPhotoFolderExists) {
+      setPhotoFolder(loadedSettings.lastPhotoFolder);
+      notices.push('已恢复上次照片文件夹');
+    } else if (loadedSettings.lastPhotoFolder) {
+      notices.push('上次照片文件夹不存在，请重新选择');
+    }
+
+    if (loadedSettings.pathStatus?.lastArchiveRootExists) {
+      setArchiveRoot(loadedSettings.lastArchiveRoot);
+      notices.push('已恢复上次归档根目录');
+    } else if (loadedSettings.pathStatus?.defaultArchiveRootExists) {
+      setArchiveRoot(loadedSettings.defaultArchiveRoot);
+      notices.push('已使用默认归档根目录');
+    } else if (loadedSettings.lastArchiveRoot || loadedSettings.defaultArchiveRoot) {
+      notices.push('上次归档目录不存在，请重新选择');
+    }
+
+    setStatus({
+      type: notices.some((item) => item.includes('不存在')) ? 'warning' : 'success',
+      text: notices.length ? `${notices.join('；')}。` : '默认配置已加载，可以开始归档。请先选择照片文件夹和归档根目录。'
+    });
+  }
 
   function updateForm(nextPatch, options = {}) {
     setForm((current) => {
@@ -100,6 +126,8 @@ export default function App() {
     const selected = await window.archiveAssistant.selectPhotoFolder();
     if (selected) {
       setPhotoFolder(selected);
+      const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
+      setSettings(nextSettings);
       setPhotos([]);
       setPreviewItems([]);
       setStatus({ type: 'idle', text: '照片文件夹已选择，请点击“扫描照片”。' });
@@ -110,9 +138,61 @@ export default function App() {
     const selected = await window.archiveAssistant.selectArchiveRoot();
     if (selected) {
       setArchiveRoot(selected);
+      const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
+      setSettings(nextSettings);
       setPreviewItems([]);
       setStatus({ type: 'idle', text: '归档根目录已选择，台账将保存在该目录下。' });
     }
+  }
+
+  async function useSavedPhotoFolder(folderPath) {
+    if (!folderPath) {
+      setStatus({ type: 'error', text: '没有可用的上次照片文件夹。' });
+      return;
+    }
+    const exists = await window.archiveAssistant.validatePathExists(folderPath);
+    if (!exists) {
+      setStatus({ type: 'warning', text: '上次目录不存在，请重新选择。' });
+      return;
+    }
+    setPhotoFolder(folderPath);
+    setPhotos([]);
+    setPreviewItems([]);
+    const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(folderPath);
+    setSettings(nextSettings);
+    setStatus({ type: 'success', text: '已使用保存的照片文件夹。' });
+  }
+
+  async function useSavedArchiveRoot(folderPath, label = '归档根目录') {
+    if (!folderPath) {
+      setStatus({ type: 'error', text: `没有可用的${label}。` });
+      return;
+    }
+    const exists = await window.archiveAssistant.validatePathExists(folderPath);
+    if (!exists) {
+      setStatus({ type: 'warning', text: '上次目录不存在，请重新选择。' });
+      return;
+    }
+    setArchiveRoot(folderPath);
+    setPreviewItems([]);
+    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(folderPath);
+    setSettings(nextSettings);
+    setStatus({ type: 'success', text: `已使用${label}。` });
+  }
+
+  async function setCurrentArchiveRootAsDefault() {
+    if (!archiveRoot) {
+      setStatus({ type: 'error', text: '请先选择归档根目录。' });
+      return;
+    }
+    const exists = await window.archiveAssistant.validatePathExists(archiveRoot);
+    if (!exists) {
+      setStatus({ type: 'warning', text: '当前归档根目录不存在，请重新选择。' });
+      return;
+    }
+    const nextSettings = await window.archiveAssistant.setDefaultArchiveRoot(archiveRoot);
+    setSettings(nextSettings);
+    setStatus({ type: 'success', text: '已设为默认归档根目录。' });
   }
 
   async function scanPhotos() {
@@ -236,10 +316,6 @@ export default function App() {
             将马克水印相机、手机相册、微信导出的工作照片，按项目、部门、分类、位置和日期标准化归档，并自动生成照片台账。
           </p>
         </div>
-        <div className="hero-actions">
-          <button onClick={selectPhotoFolder}>选择照片文件夹</button>
-          <button onClick={selectArchiveRoot} className="secondary">选择归档根目录</button>
-        </div>
       </section>
 
       <StatusBar status={status} isBusy={isBusy} />
@@ -248,10 +324,41 @@ export default function App() {
         <div className="path-card">
           <span>照片文件夹</span>
           <strong>{photoFolder || '尚未选择'}</strong>
+          <div className="path-actions">
+            <button onClick={selectPhotoFolder}>选择照片文件夹</button>
+            <button className="ghost" onClick={() => useSavedPhotoFolder(settings?.lastPhotoFolder)} disabled={!settings?.lastPhotoFolder}>使用上次照片文件夹</button>
+            <button className="ghost" onClick={() => photoFolder && window.archiveAssistant.openPath(photoFolder)} disabled={!photoFolder}>打开当前照片文件夹</button>
+          </div>
+          <select
+            className="path-select"
+            value=""
+            onChange={(event) => event.target.value && useSavedPhotoFolder(event.target.value)}
+          >
+            <option value="">最近照片文件夹</option>
+            {(settings?.recentPhotoFolders || []).map((folderPath) => (
+              <option key={folderPath} value={folderPath}>{folderPath}</option>
+            ))}
+          </select>
         </div>
         <div className="path-card">
           <span>归档根目录</span>
           <strong>{archiveRoot || '尚未选择'}</strong>
+          <div className="path-actions">
+            <button onClick={selectArchiveRoot} className="secondary">选择归档根目录</button>
+            <button className="ghost" onClick={() => useSavedArchiveRoot(settings?.defaultArchiveRoot, '默认归档根目录')} disabled={!settings?.defaultArchiveRoot}>使用默认归档根目录</button>
+            <button className="ghost" onClick={() => archiveRoot && window.archiveAssistant.openPath(archiveRoot)} disabled={!archiveRoot}>打开当前归档根目录</button>
+            <button className="ghost" onClick={setCurrentArchiveRootAsDefault} disabled={!archiveRoot}>设为默认归档根目录</button>
+          </div>
+          <select
+            className="path-select"
+            value=""
+            onChange={(event) => event.target.value && useSavedArchiveRoot(event.target.value, '最近归档根目录')}
+          >
+            <option value="">最近归档根目录</option>
+            {(settings?.recentArchiveRoots || []).map((folderPath) => (
+              <option key={folderPath} value={folderPath}>{folderPath}</option>
+            ))}
+          </select>
         </div>
       </section>
 
