@@ -15,6 +15,14 @@
   box-sizing: border-box;
 }
 
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   color: var(--text);
@@ -83,6 +91,7 @@ button.primary {
   grid-template-rows: auto 1fr auto;
   height: 100vh;
   overflow: hidden;
+  min-width: 0;
 }
 
 .header-bar {
@@ -151,6 +160,7 @@ button.primary {
   display: grid;
   grid-template-columns: 236px 1fr;
   min-height: 0;
+  min-width: 0;
 }
 
 .side-nav {
@@ -215,7 +225,7 @@ button.primary {
 
 .bottom-status-bar {
   display: grid;
-  grid-template-columns: auto auto auto minmax(180px, 1fr) auto;
+  grid-template-columns: auto auto auto auto auto minmax(180px, 1fr) auto;
   gap: 16px;
   align-items: center;
   padding: 9px 16px;
@@ -779,7 +789,7 @@ td select,
 
 table {
   width: 100%;
-  min-width: 1380px;
+  min-width: 980px;
   border-collapse: separate;
   border-spacing: 0;
 }
@@ -828,6 +838,386 @@ td small {
 .inline-edit {
   margin-top: 8px;
   min-width: 160px;
+}
+
+.quick-archive-workbench {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.quick-flow-steps {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.flow-step span {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--navy);
+  background: #eef5ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.flow-step strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-step.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--navy), var(--navy-soft));
+  border-color: var(--navy);
+}
+
+.flow-step.active span {
+  background: #fff;
+}
+
+.quick-command-bar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1.1fr) minmax(250px, 0.8fr) minmax(330px, auto);
+  gap: 12px;
+  align-items: stretch;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 38px rgba(23, 54, 93, 0.08);
+}
+
+.quick-path-summary {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  min-width: 0;
+}
+
+.quick-path-item {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfdff;
+}
+
+.quick-path-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.quick-path-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-main-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.quick-main-actions button,
+.quick-secondary-actions button,
+.quick-secondary-actions select,
+.quick-primary-actions button {
+  min-width: 0;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+
+.quick-secondary-actions select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: #fff;
+}
+
+.quick-primary-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 330px;
+}
+
+.quick-primary-actions button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.quick-secondary-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.quick-primary-actions span,
+.quick-tabs span {
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--navy);
+  background: #fff;
+  font-size: 12px;
+}
+
+.quick-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 0.86fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 0;
+}
+
+.quick-main-grid.assist-collapsed {
+  grid-template-columns: minmax(0, 1fr) 170px;
+}
+
+.quick-form-column,
+.quick-assist-column,
+.quick-bottom-panel {
+  min-width: 0;
+}
+
+.archive-form-panel.compact {
+  padding: 16px;
+}
+
+.archive-form-panel.compact .panel-heading {
+  margin-bottom: 12px;
+}
+
+.archive-form-panel.compact .form-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px 10px;
+}
+
+.archive-form-panel.compact .field input,
+.archive-form-panel.compact .field select,
+.archive-form-panel.compact .field textarea {
+  padding: 8px 10px;
+}
+
+.archive-form-panel.compact .field textarea {
+  min-height: 58px;
+}
+
+.field span b {
+  margin-left: 3px;
+  color: #d64545;
+}
+
+.quick-assist-column {
+  position: sticky;
+  top: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 38px rgba(23, 54, 93, 0.06);
+}
+
+.quick-assist-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.quick-assist-header h2 {
+  margin: 4px 0 0;
+  color: var(--navy);
+  font-size: 17px;
+}
+
+.assist-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.assist-tabs button {
+  padding: 8px 10px;
+  color: var(--navy);
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  font-size: 13px;
+}
+
+.assist-tabs button.active {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
+.quick-assist-column .hint-panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.quick-scene-list,
+.quick-template-list,
+.quick-keyword-cloud {
+  display: flex;
+  max-height: 270px;
+  overflow: auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0;
+}
+
+.quick-bottom-panel {
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 38px rgba(23, 54, 93, 0.06);
+  overflow: hidden;
+}
+
+.quick-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.quick-tabs button {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 12px;
+  color: var(--navy);
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+
+.quick-tabs button.active {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
+.quick-bottom-toggle {
+  margin-left: auto;
+}
+
+.quick-tab-body {
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+}
+
+.quick-tab-body.compact-empty {
+  max-height: 150px;
+}
+
+.quick-tab-body.expanded {
+  max-height: 360px;
+}
+
+.quick-tab-body .preview-panel {
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.quick-tab-body .preview-panel .panel-heading {
+  display: none;
+}
+
+.quick-table-scroll,
+.quick-tab-body .table-wrap {
+  width: 100%;
+  overflow: auto;
+}
+
+.quick-table {
+  min-width: 760px;
+}
+
+.quick-table th,
+.quick-table td,
+.quick-tab-body th,
+.quick-tab-body td {
+  padding: 9px 10px;
+}
+
+.filename,
+.path-cell {
+  overflow: hidden;
+  max-width: 260px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.result-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.result-summary span {
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--navy);
+  background: #eef5ff;
+}
+
+@media (max-width: 1380px) {
+  .quick-command-bar {
+    grid-template-columns: minmax(260px, 1fr) minmax(260px, 1fr);
+  }
+
+  .quick-primary-actions {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .quick-main-grid {
+    grid-template-columns: minmax(0, 1.85fr) minmax(270px, 0.9fr);
+  }
 }
 
 .modal-backdrop {
@@ -1139,7 +1529,9 @@ td small {
   .placeholder-card-grid,
   .quick-entry-grid,
   .sort-workspace-layout,
-  .recent-path-grid {
+  .recent-path-grid,
+  .quick-command-bar,
+  .quick-main-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1167,6 +1559,17 @@ td small {
     grid-template-columns: 1fr;
   }
 
+  .quick-main-actions,
+  .quick-secondary-actions,
+  .quick-flow-steps,
+  .quick-primary-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .quick-assist-column {
+    position: static;
+  }
+
   .hero-card,
   .path-grid,
   .workspace-grid,
@@ -1180,6 +1583,10 @@ td small {
 
   .form-grid {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .archive-form-panel.compact .form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .config-layout,
@@ -1207,5 +1614,13 @@ td small {
   .field {
     display: block;
     margin-bottom: 12px;
+  }
+
+  .quick-main-actions,
+  .quick-secondary-actions,
+  .quick-flow-steps,
+  .quick-primary-actions,
+  .archive-form-panel.compact .form-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -1,4 +1,6 @@
-export default function ArchiveForm({ configs, form, updateForm }) {
+const REQUIRED_FIELDS = new Set(['项目', '部门', '水印分类', '工作内容', '日期', '具体位置', '工作事项', '照片阶段']);
+
+export default function ArchiveForm({ configs, form, updateForm, compact = false }) {
   if (!configs) {
     return <section className="panel">正在加载配置...</section>;
   }
@@ -6,7 +8,7 @@ export default function ArchiveForm({ configs, form, updateForm }) {
   const workContents = configs.watermarkCategories[form.watermarkCategory]?.items || [];
 
   return (
-    <section className="panel">
+    <section className={`panel archive-form-panel ${compact ? 'compact' : ''}`}>
       <div className="panel-heading">
         <div>
           <p className="eyebrow">第一步</p>
@@ -41,7 +43,7 @@ export default function ArchiveForm({ configs, form, updateForm }) {
 function Select({ label, value, options, onChange }) {
   return (
     <label className="field">
-      <span>{label}</span>
+      <span>{label}{REQUIRED_FIELDS.has(label) && <b>*</b>}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
           <option key={option} value={option}>{option}</option>
@@ -54,7 +56,7 @@ function Select({ label, value, options, onChange }) {
 function Input({ label, value, onChange, placeholder = '', type = 'text', wide = false }) {
   return (
     <label className={`field ${wide ? 'wide' : ''}`}>
-      <span>{label}</span>
+      <span>{label}{REQUIRED_FIELDS.has(label) && <b>*</b>}</span>
       <input type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
