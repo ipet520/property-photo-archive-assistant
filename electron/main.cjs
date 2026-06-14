@@ -158,7 +158,7 @@ function createChineseMenu() {
             type: 'info',
             title: '关于',
             message: '物业工作照片归档助手',
-            detail: '本地照片归档整理工具。'
+            detail: `本地照片归档整理工具。\n当前版本：${app.getVersion()}`
           })
         }
       ]

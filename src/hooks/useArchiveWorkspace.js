@@ -16,7 +16,8 @@ const defaultForm = {
   photoStage: '现场照片',
   processStatus: '待处理',
   keywords: '',
-  remark: ''
+  remark: '',
+  locationPlaceholder: ''
 };
 
 export function useArchiveWorkspace() {
@@ -98,13 +99,15 @@ export function useArchiveWorkspace() {
     updateForm({
       watermarkCategory: scene.watermarkCategory,
       workContent: scene.workContent,
-      workItem: scene.workItemSuggestion || scene.title,
-      processStatus: scene.processStatusSuggestion || form.processStatus,
-      photoStage: scene.photoStageSuggestion || form.photoStage,
+      workItem: scene.itemName || '',
+      location: '',
+      locationPlaceholder: scene.locationPlaceholder || '',
+      processStatus: scene.processStatusSuggestion || scene.processStatus || form.processStatus,
+      photoStage: scene.photoStageSuggestion || scene.photoStage || form.photoStage,
       keywords: (scene.keywords || []).join('、'),
       remark: fillSceneTemplate(scene.remarkTemplate || '', form, scene)
     }, { preserveKeywords: true });
-    setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。请补充具体位置后生成预览。` });
+    setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。建议补充位置/区域；不填写将默认使用“现场”。` });
   }
 
   function applyRecentRecord(record) {
@@ -207,7 +210,7 @@ export function useArchiveWorkspace() {
   async function scanPhotos() {
     if (!photoFolder) {
       setStatus({ type: 'error', text: '请先选择照片文件夹。' });
-      return;
+      return false;
     }
 
     setIsBusy(true);
@@ -216,47 +219,82 @@ export function useArchiveWorkspace() {
       setPhotos(scanned);
       setPreviewItems([]);
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张图片。` });
+      return true;
     } catch (error) {
       setStatus({ type: 'error', text: `扫描失败：${error.message}` });
     } finally {
       setIsBusy(false);
     }
+    return false;
+  }
+
+  async function rescanPhotos() {
+    if (!photoFolder) {
+      setStatus({ type: 'error', text: '请先选择照片文件夹。' });
+      return false;
+    }
+    if ((photos.length > 0 || previewItems.length > 0) && !window.confirm('重新扫描会覆盖当前照片列表，并清空归档预览和归档结果，但不会删除、移动或修改原图。确定继续吗？')) {
+      return false;
+    }
+    return scanPhotos();
+  }
+
+  function clearScannedPhotos() {
+    if (photos.length === 0 && previewItems.length === 0) {
+      setStatus({ type: 'idle', text: '当前没有需要清空的照片列表。' });
+      return;
+    }
+    const confirmed = window.confirm('仅清空当前扫描列表，不会删除原始照片。确定清空吗？');
+    if (!confirmed) return;
+    setPhotos([]);
+    setPreviewItems([]);
+    setStatus({ type: 'success', text: '已清空当前照片列表，原始照片未受影响。' });
   }
 
   async function buildPreview() {
     const validation = validateArchiveReady(form, photos, archiveRoot, photoFolder);
     if (!validation.valid) {
       setStatus({ type: 'error', text: validation.message });
-      return;
+      return false;
     }
 
     setIsBusy(true);
     try {
-      const preview = await window.archiveAssistant.buildArchivePreview({ form, photos, archiveRoot });
+      const archiveForm = withArchiveFallbacks(form);
+      const preview = await window.archiveAssistant.buildArchivePreview({ form: archiveForm, photos, archiveRoot });
       setPreviewItems(preview);
-      setStatus({ type: 'success', text: `预览已生成，共 ${preview.length} 张照片。请检查新文件名、目标路径和照片阶段后再确认归档。` });
+      const fallbackNotes = [
+        !String(form.workItem || '').trim() && '事项名称未填写，已默认使用工作内容',
+        !String(form.location || '').trim() && '位置/区域未填写，已默认使用“现场”'
+      ].filter(Boolean);
+      setStatus({
+        type: 'success',
+        text: `预览已生成，共 ${preview.length} 张照片。${fallbackNotes.length ? `${fallbackNotes.join('；')}。` : ''}请核对新文件名和归档摘要后再确认归档。`
+      });
+      return true;
     } catch (error) {
       setStatus({ type: 'error', text: `预览生成失败：${error.message}` });
     } finally {
       setIsBusy(false);
     }
+    return false;
   }
 
   async function archivePhotos() {
     if (previewItems.length === 0) {
       setStatus({ type: 'error', text: '请先生成归档预览，确认后再归档。' });
-      return;
+      return false;
     }
 
     const confirmed = window.confirm('确认开始归档？系统只会复制照片，不会移动或删除原图。');
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     setIsBusy(true);
     try {
       const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewItems });
       setPreviewItems(result.items);
       if (result.successCount > 0) {
-        setRecentRecords((records) => addRecentRecord(records, form));
+        setRecentRecords((records) => addRecentRecord(records, withArchiveFallbacks(form)));
       }
       setStatus({
         type: result.success ? 'success' : 'warning',
@@ -264,11 +302,13 @@ export function useArchiveWorkspace() {
           ? `归档成功：已复制 ${result.successCount} 张照片，原图仍保留在原文件夹，台账已追加。`
           : `归档完成但有失败：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。请查看预览表格中的失败原因。`
       });
+      return true;
     } catch (error) {
       setStatus({ type: 'error', text: `归档失败：${error.message}` });
     } finally {
       setIsBusy(false);
     }
+    return false;
   }
 
   async function openArchiveRoot() {
@@ -355,6 +395,8 @@ export function useArchiveWorkspace() {
     useSavedArchiveRoot,
     setCurrentArchiveRootAsDefault,
     scanPhotos,
+    rescanPhotos,
+    clearScannedPhotos,
     buildPreview,
     archivePhotos,
     openArchiveRoot,
@@ -369,8 +411,18 @@ export function useArchiveWorkspace() {
 
 function fillSceneTemplate(template, currentForm, scene) {
   return String(template)
-    .replaceAll('具体位置', currentForm.location || '具体位置')
-    .replaceAll('工作事项', scene.workItemSuggestion || currentForm.workItem || '工作事项');
+    .replaceAll('具体位置', currentForm.location || '位置/区域')
+    .replaceAll('位置/区域', currentForm.location || '位置/区域')
+    .replaceAll('工作事项', scene.itemName || currentForm.workItem || currentForm.workContent || '事项名称')
+    .replaceAll('事项名称', scene.itemName || currentForm.workItem || currentForm.workContent || '事项名称');
+}
+
+function withArchiveFallbacks(currentForm) {
+  return {
+    ...currentForm,
+    workItem: String(currentForm.workItem || '').trim() || currentForm.workContent,
+    location: String(currentForm.location || '').trim() || '现场'
+  };
 }
 
 function reconcileFormWithConfigs(current, configs) {

@@ -1,28 +1,236 @@
 [
-  "楼道杂物",
-  "消防通道",
-  "飞线充电",
-  "电动车停放",
-  "乱停乱放",
-  "占用车位",
-  "电梯维保",
-  "路面修复",
-  "外墙修复",
-  "管道维修",
-  "闭门器",
-  "门窗维修",
-  "公共照明",
-  "消防栓",
-  "灭火器",
-  "设备房",
-  "水泵房",
-  "配电室",
-  "垃圾清运",
-  "绿化修剪",
-  "消杀作业",
-  "环境整治",
-  "创文整改",
-  "安全隐患",
-  "巡查正常",
-  "巡查异常"
+  {
+    "id": "keyword-楼道杂物-1",
+    "name": "楼道杂物",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-消防通道-2",
+    "name": "消防通道",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-飞线充电-3",
+    "name": "飞线充电",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-电动车停放-4",
+    "name": "电动车停放",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-乱停乱放-5",
+    "name": "乱停乱放",
+    "enabled": true,
+    "sort": 50,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-占用车位-6",
+    "name": "占用车位",
+    "enabled": true,
+    "sort": 60,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-电梯维保-7",
+    "name": "电梯维保",
+    "enabled": true,
+    "sort": 70,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-路面修复-8",
+    "name": "路面修复",
+    "enabled": true,
+    "sort": 80,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-外墙修复-9",
+    "name": "外墙修复",
+    "enabled": true,
+    "sort": 90,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-管道维修-10",
+    "name": "管道维修",
+    "enabled": true,
+    "sort": 100,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-闭门器-11",
+    "name": "闭门器",
+    "enabled": true,
+    "sort": 110,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-门窗维修-12",
+    "name": "门窗维修",
+    "enabled": true,
+    "sort": 120,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-公共照明-13",
+    "name": "公共照明",
+    "enabled": true,
+    "sort": 130,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-消防栓-14",
+    "name": "消防栓",
+    "enabled": true,
+    "sort": 140,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-灭火器-15",
+    "name": "灭火器",
+    "enabled": true,
+    "sort": 150,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-设备房-16",
+    "name": "设备房",
+    "enabled": true,
+    "sort": 160,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-水泵房-17",
+    "name": "水泵房",
+    "enabled": true,
+    "sort": 170,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-配电室-18",
+    "name": "配电室",
+    "enabled": true,
+    "sort": 180,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-垃圾清运-19",
+    "name": "垃圾清运",
+    "enabled": true,
+    "sort": 190,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-绿化修剪-20",
+    "name": "绿化修剪",
+    "enabled": true,
+    "sort": 200,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-消杀作业-21",
+    "name": "消杀作业",
+    "enabled": true,
+    "sort": 210,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-环境整治-22",
+    "name": "环境整治",
+    "enabled": true,
+    "sort": 220,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-创文整改-23",
+    "name": "创文整改",
+    "enabled": true,
+    "sort": 230,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-安全隐患-24",
+    "name": "安全隐患",
+    "enabled": true,
+    "sort": 240,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-巡查正常-25",
+    "name": "巡查正常",
+    "enabled": true,
+    "sort": 250,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  },
+  {
+    "id": "keyword-巡查异常-26",
+    "name": "巡查异常",
+    "enabled": true,
+    "sort": 260,
+    "isDefault": false,
+    "description": "",
+    "group": ""
+  }
 ]

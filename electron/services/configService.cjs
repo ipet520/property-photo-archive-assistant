@@ -188,9 +188,13 @@ function normalizeRuntimeConfigs(configs) {
         title: scene.title || scene.name,
         watermarkCategory: scene.watermarkCategory || '',
         workContent: scene.workContent || '',
-        workItemSuggestion: scene.workItemSuggestion || '',
-        processStatusSuggestion: scene.processStatusSuggestion || '',
-        photoStageSuggestion: scene.photoStageSuggestion || '',
+        itemName: scene.itemName || '',
+        locationPlaceholder: scene.locationPlaceholder || '',
+        workItemSuggestion: scene.itemName || scene.workItemSuggestion || '',
+        processStatus: scene.processStatus || scene.processStatusSuggestion || '',
+        photoStage: scene.photoStage || scene.photoStageSuggestion || '',
+        processStatusSuggestion: scene.processStatus || scene.processStatusSuggestion || '',
+        photoStageSuggestion: scene.photoStage || scene.photoStageSuggestion || '',
         keywords: normalizeKeywords(scene.keywords),
         remarkTemplate: scene.remarkTemplate || ''
       }))
@@ -402,6 +406,22 @@ function normalizeWorkItems(items, categoryName) {
 function normalizeSceneExamples(data) {
   return (Array.isArray(data) ? data : []).map((scene, index) => {
     const title = String(scene?.title || scene?.name || '').trim();
+    const itemName = String(
+      scene?.itemName
+      || scene?.workItem
+      || scene?.workItemSuggestion
+      || scene?.['工作事项']
+      || ''
+    ).trim();
+    const locationPlaceholder = String(
+      scene?.locationPlaceholder
+      || scene?.specificLocation
+      || scene?.location
+      || scene?.['具体位置']
+      || ''
+    ).trim();
+    const processStatus = String(scene?.processStatus || scene?.processStatusSuggestion || '').trim();
+    const photoStage = String(scene?.photoStage || scene?.photoStageSuggestion || '').trim();
     return {
       id: String(scene?.id || createId('scene', title, index)),
       title,
@@ -410,13 +430,20 @@ function normalizeSceneExamples(data) {
       sort: Number.isFinite(Number(scene?.sort)) ? Number(scene.sort) : (index + 1) * 10,
       watermarkCategory: String(scene?.watermarkCategory || ''),
       workContent: String(scene?.workContent || ''),
-      workItemSuggestion: String(scene?.workItemSuggestion || ''),
-      processStatusSuggestion: String(scene?.processStatusSuggestion || ''),
-      photoStageSuggestion: String(scene?.photoStageSuggestion || ''),
+      itemName,
+      locationPlaceholder,
+      processStatus,
+      photoStage,
       keywords: normalizeKeywords(scene?.keywords),
-      remarkTemplate: String(scene?.remarkTemplate || '')
+      remarkTemplate: normalizeSceneRemarkTemplate(scene?.remarkTemplate || '')
     };
   }).filter((scene) => scene.title);
+}
+
+function normalizeSceneRemarkTemplate(template) {
+  return String(template || '')
+    .replaceAll('具体位置', '位置/区域')
+    .replaceAll('工作事项', '事项名称');
 }
 
 function normalizeRuntimeWatermarkCategories(categories) {

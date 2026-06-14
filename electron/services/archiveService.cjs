@@ -83,20 +83,31 @@ function validatePreviewPayload(form, photos, archiveRoot) {
   if (!Array.isArray(photos) || photos.length === 0) throw new Error('请先扫描照片');
   if (!String(form?.project || '').trim()) throw new Error('请选择项目');
   if (!String(form?.department || '').trim()) throw new Error('请选择部门');
+  if (!String(form?.photoSource || '').trim()) throw new Error('请选择照片来源');
   if (!String(form?.watermarkCategory || '').trim()) throw new Error('请选择水印分类');
   if (!String(form?.workContent || '').trim()) throw new Error('请选择工作内容');
   if (!String(form?.date || '').trim()) throw new Error('请选择日期');
-  if (!String(form?.location || '').trim()) throw new Error('请填写具体位置');
-  if (!String(form?.workItem || '').trim()) throw new Error('请填写工作事项');
   if (!String(form?.photoStage || '').trim()) throw new Error('请选择照片阶段');
 }
 
 function mergePhotoOverrides(form, photo) {
-  return {
+  const item = {
     ...form,
     photoStage: photo.photoStage || form.photoStage,
     keywords: photo.keywords ?? form.keywords,
     remark: photo.remark ?? form.remark
+  };
+  return normalizeArchiveItem(item);
+}
+
+function normalizeArchiveItem(item) {
+  const workContent = String(item.workContent || '').trim();
+  const workItem = String(item.workItem || '').trim() || workContent;
+  const location = String(item.location || '').trim() || '现场';
+  return {
+    ...item,
+    workItem,
+    location
   };
 }
 

@@ -1,5 +1,26 @@
 [
-  "潇湘新区二期",
-  "香辰康园",
-  "其他"
+  {
+    "id": "project-潇湘新区二期-1",
+    "name": "潇湘新区二期",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": true,
+    "description": ""
+  },
+  {
+    "id": "project-香辰康园-2",
+    "name": "香辰康园",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "project-其他-3",
+    "name": "其他",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": ""
+  }
 ]

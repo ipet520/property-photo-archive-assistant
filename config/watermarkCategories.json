@@ -1,96 +1,551 @@
-{
-  "安全管理类": {
+[
+  {
+    "id": "watermark-category-安全管理类-1",
+    "name": "安全管理类",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于安全隐患发现、制止、处置、复查等留痕。",
+    "fallbackTip": "",
     "items": [
-      "高空抛物/坠物",
-      "治理飞线充电",
-      "清理楼道杂物",
-      "突发火情处置",
-      "紧急情况处置"
+      {
+        "id": "安全管理类-work-高空抛物-坠物-1",
+        "name": "高空抛物/坠物",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "安全管理类-work-治理飞线充电-2",
+        "name": "治理飞线充电",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "安全管理类-work-清理楼道杂物-3",
+        "name": "清理楼道杂物",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "安全管理类-work-突发火情处置-4",
+        "name": "突发火情处置",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "安全管理类-work-紧急情况处置-5",
+        "name": "紧急情况处置",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "电动摩托车违规管理": {
+  {
+    "id": "watermark-category-电动摩托车违规管理-2",
+    "name": "电动摩托车违规管理",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于电动车、电动自行车违规停放、影响通行、违规进入楼栋等取证留痕。",
+    "fallbackTip": "",
     "items": [
-      "乱停乱放"
+      {
+        "id": "电动摩托车违规管理-work-乱停乱放-1",
+        "name": "乱停乱放",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "机动车违规管理": {
+  {
+    "id": "watermark-category-机动车违规管理-3",
+    "name": "机动车违规管理",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于汽车、小型货车等机动车违规停车、占用通道或车位的现场取证。",
+    "fallbackTip": "",
     "items": [
-      "占用消防通道",
-      "随意停放阻碍通行",
-      "占用他人车位"
+      {
+        "id": "机动车违规管理-work-占用消防通道-1",
+        "name": "占用消防通道",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "机动车违规管理-work-随意停放阻碍通行-2",
+        "name": "随意停放阻碍通行",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "机动车违规管理-work-占用他人车位-3",
+        "name": "占用他人车位",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "工程类专用": {
+  {
+    "id": "watermark-category-工程类专用-4",
+    "name": "工程类专用",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于维修、施工、维保、设施设备处理等工程类工作。",
+    "fallbackTip": "",
     "items": [
-      "水电设施设备维修",
-      "土建工程维修",
-      "门窗维修",
-      "消防设施设备维修",
-      "公共设施设备维修",
-      "电梯维修维保"
+      {
+        "id": "工程类专用-work-水电设施设备维修-1",
+        "name": "水电设施设备维修",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "工程类专用-work-土建工程维修-2",
+        "name": "土建工程维修",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "工程类专用-work-门窗维修-3",
+        "name": "门窗维修",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "工程类专用-work-消防设施设备维修-4",
+        "name": "消防设施设备维修",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "工程类专用-work-公共设施设备维修-5",
+        "name": "公共设施设备维修",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "工程类专用-work-电梯维修维保-6",
+        "name": "电梯维修维保",
+        "enabled": true,
+        "sort": 60,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "巡查检查类": {
+  {
+    "id": "watermark-category-巡查检查类-5",
+    "name": "巡查检查类",
+    "enabled": true,
+    "sort": 50,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于日常巡查、专项检查、复查整改等。",
+    "fallbackTip": "",
     "items": [
-      "秩序巡查",
-      "装修现场巡查",
-      "环境卫生巡查",
-      "电梯设施巡检",
-      "水电设施巡检",
-      "设备房巡检",
-      "门窗设施巡检",
-      "安防监控及门禁通行",
-      "消防设施巡检",
-      "公共设施设备巡检"
+      {
+        "id": "巡查检查类-work-秩序巡查-1",
+        "name": "秩序巡查",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-装修现场巡查-2",
+        "name": "装修现场巡查",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-环境卫生巡查-3",
+        "name": "环境卫生巡查",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-电梯设施巡检-4",
+        "name": "电梯设施巡检",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-水电设施巡检-5",
+        "name": "水电设施巡检",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-设备房巡检-6",
+        "name": "设备房巡检",
+        "enabled": true,
+        "sort": 60,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-门窗设施巡检-7",
+        "name": "门窗设施巡检",
+        "enabled": true,
+        "sort": 70,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-安防监控及门禁通行-8",
+        "name": "安防监控及门禁通行",
+        "enabled": true,
+        "sort": 80,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-消防设施巡检-9",
+        "name": "消防设施巡检",
+        "enabled": true,
+        "sort": 90,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "巡查检查类-work-公共设施设备巡检-10",
+        "name": "公共设施设备巡检",
+        "enabled": true,
+        "sort": 100,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "客服工作类": {
+  {
+    "id": "watermark-category-客服工作类-6",
+    "name": "客服工作类",
+    "enabled": true,
+    "sort": 60,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于客服沟通、业主服务、资料事务、社区协作等工作。",
+    "fallbackTip": "",
     "items": [
-      "业主沟通拜访",
-      "社区工作协助",
-      "矛盾纠纷调解",
-      "资料整理归档",
-      "失物认领",
-      "催收物业费/水费"
+      {
+        "id": "客服工作类-work-业主沟通拜访-1",
+        "name": "业主沟通拜访",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "客服工作类-work-社区工作协助-2",
+        "name": "社区工作协助",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "客服工作类-work-矛盾纠纷调解-3",
+        "name": "矛盾纠纷调解",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "客服工作类-work-资料整理归档-4",
+        "name": "资料整理归档",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "客服工作类-work-失物认领-5",
+        "name": "失物认领",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "客服工作类-work-催收物业费-水费-6",
+        "name": "催收物业费/水费",
+        "enabled": true,
+        "sort": 60,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "绿化保洁类": {
+  {
+    "id": "watermark-category-绿化保洁类-7",
+    "name": "绿化保洁类",
+    "enabled": true,
+    "sort": 70,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于保洁作业、绿化养护、消杀防治、垃圾清理等环境类工作。",
+    "fallbackTip": "",
     "items": [
-      "公区日常保洁",
-      "公区绿化养护",
-      "私家花园绿化养护",
-      "入户保洁",
-      "打扫空置房卫生",
-      "蚊、蝇、鼠、蟑防治",
-      "垃圾处理"
+      {
+        "id": "绿化保洁类-work-公区日常保洁-1",
+        "name": "公区日常保洁",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-公区绿化养护-2",
+        "name": "公区绿化养护",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-私家花园绿化养护-3",
+        "name": "私家花园绿化养护",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-入户保洁-4",
+        "name": "入户保洁",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-打扫空置房卫生-5",
+        "name": "打扫空置房卫生",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-蚊-蝇-鼠-蟑防治-6",
+        "name": "蚊、蝇、鼠、蟑防治",
+        "enabled": true,
+        "sort": 60,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "绿化保洁类-work-垃圾处理-7",
+        "name": "垃圾处理",
+        "enabled": true,
+        "sort": 70,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "会议/培训/宣传/外联": {
+  {
+    "id": "watermark-category-会议-培训-宣传-外联-8",
+    "name": "会议/培训/宣传/外联",
+    "enabled": true,
+    "sort": 80,
+    "isDefault": false,
+    "isFallback": false,
     "description": "用于内部会议培训、对外沟通、政府社区协同、宣传通知等工作。",
+    "fallbackTip": "",
     "items": [
-      "物业与社区工作沟通",
-      "物业与辖区民警工作沟通",
-      "政府现场工作指导",
-      "小区宣传/通知通告/活动",
-      "消防工作培训",
-      "岗位技能培训",
-      "资料报送",
-      "公司例会",
-      "工作总结会",
-      "部门班前会"
+      {
+        "id": "会议/培训/宣传/外联-work-物业与社区工作沟通-1",
+        "name": "物业与社区工作沟通",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-物业与辖区民警工作沟通-2",
+        "name": "物业与辖区民警工作沟通",
+        "enabled": true,
+        "sort": 20,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-政府现场工作指导-3",
+        "name": "政府现场工作指导",
+        "enabled": true,
+        "sort": 30,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-小区宣传-通知通告-活动-4",
+        "name": "小区宣传/通知通告/活动",
+        "enabled": true,
+        "sort": 40,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-消防工作培训-5",
+        "name": "消防工作培训",
+        "enabled": true,
+        "sort": 50,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-岗位技能培训-6",
+        "name": "岗位技能培训",
+        "enabled": true,
+        "sort": 60,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-资料报送-7",
+        "name": "资料报送",
+        "enabled": true,
+        "sort": 70,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-公司例会-8",
+        "name": "公司例会",
+        "enabled": true,
+        "sort": 80,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-工作总结会-9",
+        "name": "工作总结会",
+        "enabled": true,
+        "sort": 90,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      },
+      {
+        "id": "会议/培训/宣传/外联-work-部门班前会-10",
+        "name": "部门班前会",
+        "enabled": true,
+        "sort": 100,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   },
-  "时间地点水印": {
+  {
+    "id": "watermark-category-时间地点水印-9",
+    "name": "时间地点水印",
+    "enabled": true,
+    "sort": 90,
+    "isDefault": false,
+    "isFallback": false,
     "description": "兜底水印。用于无法准确归类、临时取证、普通现场照片、只需要证明时间地点的照片。",
+    "fallbackTip": "",
     "items": [
-      "标题/内容自定义"
+      {
+        "id": "时间地点水印-work-标题-内容自定义-1",
+        "name": "标题/内容自定义",
+        "enabled": true,
+        "sort": 10,
+        "description": "",
+        "keywords": [],
+        "remarkTemplate": ""
+      }
     ]
   }
-}
+]

@@ -51,7 +51,7 @@ export default function SmartAssistPanel({
         </summary>
         <div className="keyword-cloud">
           {suggestedKeywords.length === 0 ? (
-            <span className="muted">填写工作事项后会出现更多推荐关键词。</span>
+            <span className="muted">填写事项名称或位置/区域后会出现更多推荐关键词。</span>
           ) : suggestedKeywords.map((keyword) => (
             <button
               type="button"
@@ -99,7 +99,7 @@ export default function SmartAssistPanel({
             <button type="button" key={record.id} className="recent-card" onClick={() => onApplyRecent(record)}>
               <strong>{record.project} / {record.department}</strong>
               <span>{record.watermarkCategory} / {record.workContent}</span>
-              <small>{record.location || '未填写位置'} - {record.workItem || '未填写事项'}</small>
+              <small>{record.location || '未填写位置/区域'} - {record.workItem || '未填写事项名称'}</small>
             </button>
           ))}
         </div>
@@ -110,6 +110,8 @@ export default function SmartAssistPanel({
 
 function fillTemplate(template, form) {
   return template
-    .replaceAll('具体位置', form.location || '具体位置')
-    .replaceAll('工作事项', form.workItem || '工作事项');
+    .replaceAll('具体位置', form.location || '位置/区域')
+    .replaceAll('位置/区域', form.location || '位置/区域')
+    .replaceAll('工作事项', form.workItem || form.workContent || '事项名称')
+    .replaceAll('事项名称', form.workItem || form.workContent || '事项名称');
 }

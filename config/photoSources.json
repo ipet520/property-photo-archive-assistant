@@ -1,6 +1,34 @@
 [
-  "马克水印相机",
-  "手机相册",
-  "微信导出",
-  "其他"
+  {
+    "id": "photo-source-马克水印相机-1",
+    "name": "马克水印相机",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-source-手机相册-2",
+    "name": "手机相册",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-source-微信导出-3",
+    "name": "微信导出",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-source-其他-4",
+    "name": "其他",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "description": ""
+  }
 ]

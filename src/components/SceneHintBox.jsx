@@ -11,7 +11,7 @@ export default function SceneHintBox({ form, categoryConfig, sceneExamples }) {
       <p>{categoryConfig?.description || '选择分类后，这里会显示使用建议。'}</p>
 
       {isTimeLocation && (
-        <div className="warning-box">请填写清楚工作事项、具体位置和备注，避免后期无法检索。</div>
+        <div className="warning-box">请填写清楚事项名称、位置/区域和备注，避免后期无法检索。</div>
       )}
       {isEngineeringFallback && <div className="warning-box">这是工程维修兜底项，适用于无法明确归入水电、土建、门窗、消防、电梯的公共设施设备维修。</div>}
       {isInspectionFallback && <div className="warning-box">这是巡查检查兜底项，适用于无法明确归入具体设备类别的公共设施设备巡查。</div>}

@@ -26,8 +26,8 @@ export default function PhotoPreviewTable({ items, photos, photoStages, onChange
                 <th>新文件名</th>
                 <th>水印分类</th>
                 <th>工作内容</th>
-                <th>具体位置</th>
-                <th>工作事项</th>
+                <th>位置/区域</th>
+                <th>事项名称</th>
                 <th>照片阶段</th>
                 <th>处理状态</th>
                 <th>目标路径</th>

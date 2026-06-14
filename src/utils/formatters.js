@@ -23,7 +23,7 @@ export function getSuggestedKeywords(form, configs) {
     );
   });
 
-  const fromCurrentWork = [form.workContent, form.workItem]
+  const fromCurrentWork = [form.workContent, form.workItem, form.location]
     .filter(Boolean)
     .map((value) => String(value).trim())
     .filter((value) => value.length >= 2);
@@ -69,12 +69,12 @@ export function buildRemarkTemplates(form, sceneExamples = [], configs = null) {
   const templates = [
     matchedWorkItem?.remarkTemplate,
     matchedScene?.remarkTemplate,
-    form.workContent?.includes('楼道杂物') && '具体位置发现楼道杂物，已通知相关业主清理，后续将跟进复查。',
-    form.workContent?.includes('飞线充电') && '具体位置发现飞线充电现象，现场已进行劝阻并提醒安全风险。',
-    form.workContent?.includes('消防通道') && '具体位置发现车辆占用消防通道，已联系车主挪移并做好现场记录。',
-    form.workContent?.includes('设备房') && '具体位置完成设备房巡检，现场状态正常/异常，已做好记录。',
-    form.watermarkCategory === '工程类专用' && '具体位置发现相关设施设备问题，已安排工程人员处理。',
-    form.watermarkCategory === '时间地点水印' && '具体位置进行现场确认，事项为：工作事项，请结合照片留存记录。'
+    form.workContent?.includes('楼道杂物') && '位置/区域发现楼道杂物，已通知相关业主清理，后续将跟进复查。',
+    form.workContent?.includes('飞线充电') && '位置/区域发现飞线充电现象，现场已进行劝阻并提醒安全风险。',
+    form.workContent?.includes('消防通道') && '位置/区域发现车辆占用消防通道，已联系车主挪移并做好现场记录。',
+    form.workContent?.includes('设备房') && '位置/区域完成设备房巡检，现场状态正常/异常，已做好记录。',
+    form.watermarkCategory === '工程类专用' && '位置/区域发现相关设施设备问题，已安排工程人员处理。',
+    form.watermarkCategory === '时间地点水印' && '位置/区域进行现场确认，事项为：事项名称，请结合照片留存记录。'
   ].filter(Boolean);
 
   return Array.from(new Set(templates)).slice(0, 4);

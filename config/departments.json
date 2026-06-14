@@ -1,7 +1,42 @@
 [
-  "客服",
-  "工程",
-  "秩序",
-  "环境",
-  "综合"
+  {
+    "id": "department-客服-1",
+    "name": "客服",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "department-工程-2",
+    "name": "工程",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": true,
+    "description": ""
+  },
+  {
+    "id": "department-秩序-3",
+    "name": "秩序",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "department-环境-4",
+    "name": "环境",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "department-综合-5",
+    "name": "综合",
+    "enabled": true,
+    "sort": 50,
+    "isDefault": false,
+    "description": ""
+  }
 ]

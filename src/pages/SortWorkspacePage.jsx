@@ -33,7 +33,7 @@ export default function SortWorkspacePage() {
         </div>
         <aside className="sort-info-panel panel">
           <h2>选中照片归档信息</h2>
-          {['项目', '部门', '照片来源', '水印分类', '工作内容', '日期', '具体位置', '工作事项', '照片阶段', '处理状态', '关键词', '备注'].map((label) => (
+          {['项目', '部门', '照片来源', '水印分类', '工作内容', '日期', '位置/区域', '事项名称', '照片阶段', '处理状态', '关键词', '备注'].map((label) => (
             <label className="field" key={label}>
               <span>{label}</span>
               <input disabled placeholder="V1.3.0 开放" />

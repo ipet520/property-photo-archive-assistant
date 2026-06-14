@@ -384,9 +384,10 @@ function SceneEditor({ scenes, configs, onChange }) {
               <Field label="名称" value={scene.title} onChange={(title) => updateScene(scenes, scene.id, { title, name: title }, onChange)} />
               <SelectField label="水印分类" value={scene.watermarkCategory} options={categoryNames} onChange={(watermarkCategory) => updateScene(scenes, scene.id, { watermarkCategory, workContent: currentCategory({ watermarkCategory })?.items?.[0]?.name || '' }, onChange)} />
               <SelectField label="工作内容" value={scene.workContent} options={(currentCategory(scene)?.items || []).map((item) => item.name)} onChange={(workContent) => updateScene(scenes, scene.id, { workContent }, onChange)} />
-              <Field label="工作事项建议" value={scene.workItemSuggestion} onChange={(workItemSuggestion) => updateScene(scenes, scene.id, { workItemSuggestion }, onChange)} />
-              <SelectField label="处理状态建议" value={scene.processStatusSuggestion} options={configs.processStatuses.map((item) => item.name)} onChange={(processStatusSuggestion) => updateScene(scenes, scene.id, { processStatusSuggestion }, onChange)} />
-              <SelectField label="照片阶段建议" value={scene.photoStageSuggestion} options={configs.photoStages.map((item) => item.name)} onChange={(photoStageSuggestion) => updateScene(scenes, scene.id, { photoStageSuggestion }, onChange)} />
+              <Field label="事项名称建议" value={scene.itemName} onChange={(itemName) => updateScene(scenes, scene.id, { itemName, workItemSuggestion: itemName }, onChange)} />
+              <Field label="位置/区域提示" value={scene.locationPlaceholder} onChange={(locationPlaceholder) => updateScene(scenes, scene.id, { locationPlaceholder }, onChange)} />
+              <SelectField label="处理状态建议" value={scene.processStatus || scene.processStatusSuggestion} options={configs.processStatuses.map((item) => item.name)} onChange={(processStatus) => updateScene(scenes, scene.id, { processStatus, processStatusSuggestion: processStatus }, onChange)} />
+              <SelectField label="照片阶段建议" value={scene.photoStage || scene.photoStageSuggestion} options={configs.photoStages.map((item) => item.name)} onChange={(photoStage) => updateScene(scenes, scene.id, { photoStage, photoStageSuggestion: photoStage }, onChange)} />
               <Field label="推荐关键词" value={(scene.keywords || []).join('、')} onChange={(value) => updateScene(scenes, scene.id, { keywords: splitKeywords(value) }, onChange)} />
               <Field label="备注模板" value={scene.remarkTemplate} onChange={(remarkTemplate) => updateScene(scenes, scene.id, { remarkTemplate }, onChange)} wide />
             </div>
@@ -425,6 +426,7 @@ function ConfigSection({ title, onAdd, children }) {
         <div>
           <h3>{title}</h3>
           <p className="muted">名称不能为空，同类名称不能重复；排序数字越小越靠前。</p>
+          {title === '常见场景' && <p className="muted">事项名称建议可为空；位置/区域提示只用于提醒，不会自动填入位置。</p>}
         </div>
         <button onClick={onAdd}>新增</button>
       </div>
@@ -574,9 +576,10 @@ function createScene() {
     title: '新常见场景',
     watermarkCategory: '',
     workContent: '',
-    workItemSuggestion: '',
-    processStatusSuggestion: '',
-    photoStageSuggestion: '',
+    itemName: '',
+    locationPlaceholder: '',
+    processStatus: '',
+    photoStage: '',
     keywords: [],
     remarkTemplate: ''
   };

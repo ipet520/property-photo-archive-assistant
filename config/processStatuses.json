@@ -1,11 +1,74 @@
 [
-  "待处理",
-  "处理中",
-  "已完成",
-  "已复查",
-  "正常",
-  "异常",
-  "已通知",
-  "已劝阻",
-  "已整改"
+  {
+    "id": "process-status-待处理-1",
+    "name": "待处理",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": true,
+    "description": ""
+  },
+  {
+    "id": "process-status-处理中-2",
+    "name": "处理中",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-已完成-3",
+    "name": "已完成",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-已复查-4",
+    "name": "已复查",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-正常-5",
+    "name": "正常",
+    "enabled": true,
+    "sort": 50,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-异常-6",
+    "name": "异常",
+    "enabled": true,
+    "sort": 60,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-已通知-7",
+    "name": "已通知",
+    "enabled": true,
+    "sort": 70,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-已劝阻-8",
+    "name": "已劝阻",
+    "enabled": true,
+    "sort": 80,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "process-status-已整改-9",
+    "name": "已整改",
+    "enabled": true,
+    "sort": 90,
+    "isDefault": false,
+    "description": ""
+  }
 ]

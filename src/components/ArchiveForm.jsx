@@ -1,4 +1,4 @@
-const REQUIRED_FIELDS = new Set(['项目', '部门', '水印分类', '工作内容', '日期', '具体位置', '工作事项', '照片阶段']);
+const REQUIRED_FIELDS = new Set(['照片来源', '项目', '部门', '水印分类', '工作内容', '日期', '照片阶段']);
 
 export default function ArchiveForm({ configs, form, updateForm, compact = false }) {
   if (!configs) {
@@ -29,8 +29,20 @@ export default function ArchiveForm({ configs, form, updateForm, compact = false
         />
         <Select label="工作内容" value={form.workContent} options={workContents} onChange={(workContent) => updateForm({ workContent })} />
         <Input label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} />
-        <Input label="具体位置" value={form.location} placeholder="如：3栋1单元、负一层车库、北门岗" onChange={(location) => updateForm({ location })} />
-        <Input label="工作事项" value={form.workItem} placeholder="如：闭门器维修、消防栓检查" onChange={(workItem) => updateForm({ workItem })} />
+        <Input
+          label="位置/区域"
+          value={form.location}
+          placeholder={form.locationPlaceholder || '如：3栋1单元、负一层车库、北门岗；不填写则默认“现场”'}
+          hint="建议填写，便于后期检索；不填写则默认“现场”。"
+          onChange={(location) => updateForm({ location })}
+        />
+        <Input
+          label="事项名称"
+          value={form.workItem}
+          placeholder="不填写则默认使用工作内容；如：3栋1单元电动车乱停放"
+          hint="不填写时，系统会自动使用“工作内容”作为事项名称。"
+          onChange={(workItem) => updateForm({ workItem })}
+        />
         <Select label="照片阶段" value={form.photoStage} options={configs.photoStages} onChange={(photoStage) => updateForm({ photoStage })} />
         <Select label="处理状态" value={form.processStatus} options={configs.processStatuses} onChange={(processStatus) => updateForm({ processStatus })} />
         <Input label="关键词" value={form.keywords} placeholder="多个关键词用顿号或逗号分隔" onChange={(keywords) => updateForm({ keywords })} wide />
@@ -53,11 +65,12 @@ function Select({ label, value, options, onChange }) {
   );
 }
 
-function Input({ label, value, onChange, placeholder = '', type = 'text', wide = false }) {
+function Input({ label, value, onChange, placeholder = '', type = 'text', wide = false, hint = '' }) {
   return (
     <label className={`field ${wide ? 'wide' : ''}`}>
       <span>{label}{REQUIRED_FIELDS.has(label) && <b>*</b>}</span>
       <input type={type} value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+      {hint && <small className="field-hint">{hint}</small>}
     </label>
   );
 }

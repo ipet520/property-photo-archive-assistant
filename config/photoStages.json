@@ -1,10 +1,66 @@
 [
-  "远景定位",
-  "近景问题",
-  "处理过程",
-  "处理结果",
-  "复查照片",
-  "日常巡查",
-  "完成照",
-  "现场照片"
+  {
+    "id": "photo-stage-远景定位-1",
+    "name": "远景定位",
+    "enabled": true,
+    "sort": 10,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-近景问题-2",
+    "name": "近景问题",
+    "enabled": true,
+    "sort": 20,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-处理过程-3",
+    "name": "处理过程",
+    "enabled": true,
+    "sort": 30,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-处理结果-4",
+    "name": "处理结果",
+    "enabled": true,
+    "sort": 40,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-复查照片-5",
+    "name": "复查照片",
+    "enabled": true,
+    "sort": 50,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-日常巡查-6",
+    "name": "日常巡查",
+    "enabled": true,
+    "sort": 60,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-完成照-7",
+    "name": "完成照",
+    "enabled": true,
+    "sort": 70,
+    "isDefault": false,
+    "description": ""
+  },
+  {
+    "id": "photo-stage-现场照片-8",
+    "name": "现场照片",
+    "enabled": true,
+    "sort": 80,
+    "isDefault": true,
+    "description": ""
+  }
 ]
