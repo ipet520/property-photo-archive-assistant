@@ -93,6 +93,15 @@ function validatePreviewPayload(form, photos, archiveRoot) {
 function mergePhotoOverrides(form, photo) {
   const item = {
     ...form,
+    photoSource: photo.photoSource || form.photoSource,
+    project: photo.project || form.project,
+    department: photo.department || form.department,
+    watermarkCategory: photo.watermarkCategory || form.watermarkCategory,
+    workContent: photo.workContent || form.workContent,
+    workItem: photo.workItem ?? form.workItem,
+    location: photo.location ?? form.location,
+    date: photo.date || form.date,
+    processStatus: photo.processStatus || form.processStatus,
     photoStage: photo.photoStage || form.photoStage,
     keywords: photo.keywords ?? form.keywords,
     remark: photo.remark ?? form.remark

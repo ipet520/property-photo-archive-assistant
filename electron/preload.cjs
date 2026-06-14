@@ -29,5 +29,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   validatePathExists: (targetPath) => ipcRenderer.invoke('system:validatePathExists', targetPath),
   openPath: (targetPath) => ipcRenderer.invoke('system:openPath', targetPath),
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
+  saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
+  loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')
 });

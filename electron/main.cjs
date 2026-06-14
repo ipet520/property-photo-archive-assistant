@@ -246,6 +246,37 @@ ipcMain.handle('configs:import', async () => {
 ipcMain.handle('archive:buildPreview', async (_event, payload) => buildArchivePreview(payload));
 ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => archivePhotos(archivePlan));
 
+ipcMain.handle('sortDraft:save', async (_event, draft) => {
+  const draftsDir = path.join(getWritableDocumentsPath(), appDataFolderName, 'sort-drafts');
+  fs.mkdirSync(draftsDir, { recursive: true });
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const defaultPath = path.join(draftsDir, `照片分拣草稿_${timestamp}.json`);
+  const result = await dialog.showSaveDialog({
+    title: '保存分拣草稿',
+    defaultPath,
+    filters: [{ name: 'JSON 分拣草稿', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  fs.writeFileSync(result.filePath, JSON.stringify(draft, null, 2), 'utf-8');
+  return { success: true, filePath: result.filePath };
+});
+
+ipcMain.handle('sortDraft:load', async () => {
+  const draftsDir = path.join(getWritableDocumentsPath(), appDataFolderName, 'sort-drafts');
+  fs.mkdirSync(draftsDir, { recursive: true });
+  const result = await dialog.showOpenDialog({
+    title: '加载分拣草稿',
+    defaultPath: draftsDir,
+    properties: ['openFile'],
+    filters: [{ name: 'JSON 分拣草稿', extensions: ['json'] }]
+  });
+  if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
+  const content = fs.readFileSync(result.filePaths[0], 'utf-8');
+  return { success: true, filePath: result.filePaths[0], draft: JSON.parse(content) };
+});
+
 ipcMain.handle('system:openPath', async (_event, targetPath) => {
   if (!targetPath) return { success: false, message: '路径为空' };
   const error = await shell.openPath(targetPath);

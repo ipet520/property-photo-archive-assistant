@@ -12,7 +12,7 @@ export default function AppLayout({ currentPage, onNavigate, archiveState, child
   }, [isNavCollapsed]);
 
   return (
-    <div className={`app-frame ${isNavCollapsed ? 'nav-collapsed' : ''}`}>
+    <div className={`app-frame page-${currentPage} ${isNavCollapsed ? 'nav-collapsed' : ''}`}>
       <HeaderBar currentPage={currentPage} onNavigate={onNavigate} archiveState={archiveState} />
       <div className="app-body">
         <SideNav
