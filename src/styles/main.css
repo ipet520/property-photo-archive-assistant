@@ -678,6 +678,85 @@ td small {
   margin-bottom: 14px;
 }
 
+.watermark-tree-editor {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 18px;
+  min-height: 560px;
+}
+
+.category-side-list {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #f7faff;
+}
+
+.category-side-title {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 4px;
+  color: var(--navy);
+}
+
+.category-side-title span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.category-side-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  text-align: left;
+}
+
+.category-side-card small {
+  color: var(--muted);
+}
+
+.category-side-card.active {
+  color: #fff;
+  background: var(--navy);
+  border-color: var(--navy);
+}
+
+.category-side-card.active small {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.category-side-card.disabled {
+  opacity: 0.64;
+}
+
+.category-detail-panel {
+  min-width: 0;
+}
+
+.category-edit-card {
+  margin-bottom: 18px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fbfdff;
+}
+
+.category-edit-card h3,
+.work-content-header h3 {
+  margin: 0;
+}
+
+.work-content-header {
+  margin: 18px 0 12px;
+}
+
 .scene-config-list {
   display: grid;
   gap: 12px;
@@ -730,7 +809,8 @@ td small {
   }
 
   .config-layout,
-  .config-form-grid {
+  .config-form-grid,
+  .watermark-tree-editor {
     grid-template-columns: 1fr;
   }
 

@@ -4,8 +4,7 @@ const CONFIG_TABS = [
   { key: 'projects', label: '项目管理', type: 'simple', defaultable: true },
   { key: 'departments', label: '部门管理', type: 'simple', defaultable: true },
   { key: 'photoSources', label: '照片来源', type: 'simple' },
-  { key: 'watermarkCategories', label: '水印分类', type: 'watermark' },
-  { key: 'workContents', label: '工作内容', type: 'workContents' },
+  { key: 'watermarkCategories', label: '水印分类与工作内容', type: 'watermark' },
   { key: 'photoStages', label: '照片阶段', type: 'simple', defaultable: true },
   { key: 'processStatuses', label: '处理状态', type: 'simple', defaultable: true },
   { key: 'keywords', label: '关键词', type: 'keywords' },
@@ -126,7 +125,7 @@ export default function ConfigManager({ open, onClose, onSaved }) {
       <section className="config-manager">
         <header className="config-header">
           <div>
-            <p className="eyebrow">V1.2.0</p>
+            <p className="eyebrow">V1.2.1</p>
             <h2>配置管理中心</h2>
             <p>新增、修改、停用和导入导出配置。暂时不用的配置，建议停用而不是删除。</p>
           </div>
@@ -167,11 +166,6 @@ export default function ConfigManager({ open, onClose, onSaved }) {
               <KeywordEditor items={configs.keywords} onChange={(items) => updateConfig('keywords', items)} />
             ) : active.type === 'watermark' ? (
               <WatermarkCategoryEditor
-                categories={configs.watermarkCategories}
-                onChange={(items) => updateConfig('watermarkCategories', items)}
-              />
-            ) : active.type === 'workContents' ? (
-              <WorkContentEditor
                 categories={configs.watermarkCategories}
                 selectedCategoryId={selectedCategoryId}
                 onSelectCategory={setSelectedCategoryId}
@@ -256,54 +250,112 @@ function KeywordEditor({ items, onChange }) {
   );
 }
 
-function WatermarkCategoryEditor({ categories, onChange }) {
-  return (
-    <ConfigSection title="水印分类" onAdd={() => onChange([...categories, createCategory('新水印分类')])}>
-      <EditableTable
-        items={categories}
-        onChange={onChange}
-        columns={[
-          { key: 'name', label: '分类名称', type: 'text' },
-          { key: 'description', label: '分类说明', type: 'text' },
-          { key: 'isFallback', label: '兜底', type: 'checkbox' },
-          { key: 'fallbackTip', label: '兜底提示', type: 'text' }
-        ]}
-        deleteHint={(item) => item.items?.length ? `分类“${item.name}”下还有 ${item.items.length} 个工作内容，删除会一并影响下属内容。确认删除？` : undefined}
-      />
-    </ConfigSection>
-  );
-}
-
-function WorkContentEditor({ categories, selectedCategoryId, onSelectCategory, onChange }) {
+function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCategory, onChange }) {
   const selectedCategory = categories.find((item) => item.id === selectedCategoryId) || categories[0];
-  if (!selectedCategory) return <p className="muted">请先新增水印分类。</p>;
 
-  function updateItems(items) {
+  function updateCategory(categoryId, patch) {
+    onChange(categories.map((category) => (
+      category.id === categoryId ? { ...category, ...patch } : category
+    )));
+  }
+
+  function updateWorkItems(items) {
     onChange(categories.map((category) => (
       category.id === selectedCategory.id ? { ...category, items } : category
     )));
   }
 
+  function addCategory() {
+    const nextCategory = createCategory('新水印分类');
+    onChange([...categories, nextCategory]);
+    onSelectCategory(nextCategory.id);
+  }
+
+  function deleteCategory(category) {
+    const message = category.items?.length
+      ? `分类“${category.name}”下还有 ${category.items.length} 个工作内容，删除会一并影响下属工作内容。确认删除？`
+      : `确认删除分类“${category.name}”？如果只是暂时不用，建议停用，不建议删除。`;
+    if (!window.confirm(message)) return;
+    const nextCategories = categories.filter((item) => item.id !== category.id);
+    onChange(nextCategories);
+    onSelectCategory(nextCategories[0]?.id || '');
+  }
+
+  function moveCategory(category, delta) {
+    onChange(swapSort(categories, category, delta));
+  }
+
   return (
-    <ConfigSection title="工作内容" onAdd={() => updateItems([...selectedCategory.items, createWorkItem('新工作内容')])}>
-      <label className="field config-category-picker">
-        <span>所属水印分类</span>
-        <select value={selectedCategory.id} onChange={(event) => onSelectCategory(event.target.value)}>
-          {categories.map((category) => (
-            <option key={category.id} value={category.id}>{category.name}</option>
+    <ConfigSection title="水印分类与工作内容" onAdd={addCategory}>
+      <div className="watermark-tree-editor">
+        <aside className="category-side-list">
+          <div className="category-side-title">
+            <strong>水印分类</strong>
+            <span>工作内容必须归属于某个分类</span>
+          </div>
+          {sortItems(categories).map((category) => (
+            <button
+              type="button"
+              key={category.id}
+              className={`category-side-card ${selectedCategory?.id === category.id ? 'active' : ''} ${category.enabled === false ? 'disabled' : ''}`}
+              onClick={() => onSelectCategory(category.id)}
+            >
+              <strong>{category.name}</strong>
+              <small>{category.enabled === false ? '已停用' : '已启用'} · {category.items?.length || 0} 个工作内容</small>
+            </button>
           ))}
-        </select>
-      </label>
-      <EditableTable
-        items={selectedCategory.items}
-        onChange={updateItems}
-        columns={[
-          { key: 'name', label: '工作内容', type: 'text' },
-          { key: 'description', label: '说明', type: 'text' },
-          { key: 'keywords', label: '推荐关键词', type: 'keywords' },
-          { key: 'remarkTemplate', label: '备注模板', type: 'textarea' }
-        ]}
-      />
+        </aside>
+
+        <section className="category-detail-panel">
+          {!selectedCategory ? (
+            <p className="muted">请先新增水印分类。</p>
+          ) : (
+            <>
+              <div className="category-edit-card">
+                <div className="config-row-actions">
+                  <h3>{selectedCategory.name}</h3>
+                  <div className="row-actions">
+                    <button className="mini-button" onClick={() => moveCategory(selectedCategory, -1)}>分类上移</button>
+                    <button className="mini-button" onClick={() => moveCategory(selectedCategory, 1)}>分类下移</button>
+                    <button className="mini-button" onClick={() => updateCategory(selectedCategory.id, { enabled: selectedCategory.enabled === false })}>{selectedCategory.enabled === false ? '启用分类' : '停用分类'}</button>
+                    <button className="mini-button danger" onClick={() => deleteCategory(selectedCategory)}>删除分类</button>
+                  </div>
+                </div>
+                <div className="config-form-grid">
+                  <Field label="分类名称" value={selectedCategory.name} onChange={(name) => updateCategory(selectedCategory.id, { name })} />
+                  <Field label="分类说明" value={selectedCategory.description} onChange={(description) => updateCategory(selectedCategory.id, { description })} wide />
+                  <label className="field">
+                    <span>是否兜底分类</span>
+                    <select value={selectedCategory.isFallback ? 'yes' : 'no'} onChange={(event) => updateCategory(selectedCategory.id, { isFallback: event.target.value === 'yes' })}>
+                      <option value="no">否</option>
+                      <option value="yes">是</option>
+                    </select>
+                  </label>
+                  <Field label="兜底提示文案" value={selectedCategory.fallbackTip} onChange={(fallbackTip) => updateCategory(selectedCategory.id, { fallbackTip })} wide />
+                </div>
+              </div>
+
+              <div className="config-section-header work-content-header">
+                <div>
+                  <h3>“{selectedCategory.name}”下的工作内容</h3>
+                  <p className="muted">推荐关键词、备注模板和说明跟随当前工作内容一起保存。</p>
+                </div>
+                <button onClick={() => updateWorkItems([...(selectedCategory.items || []), createWorkItem('新工作内容')])}>新增工作内容</button>
+              </div>
+              <EditableTable
+                items={selectedCategory.items || []}
+                onChange={updateWorkItems}
+                columns={[
+                  { key: 'name', label: '工作内容名称', type: 'text' },
+                  { key: 'description', label: '说明', type: 'text' },
+                  { key: 'keywords', label: '推荐关键词', type: 'keywords' },
+                  { key: 'remarkTemplate', label: '备注模板', type: 'textarea' }
+                ]}
+              />
+            </>
+          )}
+        </section>
+      </div>
     </ConfigSection>
   );
 }
@@ -526,6 +578,18 @@ function createScene() {
 
 function sortItems(items) {
   return [...(items || [])].sort((a, b) => Number(a.sort || 0) - Number(b.sort || 0));
+}
+
+function swapSort(items, item, delta) {
+  const sorted = sortItems(items);
+  const index = sorted.findIndex((current) => current.id === item.id);
+  const target = sorted[index + delta];
+  if (!target) return items;
+  return items.map((current) => {
+    if (current.id === item.id) return { ...current, sort: target.sort };
+    if (current.id === target.id) return { ...current, sort: item.sort };
+    return current;
+  });
 }
 
 function splitKeywords(value) {

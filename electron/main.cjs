@@ -81,8 +81,13 @@ function createWindow() {
 
 function getWritableDocumentsPath() {
   const preferredDocumentsPath = app.getPath('documents');
+  const preferredAppDataDir = path.join(preferredDocumentsPath, appDataFolderName);
+  const projectRoot = path.resolve(__dirname, '..');
+  if (path.resolve(preferredAppDataDir) === projectRoot) {
+    return app.getPath('userData');
+  }
   try {
-    fs.mkdirSync(path.join(preferredDocumentsPath, appDataFolderName), { recursive: true });
+    fs.mkdirSync(preferredAppDataDir, { recursive: true });
     return preferredDocumentsPath;
   } catch {
     return app.getPath('userData');
