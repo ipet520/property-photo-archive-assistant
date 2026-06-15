@@ -1,0 +1,13 @@
+```toml
+model = "gpt-5.5"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[project]
+name = "物业工作照片归档助手"
+description = "Electron + React + Vite 桌面应用，用于物业工作照片归档、自动命名、Excel 台账和资料包导出。"
+
+[commands]
+env_check = "npm run env:check"
+build = "npm run build"
+verify = "npm run verify"

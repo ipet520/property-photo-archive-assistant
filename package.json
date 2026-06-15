@@ -10,7 +10,11 @@
     "build": "vite build",
     "dist": "npm run build && cross-env ELECTRON_CACHE=.electron-cache ELECTRON_BUILDER_CACHE=.electron-builder-cache CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable nsis",
     "package": "npm run dist",
-    "start": "electron ."
+    "start": "electron .",
+    "env:check": "node scripts/check-env.cjs",
+    "clean": "node scripts/clean.cjs",
+    "reinstall": "npm run clean && npm install",
+    "verify": "npm run env:check && npm run build"
   },
   "build": {
     "appId": "com.property.photo.archive.assistant",
@@ -65,5 +69,9 @@
     "electron-builder": "^25.1.8",
     "vite": "^6.0.7",
     "wait-on": "^8.0.1"
-  }
+  },
+  "engines": {
+  "node": ">=20 <21",
+  "npm": ">=10"
+}
 }

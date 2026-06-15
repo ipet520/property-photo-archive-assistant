@@ -1,5 +1,28 @@
 # 更新记录
 
+## V1.5.1-dev-env
+
+### 新增
+
+- 新增 .nvmrc，统一 Node.js 版本为 20。
+- 新增 .npmrc，规范 npm 安装行为。
+- 新增 AGENTS.md，提供 Codex 项目协作规则。
+- 新增 .codex/config.toml，配置 Codex 项目级运行偏好。
+- 新增 scripts/check-env.cjs，用于检查本地运行环境。
+- 新增 scripts/clean.cjs，用于清理构建缓存。
+
+### 优化
+
+- package.json 新增 env:check、clean、reinstall、verify 命令。
+- package.json 新增 engines，限制 Node.js 20 环境。
+- README.md 新增开发环境说明。
+
+### 验证
+
+- npm run env:check
+- npm run build
+- npm run verify
+
 ## V1.4.1 归档记录查询中心体验优化版
 
 - 优化归档记录筛选区，增加常用筛选与更多筛选分组。
