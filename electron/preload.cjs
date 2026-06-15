@@ -28,7 +28,10 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   setDefaultArchiveRoot: (folderPath) => ipcRenderer.invoke('settings:setDefaultArchiveRoot', folderPath),
   validatePathExists: (targetPath) => ipcRenderer.invoke('system:validatePathExists', targetPath),
   openPath: (targetPath) => ipcRenderer.invoke('system:openPath', targetPath),
+  showItemInFolder: (targetPath) => ipcRenderer.invoke('system:showItemInFolder', targetPath),
+  copyText: (text) => ipcRenderer.invoke('system:copyText', text),
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
+  loadLedgerRecords: (archiveRoot) => ipcRenderer.invoke('ledger:loadRecords', archiveRoot),
   saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
   loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')

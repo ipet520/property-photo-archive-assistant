@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.3.3';
+export const APP_VERSION = '1.4.0';
 export const APP_NAME = '物业工作照片归档助手';
 
 export const PAGE_KEYS = {
@@ -25,7 +25,7 @@ export const NAV_GROUPS = [
   {
     title: '查询与资料',
     items: [
-      { key: PAGE_KEYS.searchCenter, label: '照片检索中心', marker: '查' },
+      { key: PAGE_KEYS.searchCenter, label: '归档记录', marker: '查' },
       { key: PAGE_KEYS.rectificationCenter, label: '整改闭环中心', marker: '改' },
       { key: PAGE_KEYS.reportCenter, label: '资料汇总中心', marker: '汇' }
     ]

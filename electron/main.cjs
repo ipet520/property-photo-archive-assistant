@@ -4,6 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
+const { loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const {
   loadConfigs,
   loadUserConfigs,
@@ -26,7 +27,7 @@ const {
   validatePathExists
 } = require('./services/settingsService.cjs');
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, net, protocol, shell } = electron;
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, shell } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appDataFolderName = '物业工作照片归档助手';
 const runtimeDir = resolveRuntimeDir();
@@ -294,6 +295,19 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
   const ledgerPath = getLedgerPath(archiveRoot);
   const error = await shell.openPath(ledgerPath);
   return error ? { success: false, message: error, ledgerPath } : { success: true, ledgerPath };
+});
+
+ipcMain.handle('ledger:loadRecords', async (_event, archiveRoot) => loadLedgerRecords(archiveRoot));
+
+ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {
+  if (!targetPath || !fs.existsSync(targetPath)) return { success: false, message: '文件不存在' };
+  shell.showItemInFolder(targetPath);
+  return { success: true };
+});
+
+ipcMain.handle('system:copyText', async (_event, text) => {
+  clipboard.writeText(String(text || ''));
+  return { success: true };
 });
 
 ipcMain.handle('app:getPaths', async () => ({

@@ -4308,6 +4308,355 @@ body,
   }
 }
 
+.archive-records-page {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+
+.archive-query-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto auto minmax(220px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 12px;
+}
+
+.archive-root-box,
+.archive-ledger-path {
+  min-width: 0;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  padding: 8px 10px;
+  background: #fbfdff;
+}
+
+.archive-root-box span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.archive-root-box strong,
+.archive-ledger-path {
+  display: block;
+  overflow: hidden;
+  color: var(--navy);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-query-toolbar button,
+.archive-filters button,
+.archive-detail-actions button,
+.archive-pagination button,
+.archive-pagination select {
+  min-height: 34px;
+  border: 1px solid #d6e2f0;
+  border-radius: 10px;
+  padding: 6px 12px;
+  color: var(--navy);
+  background: #fff;
+  font-weight: 700;
+}
+
+.archive-query-toolbar button.primary {
+  border-color: var(--blue);
+  color: #fff;
+  background: var(--blue);
+}
+
+.archive-query-toolbar button:disabled,
+.archive-detail-actions button:disabled,
+.archive-pagination button:disabled {
+  cursor: not-allowed;
+  color: #6d7f95;
+  background: #f3f6fa;
+}
+
+.archive-query-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.archive-stat-card {
+  display: grid;
+  place-items: center;
+  min-height: 58px;
+  border: 1px solid #dce7f4;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.archive-stat-card small {
+  color: var(--muted);
+}
+
+.archive-stat-card strong {
+  color: var(--navy);
+  font-size: 22px;
+}
+
+.archive-stat-card.warning {
+  border-color: #f4c7a5;
+  background: #fff8f1;
+}
+
+.archive-query-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  min-height: 0;
+}
+
+.archive-query-main,
+.archive-detail-panel {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.archive-query-main {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+}
+
+.archive-filters {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.archive-filters label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.archive-filters label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.archive-filters input,
+.archive-filters select {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #d6e2f0;
+  border-radius: 9px;
+  padding: 0 9px;
+  color: var(--navy);
+  background: #fff;
+}
+
+.archive-query-status {
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #30506f;
+  background: #f3f8ff;
+}
+
+.archive-query-status.success {
+  color: #17643a;
+  background: #eaf8ef;
+}
+
+.archive-query-status.warning {
+  color: #8a5400;
+  background: #fff7e6;
+}
+
+.archive-query-status.error {
+  color: #9f2d2d;
+  background: #fff0f0;
+}
+
+.archive-results-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+}
+
+.archive-results-table {
+  width: max(1200px, 100%);
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.archive-results-table th,
+.archive-results-table td {
+  max-width: 170px;
+  border-bottom: 1px solid #e8eef6;
+  padding: 9px 10px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-results-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--navy);
+  text-align: left;
+  background: #f6f9fd;
+}
+
+.archive-results-table th button {
+  border: 0;
+  color: var(--navy);
+  background: transparent;
+  font-weight: 800;
+}
+
+.archive-results-table tr {
+  cursor: pointer;
+}
+
+.archive-results-table tbody tr:hover,
+.archive-results-table tbody tr.selected {
+  background: #f3f8ff;
+}
+
+.archive-file-status {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.archive-file-status.exists {
+  color: #17643a;
+  background: #e9f8ef;
+}
+
+.archive-file-status.missing {
+  color: #a33b3b;
+  background: #fff0f0;
+}
+
+.archive-empty-cell {
+  height: 120px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.archive-pagination,
+.archive-pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.archive-pagination > div {
+  justify-content: flex-end;
+}
+
+.archive-detail-panel {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+}
+
+.archive-detail-panel h2 {
+  margin: 0;
+  color: var(--navy);
+  font-size: 18px;
+}
+
+.archive-detail-panel img,
+.archive-missing-preview {
+  width: 100%;
+  height: 210px;
+  border-radius: 14px;
+  object-fit: contain;
+  background: #f1f6fc;
+}
+
+.archive-missing-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  color: #8a5400;
+  line-height: 1.6;
+  text-align: center;
+  background: #fff7e6;
+}
+
+.archive-detail-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.archive-detail-panel dl {
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+}
+
+.archive-detail-panel dl div {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #edf2f8;
+}
+
+.archive-detail-panel dt {
+  color: var(--muted);
+}
+
+.archive-detail-panel dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archive-empty-detail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+@media (max-width: 1400px) {
+  .archive-query-toolbar {
+    grid-template-columns: minmax(220px, 1fr) auto auto auto;
+  }
+
+  .archive-ledger-path {
+    grid-column: 1 / -1;
+  }
+
+  .archive-filters {
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .archive-query-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .archive-detail-panel {
+    min-height: 420px;
+  }
+}
+
 .sort-photo-card {
   position: relative;
   width: 100%;

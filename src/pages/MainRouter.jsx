@@ -1,4 +1,5 @@
 import { PAGE_KEYS } from '../constants/app.js';
+import ArchiveRecordsPage from './ArchiveRecordsPage.jsx';
 import ConfigCenterPage from './ConfigCenterPage.jsx';
 import DashboardPage from './DashboardPage.jsx';
 import PlaceholderPage from './PlaceholderPage.jsx';
@@ -23,17 +24,7 @@ export default function MainRouter({ currentPage, onNavigate, archiveState }) {
     return <SettingsPage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
-    return (
-      <PlaceholderPage
-        title="照片检索中心"
-        description="未来将支持按项目、日期、部门、水印分类、工作内容、关键词、位置和备注检索照片。"
-        sections={[
-          { title: '搜索条件区域', text: '预留项目、日期、分类、关键词、位置等筛选条件。' },
-          { title: '搜索结果列表', text: '预留照片结果、归档路径、打开文件夹和导出结果。' },
-          { title: '后续计划', text: '将从 Excel 台账或本地索引中搜索照片记录。' }
-        ]}
-      />
-    );
+    return <ArchiveRecordsPage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.rectificationCenter) {
     return (
