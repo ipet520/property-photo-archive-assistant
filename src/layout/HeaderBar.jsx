@@ -18,7 +18,6 @@ export default function HeaderBar({ onNavigate, archiveState }) {
       </div>
       <div className="header-actions">
         <button onClick={() => onNavigate(PAGE_KEYS.quickArchive)}>快速归档</button>
-        <button className="ghost" onClick={() => onNavigate(PAGE_KEYS.configCenter)}>配置管理</button>
         <button className="ghost" onClick={() => onNavigate(PAGE_KEYS.settings)}>系统设置</button>
       </div>
     </header>

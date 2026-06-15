@@ -25,9 +25,9 @@ export default function DashboardPage({ archiveState, onNavigate }) {
 
       <section className="quick-entry-grid">
         <EntryCard title="开始快速批量归档" text="一批照片使用同一套归档信息时，从这里开始。" onClick={() => onNavigate(PAGE_KEYS.quickArchive)} />
-        <EntryCard title="进入照片分拣工作台" text="V1.3.0 将用于混合照片分拣归档。" onClick={() => onNavigate(PAGE_KEYS.sortWorkspace)} />
-        <EntryCard title="打开配置管理中心" text="维护项目、部门、水印分类、工作内容和场景。" onClick={() => onNavigate(PAGE_KEYS.configCenter)} />
-        <EntryCard title="打开系统设置" text="查看路径记忆、配置目录和运行缓存位置。" onClick={() => onNavigate(PAGE_KEYS.settings)} />
+        <EntryCard title="进入照片分拣工作台" text="处理混合事项照片，逐批分拣后再归档。" onClick={() => onNavigate(PAGE_KEYS.sortWorkspace)} />
+        <EntryCard title="打开归档记录" text="读取照片归档台账，查询、筛选、核对历史归档照片。" onClick={() => onNavigate(PAGE_KEYS.searchCenter)} />
+        <EntryCard title="打开系统设置" text="维护基础数据、默认目录、资料包设置、备份恢复和系统信息。" onClick={() => onNavigate(PAGE_KEYS.settings)} />
       </section>
     </div>
   );

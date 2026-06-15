@@ -1,6 +1,5 @@
 import { PAGE_KEYS } from '../constants/app.js';
 import ArchiveRecordsPage from './ArchiveRecordsPage.jsx';
-import ConfigCenterPage from './ConfigCenterPage.jsx';
 import DashboardPage from './DashboardPage.jsx';
 import PlaceholderPage from './PlaceholderPage.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
@@ -18,7 +17,7 @@ export default function MainRouter({ currentPage, onNavigate, archiveState }) {
     return <SortWorkspacePage />;
   }
   if (currentPage === PAGE_KEYS.configCenter) {
-    return <ConfigCenterPage archiveState={archiveState} />;
+    return <SettingsPage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.settings) {
     return <SettingsPage archiveState={archiveState} />;

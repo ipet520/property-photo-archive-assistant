@@ -13,7 +13,17 @@ function getDefaultSettings() {
   return {
     lastPhotoFolder: '',
     lastArchiveRoot: '',
+    defaultPhotoFolder: '',
     defaultArchiveRoot: '',
+    defaultArchivePackageRoot: '',
+    rememberLastPaths: true,
+    archivePackageSettings: {
+      groupingRule: 'project/category/workContent',
+      packageNamePrefix: '物业照片资料包',
+      generateReadme: true,
+      generateCatalog: true,
+      promptOpenAfterGenerated: true
+    },
     recentPhotoFolders: [],
     recentArchiveRoots: []
   };
@@ -84,10 +94,25 @@ async function validatePathExists(targetPath) {
 }
 
 function normalizeSettings(settings) {
+  const defaults = getDefaultSettings();
+  const packageSettings = {
+    ...defaults.archivePackageSettings,
+    ...(settings.archivePackageSettings || {})
+  };
   return {
     lastPhotoFolder: String(settings.lastPhotoFolder || ''),
     lastArchiveRoot: String(settings.lastArchiveRoot || ''),
+    defaultPhotoFolder: String(settings.defaultPhotoFolder || ''),
     defaultArchiveRoot: String(settings.defaultArchiveRoot || ''),
+    defaultArchivePackageRoot: String(settings.defaultArchivePackageRoot || ''),
+    rememberLastPaths: settings.rememberLastPaths !== false,
+    archivePackageSettings: {
+      groupingRule: String(packageSettings.groupingRule || defaults.archivePackageSettings.groupingRule),
+      packageNamePrefix: String(packageSettings.packageNamePrefix || defaults.archivePackageSettings.packageNamePrefix),
+      generateReadme: packageSettings.generateReadme !== false,
+      generateCatalog: packageSettings.generateCatalog !== false,
+      promptOpenAfterGenerated: packageSettings.promptOpenAfterGenerated !== false
+    },
     recentPhotoFolders: normalizePathList(settings.recentPhotoFolders),
     recentArchiveRoots: normalizePathList(settings.recentArchiveRoots)
   };
@@ -106,7 +131,9 @@ function getPathStatus(settings) {
   return {
     lastPhotoFolderExists: pathExists(settings.lastPhotoFolder),
     lastArchiveRootExists: pathExists(settings.lastArchiveRoot),
+    defaultPhotoFolderExists: pathExists(settings.defaultPhotoFolder),
     defaultArchiveRootExists: pathExists(settings.defaultArchiveRoot),
+    defaultArchivePackageRootExists: pathExists(settings.defaultArchivePackageRoot),
     recentPhotoFolders: settings.recentPhotoFolders.map((folderPath) => ({ path: folderPath, exists: pathExists(folderPath) })),
     recentArchiveRoots: settings.recentArchiveRoots.map((folderPath) => ({ path: folderPath, exists: pathExists(folderPath) }))
   };

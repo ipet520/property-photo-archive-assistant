@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.5.0';
+export const APP_VERSION = '1.6.0';
 export const APP_NAME = '物业工作照片归档助手';
 
 export const PAGE_KEYS = {
@@ -33,13 +33,15 @@ export const NAV_GROUPS = [
   {
     title: '管理',
     items: [
-      { key: PAGE_KEYS.configCenter, label: '配置管理中心', marker: '配' },
       { key: PAGE_KEYS.dataMaintenance, label: '数据维护中心', marker: '维' },
       { key: PAGE_KEYS.settings, label: '系统设置', marker: '设' }
     ]
   }
 ];
 
-export const PAGE_TITLES = Object.fromEntries(
-  NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.key, item.label]))
-);
+export const PAGE_TITLES = {
+  ...Object.fromEntries(
+    NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.key, item.label]))
+  ),
+  [PAGE_KEYS.configCenter]: '系统设置'
+};
