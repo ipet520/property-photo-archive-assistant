@@ -415,7 +415,7 @@ export default function SortWorkspacePage() {
     }
     const savedAt = new Date().toISOString();
     const payload = {
-      version: '1.3.2',
+      version: '1.3.3',
       savedAt,
       photoFolder,
       archiveRoot,
@@ -818,17 +818,15 @@ export default function SortWorkspacePage() {
           <div className="sort-main-actions">
             <section className="sort-action-section">
               <h3>当前照片</h3>
-              <button type="button" className="sort-secondary-action" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑当前照片</button>
-              <button type="button" className="primary sort-save-current-button" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存到当前照片</button>
+              <button type="button" className="sort-secondary-action" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑</button>
+              <button type="button" className="primary sort-save-current-button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
             </section>
             <section className="sort-action-section batch">
               <h3>批量操作</h3>
-              <button type="button" className="primary sort-apply-button" onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用到选中照片（{selectedIds.length}）</button>
-              <div className="sort-action-row">
-                <button type="button" className="sort-secondary-action" onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除归档信息（{selectedIds.length}）</button>
-                <button type="button" className="sort-secondary-action" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>生成归档预览</button>
-              </div>
-              <button type="button" className="primary orange" onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>确认归档（{previewPhotos.length}）</button>
+              <button type="button" className="primary sort-apply-button" title={`应用到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用（{selectedIds.length}）</button>
+              <button type="button" className="sort-secondary-action" title="生成归档预览" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>预览</button>
+              <button type="button" className="primary orange" title={`确认归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>归档（{previewPhotos.length}）</button>
+              <button type="button" className="sort-secondary-action danger" title={`清除归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除（{selectedIds.length}）</button>
             </section>
             <p className={`sort-right-tip ${status.type}`}>{status.text}</p>
           </div>
