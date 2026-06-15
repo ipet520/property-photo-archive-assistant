@@ -624,6 +624,16 @@ button.primary {
   line-height: 1.7;
 }
 
+.settings-impact-note {
+  padding: 12px 14px;
+  border: 1px solid #b7d4ff;
+  border-radius: 16px;
+  color: var(--navy);
+  background: #eef5ff;
+  line-height: 1.7;
+  font-size: 14px;
+}
+
 .hero-card,
 .panel,
 .status-bar,

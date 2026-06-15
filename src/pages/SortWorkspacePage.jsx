@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { APP_VERSION } from '../constants/app.js';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
+import { getUsableArchiveRoot, getUsablePhotoFolder, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 
 const defaultForm = {
   photoSource: '',
@@ -82,13 +83,18 @@ export default function SortWorkspacePage() {
       window.archiveAssistant.loadConfigs(),
       window.archiveAssistant.loadSettings()
     ]).then(([loadedConfigs, loadedSettings]) => {
-      setConfigs(loadedConfigs);
+      const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
+      const restoredPhotoFolder = getUsablePhotoFolder(loadedSettings);
+      const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
+      setConfigs(safeConfigs);
       setSettings(loadedSettings);
-      setForm(reconcileForm(defaultForm, loadedConfigs));
-      if (loadedSettings?.pathStatus?.lastPhotoFolderExists) setPhotoFolder(loadedSettings.lastPhotoFolder);
-      if (loadedSettings?.pathStatus?.lastArchiveRootExists) setArchiveRoot(loadedSettings.lastArchiveRoot);
-      else if (loadedSettings?.pathStatus?.defaultArchiveRootExists) setArchiveRoot(loadedSettings.defaultArchiveRoot);
+      setForm(reconcileForm(defaultForm, safeConfigs));
+      if (restoredPhotoFolder) setPhotoFolder(restoredPhotoFolder);
+      if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
     }).catch((error) => {
+      const safeConfigs = withRuntimeConfigFallback(null);
+      setConfigs(safeConfigs);
+      setForm(reconcileForm(defaultForm, safeConfigs));
       setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
     });
   }, []);

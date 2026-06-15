@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { getDefaultArchivePackageSettings, getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 
 const defaultFilters = {
   project: '',
@@ -34,10 +35,12 @@ export default function ArchiveRecordsPage({ archiveState }) {
   const [packagePlan, setPackagePlan] = useState(null);
   const [packageResult, setPackageResult] = useState(null);
   const [isPackageGenerating, setIsPackageGenerating] = useState(false);
+  const [systemSettings, setSystemSettings] = useState(null);
 
   useEffect(() => {
     window.archiveAssistant.loadSettings().then((settings) => {
-      const root = archiveState?.archiveRoot || settings.lastArchiveRoot || settings.defaultArchiveRoot || '';
+      setSystemSettings(settings);
+      const root = archiveState?.archiveRoot || getUsableArchiveRoot(settings) || '';
       if (root) setArchiveRoot(root);
     }).catch(() => {});
   }, [archiveState?.archiveRoot]);
@@ -217,11 +220,20 @@ export default function ArchiveRecordsPage({ archiveState }) {
       setStatus({ type: 'error', text: '当前记录没有任何可复制照片，无法生成资料包。' });
       return;
     }
-    const targetRoot = await window.archiveAssistant.selectArchivePackageTargetRoot();
+    let targetRoot = '';
+    if (systemSettings?.pathStatus?.defaultArchivePackageRootExists) {
+      targetRoot = systemSettings.defaultArchivePackageRoot;
+    } else if (systemSettings?.defaultArchivePackageRoot) {
+      setStatus({ type: 'warning', text: '默认资料包导出目录不可用，请重新选择。' });
+    }
+    if (!targetRoot) {
+      targetRoot = await window.archiveAssistant.selectArchivePackageTargetRoot();
+    }
     if (!targetRoot) return;
     try {
-      const plan = await window.archiveAssistant.buildArchivePackagePlan(packageSourceRecords, targetRoot);
-      setPackagePlan({ ...plan, sourceLabel: packageSourceLabel, records: packageSourceRecords });
+      const packageSettings = getDefaultArchivePackageSettings(systemSettings);
+      const plan = await window.archiveAssistant.buildArchivePackagePlan(packageSourceRecords, targetRoot, packageSettings);
+      setPackagePlan({ ...plan, sourceLabel: packageSourceLabel, records: packageSourceRecords, packageSettings });
     } catch (error) {
       setStatus({ type: 'error', text: `生成资料包预检查失败：${error.message}` });
     }
@@ -234,7 +246,8 @@ export default function ArchiveRecordsPage({ archiveState }) {
     try {
       const result = await window.archiveAssistant.generateArchivePackage(packagePlan.records, {
         targetRoot: packagePlan.targetRoot,
-        packagePath: packagePlan.packagePath
+        packagePath: packagePlan.packagePath,
+        ...(packagePlan.packageSettings || {})
       });
       setPackageResult(result);
       setPackagePlan(null);
@@ -474,6 +487,8 @@ function ArchivePackageConfirmDialog({ plan, isGenerating, onCancel, onConfirm }
             <div><dt>目标保存位置</dt><dd title={plan.targetRoot}>{plan.targetRoot}</dd></div>
             <div><dt>预计资料包名称</dt><dd title={plan.packageName}>{plan.packageName}</dd></div>
             <div><dt>分组规则</dt><dd>{plan.groupingRule}</dd></div>
+            <div><dt>资料包说明</dt><dd>{plan.packageOptions?.generateReadme === false ? '不生成' : '生成 txt'}</dd></div>
+            <div><dt>资料目录</dt><dd>{plan.packageOptions?.generateCatalog === false ? '不生成 Excel' : '生成 Excel'}</dd></div>
           </dl>
         </section>
         {plan.missingCount > 0 && (
@@ -518,7 +533,7 @@ function ArchivePackageResultDialog({ result, onClose, onOpenPackage, onOpenCata
         </section>
         <footer className="archive-confirm-actions">
           <button type="button" onClick={onOpenPackage}>打开资料包</button>
-          <button type="button" onClick={onOpenCatalog}>打开资料目录</button>
+          <button type="button" onClick={onOpenCatalog} disabled={!result.catalogPath}>打开资料目录</button>
           <button type="button" className="primary" onClick={onClose}>关闭</button>
         </footer>
       </section>

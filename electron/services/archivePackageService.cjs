@@ -24,15 +24,25 @@ const CATALOG_HEADERS = [
   ['exportResult', '导出结果']
 ];
 
-function buildPackagePlan(records = [], targetRoot = '') {
+const DEFAULT_PACKAGE_OPTIONS = {
+  groupingRule: 'project/category/workContent',
+  packageNamePrefix: '物业照片资料包',
+  generateReadme: true,
+  generateCatalog: true,
+  promptOpenAfterGenerated: true
+};
+
+function buildPackagePlan(records = [], targetRoot = '', options = {}) {
   if (!targetRoot) {
     throw new Error('请选择资料包保存位置');
   }
+
+  const packageOptions = normalizePackageOptions(options);
   const safeRecords = Array.isArray(records) ? records : [];
   const timestamp = formatTimestamp(new Date());
   const projectNames = Array.from(new Set(safeRecords.map((record) => cleanValue(record.project)).filter(Boolean)));
   const projectPart = projectNames.length === 1 ? `_${sanitizePathSegment(projectNames[0])}` : '';
-  const baseName = sanitizePathSegment(`物业照片资料包${projectPart}_${timestamp}`);
+  const baseName = sanitizePathSegment(`${packageOptions.packageNamePrefix}${projectPart}_${timestamp}`);
   const packagePath = getUniqueDirectoryPath(path.join(targetRoot, baseName));
   const existsCount = safeRecords.filter((record) => resolveSourcePath(record)).length;
   const missingCount = safeRecords.length - existsCount;
@@ -45,11 +55,13 @@ function buildPackagePlan(records = [], targetRoot = '') {
     total: safeRecords.length,
     existsCount,
     missingCount,
-    groupingRule: '项目 / 水印分类 / 工作内容'
+    groupingRule: getGroupingRuleLabel(packageOptions.groupingRule),
+    packageOptions
   };
 }
 
 async function generateArchivePackage(records = [], options = {}) {
+  const packageOptions = normalizePackageOptions(options);
   const targetRoot = options.targetRoot || '';
   if (!targetRoot) {
     throw new Error('请选择资料包保存位置');
@@ -62,13 +74,15 @@ async function generateArchivePackage(records = [], options = {}) {
 
   const plan = options.packagePath
     ? { packagePath: getUniqueDirectoryPath(options.packagePath), packageName: path.basename(options.packagePath) }
-    : buildPackagePlan(safeRecords, targetRoot);
+    : buildPackagePlan(safeRecords, targetRoot, packageOptions);
 
   const packagePath = plan.packagePath;
   const photosRoot = path.join(packagePath, '01_照片资料');
   const catalogRoot = path.join(packagePath, '02_资料目录');
   fs.mkdirSync(photosRoot, { recursive: true });
-  fs.mkdirSync(catalogRoot, { recursive: true });
+  if (packageOptions.generateCatalog) {
+    fs.mkdirSync(catalogRoot, { recursive: true });
+  }
 
   const catalogRows = [];
   let copiedCount = 0;
@@ -88,19 +102,12 @@ async function generateArchivePackage(records = [], options = {}) {
     if (!sourcePath) {
       missingCount += 1;
       catalogRows.push(row);
-      if (typeof options.onProgress === 'function') {
-        options.onProgress({ current: index + 1, total: safeRecords.length });
-      }
+      emitProgress(options, index + 1, safeRecords.length);
       continue;
     }
 
     try {
-      const groupDir = path.join(
-        photosRoot,
-        sanitizePathSegment(record.project || '未分类'),
-        sanitizePathSegment(record.watermarkCategory || '未分类'),
-        sanitizePathSegment(record.workContent || '未分类')
-      );
+      const groupDir = path.join(photosRoot, ...getGroupSegments(record, packageOptions.groupingRule));
       fs.mkdirSync(groupDir, { recursive: true });
       const preferredName = sanitizeFileName(record.newFileName || record.originalName || path.basename(sourcePath));
       const targetPath = getUniqueFilePath(path.join(groupDir, preferredName || path.basename(sourcePath)));
@@ -113,22 +120,25 @@ async function generateArchivePackage(records = [], options = {}) {
       row.exportResult = `复制失败：${error.message}`;
     }
     catalogRows.push(row);
-    if (typeof options.onProgress === 'function') {
-      options.onProgress({ current: index + 1, total: safeRecords.length });
-    }
+    emitProgress(options, index + 1, safeRecords.length);
   }
 
-  const catalogPath = path.join(catalogRoot, '资料包目录.xlsx');
-  writeCatalog(catalogPath, catalogRows);
-  const readmePath = path.join(packagePath, '资料包说明.txt');
-  writePackageReadme(readmePath, {
-    packageName: path.basename(packagePath),
-    generatedAt: formatDateTime(new Date()),
-    total: safeRecords.length,
-    copiedCount,
-    missingCount,
-    failedCount
-  });
+  const catalogPath = packageOptions.generateCatalog ? path.join(catalogRoot, '资料包目录.xlsx') : '';
+  if (packageOptions.generateCatalog) {
+    writeCatalog(catalogPath, catalogRows);
+  }
+
+  const readmePath = packageOptions.generateReadme ? path.join(packagePath, '资料包说明.txt') : '';
+  if (packageOptions.generateReadme) {
+    writePackageReadme(readmePath, {
+      packageName: path.basename(packagePath),
+      generatedAt: formatDateTime(new Date()),
+      total: safeRecords.length,
+      copiedCount,
+      missingCount,
+      failedCount
+    });
+  }
 
   return {
     success: true,
@@ -138,8 +148,43 @@ async function generateArchivePackage(records = [], options = {}) {
     total: safeRecords.length,
     copiedCount,
     missingCount,
-    failedCount
+    failedCount,
+    packageOptions
   };
+}
+
+function normalizePackageOptions(options = {}) {
+  return {
+    groupingRule: cleanValue(options.groupingRule) || DEFAULT_PACKAGE_OPTIONS.groupingRule,
+    packageNamePrefix: cleanValue(options.packageNamePrefix) || DEFAULT_PACKAGE_OPTIONS.packageNamePrefix,
+    generateReadme: options.generateReadme !== false,
+    generateCatalog: options.generateCatalog !== false,
+    promptOpenAfterGenerated: options.promptOpenAfterGenerated !== false
+  };
+}
+
+function getGroupSegments(record, rule) {
+  const ruleMap = {
+    'project/category/workContent': ['project', 'watermarkCategory', 'workContent'],
+    'category/workContent': ['watermarkCategory', 'workContent'],
+    'project/workContent': ['project', 'workContent'],
+    'date/category': ['date', 'watermarkCategory'],
+    none: []
+  };
+  const fields = ruleMap[rule] || ruleMap[DEFAULT_PACKAGE_OPTIONS.groupingRule];
+  const segments = fields.map((field) => sanitizePathSegment(record[field] || '未分类'));
+  return segments.length ? segments : ['照片资料'];
+}
+
+function getGroupingRuleLabel(rule) {
+  const labels = {
+    'project/category/workContent': '项目 / 水印分类 / 工作内容',
+    'category/workContent': '水印分类 / 工作内容',
+    'project/workContent': '项目 / 工作内容',
+    'date/category': '日期 / 水印分类',
+    none: '不分组'
+  };
+  return labels[rule] || labels[DEFAULT_PACKAGE_OPTIONS.groupingRule];
 }
 
 function resolveSourcePath(record = {}) {
@@ -225,6 +270,12 @@ function formatTimestamp(date) {
 function formatDateTime(date) {
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function emitProgress(options, current, total) {
+  if (typeof options.onProgress === 'function') {
+    options.onProgress({ current, total });
+  }
 }
 
 module.exports = { buildPackagePlan, generateArchivePackage };

@@ -324,7 +324,7 @@ ipcMain.handle('archivePackage:selectTargetRoot', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle('archivePackage:buildPlan', async (_event, records, targetRoot) => buildPackagePlan(records, targetRoot));
+ipcMain.handle('archivePackage:buildPlan', async (_event, records, targetRoot, options) => buildPackagePlan(records, targetRoot, options));
 
 ipcMain.handle('archivePackage:generate', async (event, records, options) => generateArchivePackage(records, {
   ...options,

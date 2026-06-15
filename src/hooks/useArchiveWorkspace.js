@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import { getSuggestedKeywords } from '../utils/formatters.js';
 import { addRecentRecord, clearRecentRecords, loadRecentRecords } from '../utils/recentRecords.js';
+import { getUsableArchiveRoot, getUsablePhotoFolder, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import { validateArchiveReady } from '../utils/validators.js';
 
 const defaultForm = {
@@ -43,8 +44,9 @@ export function useArchiveWorkspace() {
       window.archiveAssistant.getConfigPaths()
     ])
       .then(([loadedConfigs, loadedSettings, loadedAppPaths, loadedConfigPaths]) => {
-        setConfigs(loadedConfigs);
-        setForm((current) => reconcileFormWithConfigs(current, loadedConfigs));
+        const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
+        setConfigs(safeConfigs);
+        setForm((current) => reconcileFormWithConfigs(current, safeConfigs));
         setSettings(loadedSettings);
         setAppPaths(loadedAppPaths);
         setConfigPaths(loadedConfigPaths);
@@ -55,6 +57,28 @@ export function useArchiveWorkspace() {
 
   function restoreSavedPaths(loadedSettings) {
     const notices = [];
+    const restoredPhotoFolder = getUsablePhotoFolder(loadedSettings);
+    const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
+
+    if (restoredPhotoFolder) {
+      setPhotoFolder(restoredPhotoFolder);
+      notices.push(restoredPhotoFolder === loadedSettings.lastPhotoFolder ? '已恢复上次照片文件夹' : '已使用默认照片导入目录');
+    } else if (loadedSettings?.defaultPhotoFolder || loadedSettings?.lastPhotoFolder) {
+      notices.push('照片目录不可用，请重新选择');
+    }
+
+    if (restoredArchiveRoot) {
+      setArchiveRoot(restoredArchiveRoot);
+      notices.push(restoredArchiveRoot === loadedSettings.lastArchiveRoot ? '已恢复上次归档根目录' : '已使用默认归档根目录');
+    } else if (loadedSettings?.defaultArchiveRoot || loadedSettings?.lastArchiveRoot) {
+      notices.push('默认归档根目录不可用，请重新选择');
+    }
+
+    setStatus({
+      type: notices.some((item) => item.includes('不可用')) ? 'warning' : 'success',
+      text: notices.length ? `${notices.join('；')}。` : '默认配置已加载，可以开始归档。'
+    });
+    return;
     if (loadedSettings.pathStatus?.lastPhotoFolderExists) {
       setPhotoFolder(loadedSettings.lastPhotoFolder);
       notices.push('已恢复上次照片文件夹');
@@ -351,8 +375,9 @@ export function useArchiveWorkspace() {
   }
 
   async function handleConfigsSaved(runtimeConfigs) {
-    setConfigs(runtimeConfigs);
-    setForm((current) => reconcileFormWithConfigs(current, runtimeConfigs));
+    const safeConfigs = withRuntimeConfigFallback(runtimeConfigs);
+    setConfigs(safeConfigs);
+    setForm((current) => reconcileFormWithConfigs(current, safeConfigs));
     setPreviewItems([]);
     setStatus({ type: 'success', text: '配置已更新，归档表单已刷新。' });
   }
