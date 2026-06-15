@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { APP_VERSION } from '../constants/app.js';
-import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword, buildRemarkTemplates } from '../utils/formatters.js';
+import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 
 const defaultForm = {
   photoSource: '',
@@ -42,8 +42,7 @@ const groupExamples = ['楼道杂物清理', '飞线充电治理', '公共设施
 
 const assistTabs = [
   ['scenes', '常见场景'],
-  ['keywords', '关键词'],
-  ['templates', '备注模板']
+  ['keywords', '关键词']
 ];
 
 const viewModes = [
@@ -63,7 +62,7 @@ export default function SortWorkspacePage() {
   const [activeGroup, setActiveGroup] = useState('all');
   const [searchText, setSearchText] = useState('');
   const [viewMode, setViewMode] = useState('grid');
-  const [thumbSize, setThumbSize] = useState('medium');
+  const [thumbSize, setThumbSize] = useState('standard');
   const [sortMode, setSortMode] = useState('timeAsc');
   const [selectedIds, setSelectedIds] = useState([]);
   const [lastClickedId, setLastClickedId] = useState(null);
@@ -128,11 +127,11 @@ export default function SortWorkspacePage() {
   const stats = getStats(photos, selectedIds);
   const suggestedKeywords = splitKeywords(getSuggestedKeywords({ ...toArchiveForm(form), workItem: form.itemName }, configs));
   const activeKeywords = splitKeywords(form.keywords);
-  const remarkTemplates = buildRemarkTemplates({ ...toArchiveForm(form), workItem: form.itemName }, configs?.sceneExamples || [], configs);
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
+  const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
 
   useEffect(() => {
@@ -142,6 +141,12 @@ export default function SortWorkspacePage() {
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
   }, []);
+
+  useEffect(() => {
+    if (!assistTabs.some(([key]) => key === activeRightTab)) {
+      setActiveRightTab('scenes');
+    }
+  }, [activeRightTab]);
 
   function markChanged() {
     setHasUnsavedChanges(true);
@@ -264,7 +269,7 @@ export default function SortWorkspacePage() {
     } else if (event.ctrlKey || event.metaKey) {
       setSelectedIds((current) => current.includes(photo.id) ? current.filter((id) => id !== photo.id) : [...current, photo.id]);
     } else {
-      setSelectedIds([photo.id]);
+      setSelectedIds((current) => current.includes(photo.id) ? current.filter((id) => id !== photo.id) : [photo.id]);
     }
     setLastClickedId(photo.id);
   }
@@ -410,7 +415,7 @@ export default function SortWorkspacePage() {
     }
     const savedAt = new Date().toISOString();
     const payload = {
-      version: '1.3.1',
+      version: '1.3.2',
       savedAt,
       photoFolder,
       archiveRoot,
@@ -426,12 +431,12 @@ export default function SortWorkspacePage() {
     if (result?.success) {
       setLastDraftSavedAt(savedAt);
       setHasUnsavedChanges(false);
-      setStatus({ type: 'success', text: '分拣草稿已保存。' });
+      setStatus({ type: 'success', text: '分拣进度已保存。' });
     }
   }
 
   async function loadDraft() {
-    if (hasUnsavedChanges && !window.confirm('当前分拣内容尚未保存，加载草稿将覆盖当前页面状态。是否继续？')) {
+    if (hasUnsavedChanges && !window.confirm('当前分拣进度尚未保存，恢复已保存进度将覆盖当前页面状态。是否继续？')) {
       return;
     }
     const result = await window.archiveAssistant.loadSortDraft();
@@ -444,6 +449,7 @@ export default function SortWorkspacePage() {
         previewUrl: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
         thumbnailPath: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
         originalMissing: !exists,
+        missingSortStatus: exists ? undefined : photo.sortStatus,
         sortStatus: exists ? photo.sortStatus : 'failed'
       };
     }));
@@ -451,7 +457,7 @@ export default function SortWorkspacePage() {
     setArchiveRoot(result.draft.archiveRoot || '');
     setFilter(result.draft.filter || 'all');
     setActiveGroup(result.draft.activeGroup || 'all');
-    setThumbSize(result.draft.thumbSize || 'medium');
+    setThumbSize(normalizeThumbSize(result.draft.thumbSize));
     setSortMode(result.draft.sortMode || 'timeAsc');
     setPageSize(result.draft.pageSize || 50);
     setPhotos(loadedPhotos);
@@ -460,7 +466,54 @@ export default function SortWorkspacePage() {
     setEditingPhotoId('');
     setLastDraftSavedAt(result.draft.savedAt || '');
     setHasUnsavedChanges(false);
-    setStatus({ type: 'success', text: `分拣草稿已加载。共 ${loadedPhotos.length} 张照片。${loadedPhotos.some((photo) => photo.originalMissing) ? '存在原图缺失记录，请核对。' : ''}` });
+    const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
+    setStatus({ type: missingCount ? 'warning' : 'success', text: `分拣进度已恢复，共 ${loadedPhotos.length} 张照片。${missingCount ? `其中 ${missingCount} 张原图缺失，请核对。` : ''}` });
+  }
+
+  async function relocateMissingPhotos() {
+    const missingPhotos = photos.filter((photo) => photo.originalMissing);
+    if (missingPhotos.length === 0) {
+      setStatus({ type: 'idle', text: '当前没有原图缺失记录。' });
+      return;
+    }
+    const selected = await window.archiveAssistant.selectPhotoFolder();
+    if (!selected) return;
+    setIsBusy(true);
+    try {
+      const scanned = await window.archiveAssistant.scanImages(selected);
+      const available = [...scanned];
+      let restoredCount = 0;
+      const restored = photos.map((photo) => {
+        if (!photo.originalMissing) return photo;
+        const matchIndex = findBestPhotoMatch(photo, available);
+        if (matchIndex < 0) return photo;
+        const matched = available.splice(matchIndex, 1)[0];
+        restoredCount += 1;
+        return {
+          ...photo,
+          originalPath: matched.path,
+          originalName: matched.name,
+          extension: matched.extension,
+          size: matched.size,
+          modifiedAt: matched.modifiedAt,
+          thumbnailPath: matched.previewUrl,
+          previewUrl: matched.previewUrl,
+          originalMissing: false,
+          sortStatus: photo.missingSortStatus || photo.sortStatus,
+          missingSortStatus: undefined
+        };
+      });
+      setPhotos(restored);
+      setPhotoFolder(selected);
+      const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
+      setSettings(nextSettings);
+      markChanged();
+      setStatus({ type: restoredCount === missingPhotos.length ? 'success' : 'warning', text: `已重新匹配 ${restoredCount} 张照片，仍有 ${missingPhotos.length - restoredCount} 张原图缺失。` });
+    } catch (error) {
+      setStatus({ type: 'error', text: `重新定位照片文件夹失败：${error.message}` });
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   async function buildSortPreview() {
@@ -475,6 +528,11 @@ export default function SortWorkspacePage() {
     const assigned = photos.filter((photo) => photo.sortStatus === 'assigned' && photo.archiveInfo);
     if (assigned.length === 0) {
       setStatus({ type: 'error', text: '当前没有已分拣照片，无法生成归档预览。' });
+      return;
+    }
+    const missingAssigned = assigned.filter((photo) => photo.originalMissing);
+    if (missingAssigned.length > 0) {
+      setStatus({ type: 'error', text: `存在 ${missingAssigned.length} 张原图缺失的已分拣照片，无法生成归档预览。请重新定位照片文件夹或清除相关记录。` });
       return;
     }
     const invalidPhotos = assigned.filter((photo) => validateSortForm({ ...defaultForm, ...photo.archiveInfo }).length > 0);
@@ -513,6 +571,11 @@ export default function SortWorkspacePage() {
   function requestArchive() {
     if (previewPhotos.length === 0) {
       setStatus({ type: 'error', text: '请先生成分拣归档预览。' });
+      return;
+    }
+    const missingPreview = previewPhotos.filter((photo) => photo.originalMissing);
+    if (missingPreview.length > 0) {
+      setStatus({ type: 'error', text: `存在 ${missingPreview.length} 张原图缺失照片，无法确认归档。请重新定位照片文件夹后再操作。` });
       return;
     }
     setShowConfirm(true);
@@ -580,10 +643,11 @@ export default function SortWorkspacePage() {
           <div className="sort-action-group maintenance-group">
             <button type="button" disabled={!photoFolder || isBusy} onClick={() => scanPhotos(false)}>重新扫描</button>
             <button type="button" onClick={clearList}>清空列表</button>
-            <button type="button" onClick={saveDraft}>保存草稿</button>
-            <button type="button" onClick={loadDraft}>加载草稿</button>
+            <button type="button" onClick={saveDraft}>保存进度</button>
+            <button type="button" onClick={loadDraft}>恢复进度</button>
+            {missingOriginalCount > 0 && <button type="button" onClick={relocateMissingPhotos}>重新定位照片文件夹</button>}
           </div>
-          <span className="sort-draft-chip">{lastDraftSavedAt ? `最近草稿：${formatDateTime(lastDraftSavedAt)}` : '暂无草稿'}</span>
+          <span className="sort-draft-chip">{lastDraftSavedAt ? `最近保存：${formatDateTime(lastDraftSavedAt)}` : '暂无保存进度'}</span>
         </div>
       </section>
 
@@ -633,11 +697,10 @@ export default function SortWorkspacePage() {
               ))}
             </div>
             <label className="sort-thumb-control">
-              <span>缩略图大小</span>
+              <span>缩略图</span>
               <select value={thumbSize} onChange={(event) => setThumbSize(event.target.value)}>
-                <option value="small">小</option>
-                <option value="medium">中</option>
-                <option value="large">大</option>
+                <option value="standard">标准</option>
+                <option value="large">大图</option>
               </select>
             </label>
             <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} aria-label="排序方式">
@@ -659,7 +722,7 @@ export default function SortWorkspacePage() {
             <button type="button" onClick={markIgnored}>标记忽略</button>
             <button type="button" onClick={cancelIgnored}>取消忽略</button>
             <span>已选择 <strong>{selectedIds.length}</strong> 张</span>
-            <small className="sort-selection-help">单击选择；Ctrl+单击多选/取消；Shift+单击连续选择。</small>
+            <small className="sort-selection-help">单击选择/取消；Ctrl+单击多选；Shift+单击连续选择。</small>
           </div>
 
           <div className={`sort-photo-browser ${viewMode} thumb-${thumbSize}`}>
@@ -749,18 +812,24 @@ export default function SortWorkspacePage() {
                   {suggestedKeywords.length === 0 && <span className="muted">填写位置/事项后会出现更多推荐关键词。</span>}
                 </div>
               )}
-              {activeRightTab === 'templates' && remarkTemplates.map((template) => (
-                <button type="button" className="sort-template-card" key={template} onClick={() => updateForm({ remark: fillTemplate(template, form) })}>{fillTemplate(template, form)}</button>
-              ))}
             </div>
           </div>
 
           <div className="sort-main-actions">
-            {editingPhoto && <button type="button" className="primary sort-save-current-button" onClick={saveCurrentPhotoInfo}>保存到当前照片</button>}
-            <button type="button" className="primary sort-apply-button" onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用到选中照片（{selectedIds.length}）</button>
-            <button type="button" className="sort-secondary-action" onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除归档信息（{selectedIds.length}）</button>
-            <button type="button" className="sort-secondary-action" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>生成归档预览</button>
-            <button type="button" className="primary orange" onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>确认归档（{previewPhotos.length}）</button>
+            <section className="sort-action-section">
+              <h3>当前照片</h3>
+              <button type="button" className="sort-secondary-action" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑当前照片</button>
+              <button type="button" className="primary sort-save-current-button" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存到当前照片</button>
+            </section>
+            <section className="sort-action-section batch">
+              <h3>批量操作</h3>
+              <button type="button" className="primary sort-apply-button" onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用到选中照片（{selectedIds.length}）</button>
+              <div className="sort-action-row">
+                <button type="button" className="sort-secondary-action" onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除归档信息（{selectedIds.length}）</button>
+                <button type="button" className="sort-secondary-action" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>生成归档预览</button>
+              </div>
+              <button type="button" className="primary orange" onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>确认归档（{previewPhotos.length}）</button>
+            </section>
             <p className={`sort-right-tip ${status.type}`}>{status.text}</p>
           </div>
         </aside>
@@ -806,15 +875,24 @@ function SortSection({ title, action, children, scrollable = false }) {
 }
 
 function PhotoCard({ photo, selected, onClick }) {
+  const gridSummary = buildGridPhotoSummary(photo);
+  const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
   return (
     <button type="button" className={`sort-photo-card ${selected ? 'selected' : ''}`} onClick={onClick} title={photo.originalPath}>
       <div className="sort-thumb-wrap">
-        <img src={photo.previewUrl} alt={photo.originalName} />
+        {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <img src={photo.previewUrl} alt={photo.originalName} />}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
         {selected && <span className="sort-check">✓</span>}
       </div>
       <strong>{photo.originalName}</strong>
       <span>{formatDateTime(photo.modifiedAt)}</span>
+      {gridSummary && (
+        <p className="sort-grid-summary" title={gridSummary.full}>
+          <b>{gridSummary.main}</b>
+          {gridSummary.sub && <small>{gridSummary.sub}</small>}
+        </p>
+      )}
+      {newName && <p className="sort-grid-new-name" title={newName}>新名：{newName}</p>}
       <footer>
         <StatusBadge status={photo.sortStatus} missing={photo.originalMissing} />
         <small>{formatFileSize(photo.size)}</small>
@@ -831,12 +909,16 @@ function PhotoDetail({ photo, selectedCount, onEdit }) {
   return (
     <section className="sort-detail-card">
       <h2>照片详情</h2>
-      {selectedCount === 1 ? <img src={photo.previewUrl} alt={photo.originalName} /> : <div className="sort-multi-selected">已选择 {selectedCount} 张照片，可批量应用右侧归档信息。</div>}
+      {selectedCount === 1
+        ? (photo.originalMissing ? <div className="sort-missing-detail">原始照片文件未找到。<br />请点击“重新定位照片文件夹”尝试恢复。</div> : <img src={photo.previewUrl} alt={photo.originalName} />)
+        : <div className="sort-multi-selected">已选择 {selectedCount} 张照片，可批量应用右侧归档信息。</div>}
       <dl>
         <div><dt>文件名</dt><dd title={photo.originalName}>{photo.originalName}</dd></div>
         <div><dt>时间</dt><dd>{formatDateTime(photo.modifiedAt)}</dd></div>
         <div><dt>大小</dt><dd>{formatFileSize(photo.size)}</dd></div>
         <div><dt>当前状态</dt><dd><StatusBadge status={photo.sortStatus} missing={photo.originalMissing} /></dd></div>
+        {photo.originalMissing && <div><dt>缺失说明</dt><dd>原始照片文件未找到，可能已被移动、删除或来源目录已变更。请点击“重新定位照片文件夹”尝试恢复。</dd></div>}
+        {photo.previewInfo && <div><dt>新文件名</dt><dd title={photo.previewInfo.newName || photo.previewInfo.newFileName || photo.previewInfo.targetName || '-'}>{photo.previewInfo.newName || photo.previewInfo.newFileName || photo.previewInfo.targetName || '-'}</dd></div>}
         <div><dt>所属分组</dt><dd title={getPhotoGroupName(photo)}>{getPhotoGroupName(photo)}</dd></div>
         <div><dt>是否已分拣</dt><dd>{info ? '已应用归档信息' : '未分拣'}</dd></div>
       </dl>
@@ -1034,6 +1116,51 @@ function getFilterCount(key, photos, selectedIds) {
 
 function getPhotoGroupName(photo) {
   return photo.archiveInfo?.itemName || photo.archiveInfo?.workContent || '未分组';
+}
+
+function buildGridPhotoSummary(photo) {
+  if (photo.originalMissing) {
+    return { main: '原图缺失', sub: '请重新定位照片文件夹', full: '原图缺失，请重新定位照片文件夹后再预览或归档。' };
+  }
+  const info = photo.archiveInfo;
+  if (!info) return null;
+  const workContent = info.workContent || info.itemName || info.workItem || '已分拣';
+  const location = info.location || '现场';
+  const stage = info.photoStage || '';
+  const sub = [location, stage].filter(Boolean).join(' · ');
+  return {
+    main: workContent,
+    sub,
+    full: [workContent, location, stage, info.processStatus].filter(Boolean).join(' / ')
+  };
+}
+
+function normalizeThumbSize(value) {
+  if (value === 'large') return 'large';
+  return 'standard';
+}
+
+function findBestPhotoMatch(photo, candidates) {
+  const originalName = getBaseName(photo.originalName || photo.originalPath);
+  let index = candidates.findIndex((candidate) => candidate.name === originalName && Number(candidate.size) === Number(photo.size));
+  if (index >= 0) return index;
+  const originalTime = new Date(photo.modifiedAt).getTime();
+  if (!Number.isNaN(originalTime)) {
+    index = candidates.findIndex((candidate) => {
+      if (candidate.name !== originalName) return false;
+      const candidateTime = new Date(candidate.modifiedAt).getTime();
+      return !Number.isNaN(candidateTime) && Math.abs(candidateTime - originalTime) <= 60 * 1000;
+    });
+    if (index >= 0) return index;
+  }
+  const sameName = candidates
+    .map((candidate, candidateIndex) => ({ candidate, candidateIndex }))
+    .filter(({ candidate }) => candidate.name === originalName);
+  return sameName.length === 1 ? sameName[0].candidateIndex : -1;
+}
+
+function getBaseName(value) {
+  return String(value || '').split(/[\\/]/).pop();
 }
 
 function formatDateTime(value) {

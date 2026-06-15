@@ -80,7 +80,7 @@ async function setDefaultArchiveRoot(documentsPath, folderPath) {
 }
 
 async function validatePathExists(targetPath) {
-  return Boolean(targetPath && fsSync.existsSync(targetPath) && fsSync.statSync(targetPath).isDirectory());
+  return Boolean(targetPath && fsSync.existsSync(targetPath));
 }
 
 function normalizeSettings(settings) {
