@@ -23,6 +23,25 @@ const FIELD_ALIASES = {
   originalPath: ['原始文件路径', '原图路径', '来源路径']
 };
 
+const EXPORT_HEADERS = [
+  ['date', '日期'],
+  ['project', '项目'],
+  ['department', '部门'],
+  ['photoSource', '照片来源'],
+  ['watermarkCategory', '水印分类'],
+  ['workContent', '工作内容'],
+  ['location', '位置/区域'],
+  ['itemName', '事项名称'],
+  ['photoStage', '照片阶段'],
+  ['processStatus', '处理状态'],
+  ['keywords', '关键词'],
+  ['remark', '备注'],
+  ['originalName', '原文件名'],
+  ['newFileName', '新文件名'],
+  ['archivePath', '归档文件路径'],
+  ['fileStatus', '文件状态']
+];
+
 async function loadLedgerRecords(archiveRoot) {
   if (!archiveRoot) {
     throw new Error('请先选择归档根目录');
@@ -103,4 +122,17 @@ function normalizeDate(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-module.exports = { loadLedgerRecords };
+async function exportLedgerRecords(filePath, records = []) {
+  const rows = [
+    EXPORT_HEADERS.map(([, header]) => header),
+    ...records.map((record) => EXPORT_HEADERS.map(([field]) => record[field] || ''))
+  ];
+  const workbook = XLSX.utils.book_new();
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet['!cols'] = EXPORT_HEADERS.map(([, header]) => ({ wch: Math.max(header.length + 8, 16) }));
+  XLSX.utils.book_append_sheet(workbook, sheet, '归档记录查询结果');
+  XLSX.writeFile(workbook, filePath);
+  return { success: true, filePath };
+}
+
+module.exports = { loadLedgerRecords, exportLedgerRecords };

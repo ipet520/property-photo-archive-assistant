@@ -4310,14 +4310,14 @@ body,
 
 .archive-records-page {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
 }
 
 .archive-query-toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto auto auto minmax(220px, 0.8fr);
+  grid-template-columns: minmax(260px, 1fr) auto auto auto auto minmax(220px, 0.8fr);
   gap: 10px;
   align-items: center;
   padding: 12px;
@@ -4404,6 +4404,14 @@ body,
   background: #fff8f1;
 }
 
+.archive-missing-banner {
+  border: 1px solid #f4c7a5;
+  border-radius: 12px;
+  padding: 9px 12px;
+  color: #8a5400;
+  background: #fff8f1;
+}
+
 .archive-query-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
@@ -4426,8 +4434,35 @@ body,
 
 .archive-filters {
   display: grid;
+  gap: 8px;
+}
+
+.archive-filter-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.archive-filter-heading strong {
+  color: var(--navy);
+}
+
+.archive-filter-heading div {
+  display: flex;
+  gap: 8px;
+}
+
+.archive-filter-grid {
+  display: grid;
   grid-template-columns: repeat(7, minmax(120px, 1fr));
   gap: 8px;
+}
+
+.archive-filter-grid.more {
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  border-top: 1px dashed #dbe6f3;
+  padding-top: 8px;
 }
 
 .archive-filters label {
@@ -4482,7 +4517,7 @@ body,
 }
 
 .archive-results-table {
-  width: max(1200px, 100%);
+  width: max(1040px, 100%);
   border-collapse: collapse;
   background: #fff;
 }
@@ -4582,7 +4617,8 @@ body,
 }
 
 .archive-missing-preview {
-  display: flex;
+  display: grid;
+  gap: 8px;
   align-items: center;
   justify-content: center;
   padding: 18px;
@@ -4594,7 +4630,7 @@ body,
 
 .archive-detail-actions {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 

@@ -4,7 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
-const { loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
+const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const {
   loadConfigs,
   loadUserConfigs,
@@ -298,6 +298,22 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
 });
 
 ipcMain.handle('ledger:loadRecords', async (_event, archiveRoot) => loadLedgerRecords(archiveRoot));
+
+ipcMain.handle('ledger:exportRecords', async (_event, records) => {
+  if (!Array.isArray(records) || records.length === 0) {
+    return { success: false, message: '当前没有可导出的记录' };
+  }
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const result = await dialog.showSaveDialog({
+    title: '导出当前筛选结果',
+    defaultPath: path.join(app.getPath('documents'), `归档记录查询结果_${timestamp}.xlsx`),
+    filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  return exportLedgerRecords(result.filePath, records);
+});
 
 ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {
   if (!targetPath || !fs.existsSync(targetPath)) return { success: false, message: '文件不存在' };

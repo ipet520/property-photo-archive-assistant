@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   copyText: (text) => ipcRenderer.invoke('system:copyText', text),
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
   loadLedgerRecords: (archiveRoot) => ipcRenderer.invoke('ledger:loadRecords', archiveRoot),
+  exportLedgerRecords: (records) => ipcRenderer.invoke('ledger:exportRecords', records),
   saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
   loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')

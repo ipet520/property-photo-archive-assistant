@@ -26,6 +26,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
   const [selectedId, setSelectedId] = useState('');
   const [status, setStatus] = useState({ type: 'idle', text: '请选择归档根目录并加载照片归档台账。' });
   const [isLoading, setIsLoading] = useState(false);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortDirection, setSortDirection] = useState('desc');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -124,6 +125,38 @@ export default function ArchiveRecordsPage({ archiveState }) {
       : { type: 'error', text: '复制文件路径失败。' });
   }
 
+  async function copySummary(record) {
+    if (!record) return;
+    const summary = [
+      `日期：${record.date || '-'}`,
+      `项目：${record.project || '-'}`,
+      `水印分类：${record.watermarkCategory || '-'}`,
+      `工作内容：${record.workContent || '-'}`,
+      `位置/区域：${record.location || '-'}`,
+      `照片阶段：${record.photoStage || '-'}`,
+      `处理状态：${record.processStatus || '-'}`,
+      `关键词：${record.keywords || '-'}`,
+      `新文件名：${record.newFileName || '-'}`,
+      `文件路径：${record.archivePath || '-'}`
+    ].join('\n');
+    const result = await window.archiveAssistant.copyText(summary);
+    setStatus(result?.success
+      ? { type: 'success', text: '已复制记录摘要。' }
+      : { type: 'error', text: '复制记录摘要失败。' });
+  }
+
+  async function exportResults() {
+    if (filteredRecords.length === 0) {
+      setStatus({ type: 'error', text: '当前没有可导出的记录。' });
+      return;
+    }
+    const result = await window.archiveAssistant.exportLedgerRecords(filteredRecords);
+    if (result?.canceled) return;
+    setStatus(result?.success
+      ? { type: 'success', text: `导出成功：${result.filePath}` }
+      : { type: 'error', text: `导出失败：${result?.message || '未知错误'}` });
+  }
+
   return (
     <div className="archive-records-page">
       <section className="archive-query-toolbar panel">
@@ -134,6 +167,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
         <button type="button" className="primary" onClick={chooseArchiveRoot}>选择归档根目录</button>
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
+        <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
         <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载台账'}</span>
       </section>
 
@@ -143,24 +177,41 @@ export default function ArchiveRecordsPage({ archiveState }) {
         <StatCard label="文件存在" value={existsCount} />
         <StatCard label="文件缺失" value={missingCount} tone={missingCount ? 'warning' : ''} />
       </section>
+      {missingCount > 0 && (
+        <div className="archive-missing-banner">
+          当前筛选结果中有 {missingCount} 条文件缺失，可能是照片被移动、删除或归档目录发生变化。
+        </div>
+      )}
 
       <div className="archive-query-layout">
         <main className="archive-query-main panel">
           <section className="archive-filters">
-            <FilterSelect label="项目" value={filters.project} options={options.project} onChange={(value) => updateFilter('project', value)} />
-            <FilterSelect label="部门" value={filters.department} options={options.department} onChange={(value) => updateFilter('department', value)} />
-            <FilterSelect label="照片来源" value={filters.photoSource} options={options.photoSource} onChange={(value) => updateFilter('photoSource', value)} />
-            <FilterSelect label="水印分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
-            <FilterSelect label="工作内容" value={filters.workContent} options={options.workContent} onChange={(value) => updateFilter('workContent', value)} />
-            <FilterSelect label="照片阶段" value={filters.photoStage} options={options.photoStage} onChange={(value) => updateFilter('photoStage', value)} />
-            <FilterSelect label="处理状态" value={filters.processStatus} options={options.processStatus} onChange={(value) => updateFilter('processStatus', value)} />
-            <InputFilter label="开始日期" type="date" value={filters.startDate} onChange={(value) => updateFilter('startDate', value)} />
-            <InputFilter label="结束日期" type="date" value={filters.endDate} onChange={(value) => updateFilter('endDate', value)} />
-            <InputFilter label="关键词" value={filters.keyword} onChange={(value) => updateFilter('keyword', value)} />
-            <InputFilter label="位置/区域" value={filters.location} onChange={(value) => updateFilter('location', value)} />
-            <InputFilter label="文件名" value={filters.fileName} onChange={(value) => updateFilter('fileName', value)} />
-            <InputFilter label="备注" value={filters.remark} onChange={(value) => updateFilter('remark', value)} />
-            <button type="button" onClick={() => { setFilters(defaultFilters); setPage(1); }}>重置筛选</button>
+            <header className="archive-filter-heading">
+              <strong>常用筛选</strong>
+              <div>
+                <button type="button" onClick={() => setShowMoreFilters((value) => !value)}>{showMoreFilters ? '收起更多筛选' : '展开更多筛选'}</button>
+                <button type="button" onClick={() => { setFilters(defaultFilters); setPage(1); }}>重置筛选</button>
+              </div>
+            </header>
+            <div className="archive-filter-grid common">
+              <FilterSelect label="项目" value={filters.project} options={options.project} onChange={(value) => updateFilter('project', value)} />
+              <FilterSelect label="水印分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
+              <FilterSelect label="工作内容" value={filters.workContent} options={options.workContent} onChange={(value) => updateFilter('workContent', value)} />
+              <InputFilter label="开始日期" type="date" value={filters.startDate} onChange={(value) => updateFilter('startDate', value)} />
+              <InputFilter label="结束日期" type="date" value={filters.endDate} onChange={(value) => updateFilter('endDate', value)} />
+              <InputFilter label="关键词" value={filters.keyword} onChange={(value) => updateFilter('keyword', value)} />
+              <InputFilter label="文件名" value={filters.fileName} onChange={(value) => updateFilter('fileName', value)} />
+            </div>
+            {showMoreFilters && (
+              <div className="archive-filter-grid more">
+                <FilterSelect label="部门" value={filters.department} options={options.department} onChange={(value) => updateFilter('department', value)} />
+                <FilterSelect label="照片来源" value={filters.photoSource} options={options.photoSource} onChange={(value) => updateFilter('photoSource', value)} />
+                <FilterSelect label="照片阶段" value={filters.photoStage} options={options.photoStage} onChange={(value) => updateFilter('photoStage', value)} />
+                <FilterSelect label="处理状态" value={filters.processStatus} options={options.processStatus} onChange={(value) => updateFilter('processStatus', value)} />
+                <InputFilter label="位置/区域" value={filters.location} onChange={(value) => updateFilter('location', value)} />
+                <InputFilter label="备注" value={filters.remark} onChange={(value) => updateFilter('remark', value)} />
+              </div>
+            )}
           </section>
 
           <div className={`archive-query-status ${status.type}`}>{status.text}</div>
@@ -171,11 +222,9 @@ export default function ArchiveRecordsPage({ archiveState }) {
                 <tr>
                   <th><button type="button" onClick={() => setSortDirection((value) => value === 'desc' ? 'asc' : 'desc')}>日期 {sortDirection === 'desc' ? '↓' : '↑'}</button></th>
                   <th>项目</th>
-                  <th>部门</th>
                   <th>水印分类</th>
                   <th>工作内容</th>
                   <th>位置/区域</th>
-                  <th>事项名称</th>
                   <th>照片阶段</th>
                   <th>处理状态</th>
                   <th>关键词</th>
@@ -188,11 +237,9 @@ export default function ArchiveRecordsPage({ archiveState }) {
                   <tr key={record.id} className={selectedRecord?.id === record.id ? 'selected' : ''} onClick={() => setSelectedId(record.id)}>
                     <Cell value={record.date} />
                     <Cell value={record.project} />
-                    <Cell value={record.department} />
                     <Cell value={record.watermarkCategory} />
                     <Cell value={record.workContent} />
                     <Cell value={record.location} />
-                    <Cell value={record.itemName} />
                     <Cell value={record.photoStage} />
                     <Cell value={record.processStatus} />
                     <Cell value={record.keywords} />
@@ -201,7 +248,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
                   </tr>
                 ))}
                 {pageRecords.length === 0 && (
-                  <tr><td colSpan="12" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
+                  <tr><td colSpan="10" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
                 )}
               </tbody>
             </table>
@@ -222,13 +269,13 @@ export default function ArchiveRecordsPage({ archiveState }) {
           </footer>
         </main>
 
-        <ArchiveRecordDetail record={selectedRecord} onOpen={openPhoto} onShowFolder={showInFolder} onCopy={copyPath} />
+        <ArchiveRecordDetail record={selectedRecord} onOpen={openPhoto} onShowFolder={showInFolder} onCopy={copyPath} onCopySummary={copySummary} />
       </div>
     </div>
   );
 }
 
-function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy }) {
+function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy, onCopySummary }) {
   if (!record) {
     return <aside className="archive-detail-panel panel archive-empty-detail">请选择一条归档记录查看详情。</aside>;
   }
@@ -238,12 +285,16 @@ function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy }) {
       {record.fileExists ? (
         <img src={record.previewUrl} alt={record.newFileName || record.originalName} />
       ) : (
-        <div className="archive-missing-preview">归档文件未找到，可能已被移动、删除或归档目录发生变化。</div>
+        <div className="archive-missing-preview">
+          <strong>归档文件未找到。</strong>
+          <span>可能原因：照片被移动或删除；归档根目录发生变化；台账记录路径与当前电脑路径不一致。</span>
+        </div>
       )}
       <div className="archive-detail-actions">
         <button type="button" onClick={() => onOpen(record)} disabled={!record.fileExists}>打开照片</button>
         <button type="button" onClick={() => onShowFolder(record)} disabled={!record.fileExists}>打开所在文件夹</button>
         <button type="button" onClick={() => onCopy(record)} disabled={!record.archivePath}>复制文件路径</button>
+        <button type="button" onClick={() => onCopySummary(record)}>复制记录摘要</button>
       </div>
       <dl>
         {[
