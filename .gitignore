@@ -13,3 +13,4 @@ config-backup/
 .DS_Store
 Thumbs.db
 settings.json
+sort-drafts/

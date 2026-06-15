@@ -3927,6 +3927,19 @@ body,
   flex-wrap: wrap;
 }
 
+.sort-draft-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border: 1px solid #dbe5f1;
+  border-radius: 999px;
+  padding: 4px 10px;
+  color: #4f647d;
+  background: #f8fbff;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .sort-action-group.maintenance-group button {
   background: #f8fbff;
   color: #315071;
@@ -4608,6 +4621,57 @@ body,
   white-space: nowrap;
 }
 
+.sort-info-summary {
+  margin-top: 10px;
+  border-top: 1px solid #e6edf6;
+  padding-top: 8px;
+}
+
+.sort-info-summary header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sort-info-summary header strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.sort-info-summary header button {
+  min-height: 28px;
+  border: 1px solid #d6e2f0;
+  border-radius: 9px;
+  padding: 5px 8px;
+  color: var(--navy);
+  background: #fff;
+  box-shadow: none;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sort-info-summary dl {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.sort-info-summary dl div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.sort-unassigned-note {
+  margin: 10px 0 0;
+  border-radius: 10px;
+  padding: 8px;
+  color: #6d7f95;
+  background: #f7faff;
+  font-size: 13px;
+}
+
 .sort-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4767,6 +4831,12 @@ body,
   grid-column: 1 / -1;
   min-height: 40px;
   font-size: 15px;
+}
+
+.sort-main-actions .sort-save-current-button {
+  grid-column: 1 / -1;
+  min-height: 36px;
+  font-size: 14px;
 }
 
 .sort-main-actions .sort-secondary-action {

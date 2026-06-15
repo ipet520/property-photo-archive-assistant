@@ -69,6 +69,9 @@ export default function SortWorkspacePage() {
   const [lastClickedId, setLastClickedId] = useState(null);
   const [activeRightTab, setActiveRightTab] = useState('scenes');
   const [activeSceneTitle, setActiveSceneTitle] = useState('');
+  const [editingPhotoId, setEditingPhotoId] = useState('');
+  const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹并扫描照片。' });
   const [isBusy, setIsBusy] = useState(false);
@@ -130,6 +133,7 @@ export default function SortWorkspacePage() {
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
+  const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -138,6 +142,27 @@ export default function SortWorkspacePage() {
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
   }, []);
+
+  function markChanged() {
+    setHasUnsavedChanges(true);
+  }
+
+  function invalidatePreviewMessage() {
+    return previewPhotos.length > 0 ? '分拣信息已变化，请重新生成归档预览。' : '';
+  }
+
+  function resetPhotoPreview(photo, nextStatus = photo.sortStatus) {
+    return {
+      ...photo,
+      sortStatus: nextStatus,
+      previewInfo: null,
+      archiveResult: null
+    };
+  }
+
+  function clearGeneratedPreview(photo) {
+    return photo.sortStatus === 'previewed' ? resetPhotoPreview(photo, 'assigned') : photo;
+  }
 
   function updateForm(patch, options = {}) {
     setForm((current) => {
@@ -165,10 +190,15 @@ export default function SortWorkspacePage() {
   async function selectArchiveRoot() {
     const selected = await window.archiveAssistant.selectArchiveRoot();
     if (!selected) return;
+    const hadPreview = previewPhotos.length > 0;
     setArchiveRoot(selected);
     const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
     setSettings(nextSettings);
-    setStatus({ type: 'success', text: '归档根目录已选择，分拣预览和台账将写入该目录。' });
+    if (hadPreview) {
+      setPhotos((current) => current.map(clearGeneratedPreview));
+    }
+    markChanged();
+    setStatus({ type: hadPreview ? 'warning' : 'success', text: hadPreview ? '归档根目录已变更，分拣信息已变化，请重新生成归档预览。' : '归档根目录已选择，分拣预览和台账将写入该目录。' });
   }
 
   async function scanPhotos(force = false) {
@@ -202,6 +232,8 @@ export default function SortWorkspacePage() {
       setPage(1);
       setFilter('all');
       setActiveGroup('all');
+      setEditingPhotoId('');
+      markChanged();
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张照片。` });
     } catch (error) {
       setStatus({ type: 'error', text: `扫描失败：${error.message}` });
@@ -217,6 +249,8 @@ export default function SortWorkspacePage() {
     setSelectedIds([]);
     setPage(1);
     setActiveGroup('all');
+    setEditingPhotoId('');
+    markChanged();
     setStatus({ type: 'success', text: '已清空当前分拣列表，原始照片未受影响。' });
   }
 
@@ -260,17 +294,23 @@ export default function SortWorkspacePage() {
       setStatus({ type: 'error', text: '请先选择需要标记忽略的照片。' });
       return;
     }
-    setPhotos((current) => current.map((photo) => selectedIds.includes(photo.id)
-      ? { ...photo, sortStatus: 'ignored', previewInfo: null, archiveResult: null }
-      : photo));
-    setStatus({ type: 'success', text: `已标记忽略 ${selectedIds.length} 张照片，原图未受影响。` });
+    const invalidTip = invalidatePreviewMessage();
+    setPhotos((current) => current.map((photo) => {
+      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'ignored', previewInfo: null, archiveResult: null };
+      return invalidTip ? clearGeneratedPreview(photo) : photo;
+    }));
+    markChanged();
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已标记忽略 ${selectedIds.length} 张照片，原图未受影响。${invalidTip}` });
   }
 
   function cancelIgnored() {
-    setPhotos((current) => current.map((photo) => selectedIds.includes(photo.id) && photo.sortStatus === 'ignored'
-      ? { ...photo, sortStatus: 'unassigned' }
-      : photo));
-    setStatus({ type: 'success', text: '已取消选中照片的忽略状态。' });
+    const invalidTip = invalidatePreviewMessage();
+    setPhotos((current) => current.map((photo) => {
+      if (selectedIds.includes(photo.id) && photo.sortStatus === 'ignored') return { ...photo, sortStatus: 'unassigned' };
+      return invalidTip ? clearGeneratedPreview(photo) : photo;
+    }));
+    markChanged();
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已取消选中照片的忽略状态。${invalidTip}` });
   }
 
   function applyInfoToSelected() {
@@ -283,11 +323,52 @@ export default function SortWorkspacePage() {
       setStatus({ type: 'error', text: `请补全必填项：${missing.join('、')}` });
       return;
     }
+    const alreadyAssignedCount = selectedPhotos.filter((photo) => photo.archiveInfo || photo.sortStatus === 'assigned' || photo.sortStatus === 'previewed').length;
+    if (alreadyAssignedCount > 0 && !window.confirm(`当前选中照片中已有 ${alreadyAssignedCount} 张已分拣照片，继续操作将覆盖这些照片的归档信息。是否继续？`)) {
+      return;
+    }
+    const invalidTip = invalidatePreviewMessage();
     const archiveInfo = normalizeArchiveInfo(form);
-    setPhotos((current) => current.map((photo) => selectedIds.includes(photo.id)
-      ? { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null }
-      : photo));
-    setStatus({ type: 'success', text: `已将归档信息应用到 ${selectedIds.length} 张照片。` });
+    setPhotos((current) => current.map((photo) => {
+      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null };
+      return invalidTip ? clearGeneratedPreview(photo) : photo;
+    }));
+    markChanged();
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已将归档信息应用到 ${selectedIds.length} 张照片。${invalidTip}` });
+  }
+
+  function editCurrentPhotoInfo() {
+    if (!primaryPhoto?.archiveInfo) return;
+    setEditingPhotoId(primaryPhoto.id);
+    setForm(reconcileForm({
+      ...defaultForm,
+      ...primaryPhoto.archiveInfo,
+      itemName: primaryPhoto.archiveInfo.itemName || primaryPhoto.archiveInfo.workItem || '',
+      workContent: primaryPhoto.archiveInfo.workContent || '',
+      location: primaryPhoto.archiveInfo.location || ''
+    }, configs));
+    setStatus({ type: 'idle', text: `已载入当前照片的归档信息，可修改后保存到当前照片。` });
+  }
+
+  function saveCurrentPhotoInfo() {
+    if (!editingPhoto) {
+      setStatus({ type: 'error', text: '请先选择要编辑的已分拣照片。' });
+      return;
+    }
+    const missing = validateSortForm(form);
+    if (missing.length) {
+      setStatus({ type: 'error', text: `请补全必填项：${missing.join('、')}` });
+      return;
+    }
+    const invalidTip = invalidatePreviewMessage();
+    const archiveInfo = normalizeArchiveInfo(form);
+    setPhotos((current) => current.map((photo) => {
+      if (photo.id === editingPhoto.id) return { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null };
+      return invalidTip ? clearGeneratedPreview(photo) : photo;
+    }));
+    setEditingPhotoId('');
+    markChanged();
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `当前照片归档信息已修改。${invalidTip || '仅当前照片被更新。'}` });
   }
 
   function clearSelectedInfo() {
@@ -295,11 +376,15 @@ export default function SortWorkspacePage() {
       setStatus({ type: 'error', text: '请先选择照片。' });
       return;
     }
-    if (!window.confirm('仅清除选中照片的分拣信息，不会删除原始照片。确定继续吗？')) return;
-    setPhotos((current) => current.map((photo) => selectedIds.includes(photo.id)
-      ? { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null }
-      : photo));
-    setStatus({ type: 'success', text: `已清除 ${selectedIds.length} 张照片的分拣信息。` });
+    if (!window.confirm('确定要清除选中照片的归档信息吗？\n\n仅清除软件内的分拣信息。\n不会删除原始照片。\n不会移动原始照片。\n不会删除已归档文件。\n清除后这些照片将恢复为未分拣状态。')) return;
+    const invalidTip = invalidatePreviewMessage();
+    setPhotos((current) => current.map((photo) => {
+      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null };
+      return invalidTip ? clearGeneratedPreview(photo) : photo;
+    }));
+    setEditingPhotoId((current) => selectedIds.includes(current) ? '' : current);
+    markChanged();
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已清除 ${selectedIds.length} 张照片的归档信息，原始照片未受影响。${invalidTip}` });
   }
 
   function applyScene(scene) {
@@ -319,20 +404,36 @@ export default function SortWorkspacePage() {
   }
 
   async function saveDraft() {
+    if (photos.length === 0) {
+      setStatus({ type: 'error', text: '当前没有可保存的分拣内容。' });
+      return;
+    }
+    const savedAt = new Date().toISOString();
     const payload = {
-      version: '1.3.0',
-      savedAt: new Date().toISOString(),
+      version: '1.3.1',
+      savedAt,
       photoFolder,
       archiveRoot,
       filter,
+      activeGroup,
+      selectedIds,
+      sortMode,
       thumbSize,
+      pageSize,
       photos: photos.map(({ previewUrl, thumbnailPath, ...photo }) => photo)
     };
     const result = await window.archiveAssistant.saveSortDraft(payload);
-    if (result?.success) setStatus({ type: 'success', text: `分拣草稿已保存：${result.filePath}` });
+    if (result?.success) {
+      setLastDraftSavedAt(savedAt);
+      setHasUnsavedChanges(false);
+      setStatus({ type: 'success', text: '分拣草稿已保存。' });
+    }
   }
 
   async function loadDraft() {
+    if (hasUnsavedChanges && !window.confirm('当前分拣内容尚未保存，加载草稿将覆盖当前页面状态。是否继续？')) {
+      return;
+    }
     const result = await window.archiveAssistant.loadSortDraft();
     if (!result?.success || !result.draft) return;
     const loadedPhotos = await Promise.all((result.draft.photos || []).map(async (photo, index) => {
@@ -349,26 +450,37 @@ export default function SortWorkspacePage() {
     setPhotoFolder(result.draft.photoFolder || '');
     setArchiveRoot(result.draft.archiveRoot || '');
     setFilter(result.draft.filter || 'all');
-    setActiveGroup('all');
+    setActiveGroup(result.draft.activeGroup || 'all');
     setThumbSize(result.draft.thumbSize || 'medium');
+    setSortMode(result.draft.sortMode || 'timeAsc');
+    setPageSize(result.draft.pageSize || 50);
     setPhotos(loadedPhotos);
-    setSelectedIds([]);
+    setSelectedIds((result.draft.selectedIds || []).filter((id) => loadedPhotos.some((photo) => photo.id === id)));
     setPage(1);
-    setStatus({ type: 'success', text: `已加载分拣草稿，共 ${loadedPhotos.length} 张照片。${loadedPhotos.some((photo) => photo.originalMissing) ? '存在原图缺失记录，请核对。' : ''}` });
+    setEditingPhotoId('');
+    setLastDraftSavedAt(result.draft.savedAt || '');
+    setHasUnsavedChanges(false);
+    setStatus({ type: 'success', text: `分拣草稿已加载。共 ${loadedPhotos.length} 张照片。${loadedPhotos.some((photo) => photo.originalMissing) ? '存在原图缺失记录，请核对。' : ''}` });
   }
 
   async function buildSortPreview() {
+    if (photos.length === 0) {
+      setStatus({ type: 'error', text: '当前没有照片，无法生成归档预览。' });
+      return;
+    }
     if (!archiveRoot) {
       setStatus({ type: 'error', text: '请先选择归档根目录。' });
       return;
     }
     const assigned = photos.filter((photo) => photo.sortStatus === 'assigned' && photo.archiveInfo);
     if (assigned.length === 0) {
-      setStatus({ type: 'error', text: '暂无已分拣照片，请先选择照片并应用归档信息。' });
+      setStatus({ type: 'error', text: '当前没有已分拣照片，无法生成归档预览。' });
       return;
     }
-    if (unassignedCount > 0) {
-      setStatus({ type: 'warning', text: `当前还有 ${unassignedCount} 张照片未分拣，本次只为已分拣照片生成归档预览。` });
+    const invalidPhotos = assigned.filter((photo) => validateSortForm({ ...defaultForm, ...photo.archiveInfo }).length > 0);
+    if (invalidPhotos.length > 0) {
+      setStatus({ type: 'error', text: `有 ${invalidPhotos.length} 张已分拣照片缺少必填字段，请编辑补全后再生成预览。` });
+      return;
     }
     setIsBusy(true);
     try {
@@ -389,7 +501,8 @@ export default function SortWorkspacePage() {
       setPhotos((current) => current.map((photo) => previewMap.has(photo.id)
         ? { ...photo, sortStatus: 'previewed', previewInfo: previewMap.get(photo.id), archiveResult: null }
         : photo));
-      setStatus({ type: 'success', text: `已生成 ${preview.length} 张已分拣照片的归档预览，未分拣和已忽略照片不会参与。` });
+      setHasUnsavedChanges(true);
+      setStatus({ type: (unassignedCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${preview.length} 张照片的归档预览。未分拣 ${unassignedCount} 张，已忽略 ${ignoredCount} 张未纳入预览。` });
     } catch (error) {
       setStatus({ type: 'error', text: `生成分拣归档预览失败：${error.message}` });
     } finally {
@@ -419,6 +532,7 @@ export default function SortWorkspacePage() {
       setShowConfirm(false);
       setFilter('archived');
       setPage(1);
+      setHasUnsavedChanges(true);
       setStatus({
         type: result.success ? 'success' : 'warning',
         text: result.success
@@ -469,6 +583,7 @@ export default function SortWorkspacePage() {
             <button type="button" onClick={saveDraft}>保存草稿</button>
             <button type="button" onClick={loadDraft}>加载草稿</button>
           </div>
+          <span className="sort-draft-chip">{lastDraftSavedAt ? `最近草稿：${formatDateTime(lastDraftSavedAt)}` : '暂无草稿'}</span>
         </div>
       </section>
 
@@ -594,7 +709,7 @@ export default function SortWorkspacePage() {
             <strong>{selectedIds.length} 张</strong>
             <small>{selectedIds.length ? '可将当前归档信息应用到选中照片。' : '请在左侧照片区选择照片后应用归档信息。'}</small>
           </div>
-          <PhotoDetail photo={primaryPhoto} selectedCount={selectedIds.length} />
+          <PhotoDetail photo={primaryPhoto} selectedCount={selectedIds.length} onEdit={editCurrentPhotoInfo} />
           <div className="sort-form-section">
             <h2>归档信息</h2>
             <div className="sort-form-grid">
@@ -641,6 +756,7 @@ export default function SortWorkspacePage() {
           </div>
 
           <div className="sort-main-actions">
+            {editingPhoto && <button type="button" className="primary sort-save-current-button" onClick={saveCurrentPhotoInfo}>保存到当前照片</button>}
             <button type="button" className="primary sort-apply-button" onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用到选中照片（{selectedIds.length}）</button>
             <button type="button" className="sort-secondary-action" onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除归档信息（{selectedIds.length}）</button>
             <button type="button" className="sort-secondary-action" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>生成归档预览</button>
@@ -707,10 +823,11 @@ function PhotoCard({ photo, selected, onClick }) {
   );
 }
 
-function PhotoDetail({ photo, selectedCount }) {
+function PhotoDetail({ photo, selectedCount, onEdit }) {
   if (!photo) {
     return <section className="sort-detail-empty">请选择或扫描照片。</section>;
   }
+  const info = photo.archiveInfo;
   return (
     <section className="sort-detail-card">
       <h2>照片详情</h2>
@@ -720,7 +837,37 @@ function PhotoDetail({ photo, selectedCount }) {
         <div><dt>时间</dt><dd>{formatDateTime(photo.modifiedAt)}</dd></div>
         <div><dt>大小</dt><dd>{formatFileSize(photo.size)}</dd></div>
         <div><dt>当前状态</dt><dd><StatusBadge status={photo.sortStatus} missing={photo.originalMissing} /></dd></div>
+        <div><dt>所属分组</dt><dd title={getPhotoGroupName(photo)}>{getPhotoGroupName(photo)}</dd></div>
+        <div><dt>是否已分拣</dt><dd>{info ? '已应用归档信息' : '未分拣'}</dd></div>
       </dl>
+      {info ? (
+        <div className="sort-info-summary">
+          <header>
+            <strong>已应用归档信息</strong>
+            <button type="button" onClick={onEdit}>编辑当前照片归档信息</button>
+          </header>
+          <dl>
+            {[
+              ['照片来源', info.photoSource],
+              ['项目', info.project],
+              ['部门', info.department],
+              ['水印分类', info.watermarkCategory],
+              ['工作内容', info.workContent],
+              ['位置/区域', info.location || '现场'],
+              ['事项名称', info.itemName || info.workItem || info.workContent],
+              ['日期', info.date],
+              ['照片阶段', info.photoStage],
+              ['处理状态', info.processStatus],
+              ['关键词', info.keywords],
+              ['备注', info.remark]
+            ].map(([label, value]) => (
+              <div key={label}><dt>{label}</dt><dd title={value || '-'}>{value || '-'}</dd></div>
+            ))}
+          </dl>
+        </div>
+      ) : (
+        <p className="sort-unassigned-note">该照片尚未应用归档信息。</p>
+      )}
     </section>
   );
 }
@@ -883,6 +1030,10 @@ function getFilterCount(key, photos, selectedIds) {
   if (key === 'all') return photos.length;
   if (key === 'selected') return selectedIds.length;
   return photos.filter((photo) => photo.sortStatus === key).length;
+}
+
+function getPhotoGroupName(photo) {
+  return photo.archiveInfo?.itemName || photo.archiveInfo?.workContent || '未分组';
 }
 
 function formatDateTime(value) {
