@@ -4317,7 +4317,7 @@ body,
 
 .archive-query-toolbar {
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto auto auto auto minmax(220px, 0.8fr);
+  grid-template-columns: minmax(260px, 1fr) auto auto auto auto auto minmax(220px, 0.8fr);
   gap: 10px;
   align-items: center;
   padding: 12px;
@@ -4365,6 +4365,11 @@ body,
   border-color: var(--blue);
   color: #fff;
   background: var(--blue);
+}
+
+.archive-query-toolbar button.primary.subtle {
+  border-color: #f59e0b;
+  background: #f59e0b;
 }
 
 .archive-query-toolbar button:disabled,
@@ -4427,7 +4432,7 @@ body,
 
 .archive-query-main {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   gap: 10px;
   padding: 12px;
 }
@@ -4509,6 +4514,41 @@ body,
   background: #fff0f0;
 }
 
+.archive-selection-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  padding: 8px 10px;
+  color: #405b78;
+  background: #f8fbff;
+  font-size: 13px;
+}
+
+.archive-selection-toolbar > div {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.archive-selection-toolbar button {
+  min-height: 30px;
+  border: 1px solid #d6e2f0;
+  border-radius: 9px;
+  padding: 6px 10px;
+  color: var(--navy);
+  background: #fff;
+  font-weight: 700;
+}
+
+.archive-selection-toolbar button:disabled {
+  cursor: not-allowed;
+  color: #7f8da3;
+  background: #f1f5f9;
+}
+
 .archive-results-table-wrap {
   min-height: 0;
   overflow: auto;
@@ -4531,6 +4571,18 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.archive-results-table .archive-check-column {
+  width: 56px;
+  max-width: 56px;
+  text-align: center;
+}
+
+.archive-check-column input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--blue);
 }
 
 .archive-results-table th {
@@ -4667,6 +4719,20 @@ body,
   justify-content: center;
   color: var(--muted);
   text-align: center;
+}
+
+.archive-package-dialog {
+  width: min(820px, calc(100vw - 36px));
+}
+
+.archive-package-dialog .archive-confirm-actions {
+  gap: 10px;
+}
+
+.archive-package-dialog .archive-confirm-actions .primary {
+  border-color: var(--blue);
+  color: #fff;
+  background: var(--blue);
 }
 
 @media (max-width: 1400px) {

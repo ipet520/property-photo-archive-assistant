@@ -4,6 +4,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
+const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const {
   loadConfigs,
@@ -314,6 +315,21 @@ ipcMain.handle('ledger:exportRecords', async (_event, records) => {
   if (result.canceled || !result.filePath) return { success: false, canceled: true };
   return exportLedgerRecords(result.filePath, records);
 });
+
+ipcMain.handle('archivePackage:selectTargetRoot', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择资料包保存位置',
+    properties: ['openDirectory', 'createDirectory']
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('archivePackage:buildPlan', async (_event, records, targetRoot) => buildPackagePlan(records, targetRoot));
+
+ipcMain.handle('archivePackage:generate', async (event, records, options) => generateArchivePackage(records, {
+  ...options,
+  onProgress: (progress) => event.sender.send('archivePackage:progress', progress)
+}));
 
 ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {
   if (!targetPath || !fs.existsSync(targetPath)) return { success: false, message: '文件不存在' };

@@ -24,12 +24,16 @@ export default function ArchiveRecordsPage({ archiveState }) {
   const [records, setRecords] = useState([]);
   const [filters, setFilters] = useState(defaultFilters);
   const [selectedId, setSelectedId] = useState('');
+  const [selectedPackageIds, setSelectedPackageIds] = useState(() => new Set());
   const [status, setStatus] = useState({ type: 'idle', text: '请选择归档根目录并加载照片归档台账。' });
   const [isLoading, setIsLoading] = useState(false);
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [sortDirection, setSortDirection] = useState('desc');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [packagePlan, setPackagePlan] = useState(null);
+  const [packageResult, setPackageResult] = useState(null);
+  const [isPackageGenerating, setIsPackageGenerating] = useState(false);
 
   useEffect(() => {
     window.archiveAssistant.loadSettings().then((settings) => {
@@ -61,12 +65,23 @@ export default function ArchiveRecordsPage({ archiveState }) {
   const safePage = Math.min(page, totalPages);
   const pageRecords = filteredRecords.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedRecord = filteredRecords.find((record) => record.id === selectedId) || null;
+  const selectedPackageRecords = filteredRecords.filter((record) => selectedPackageIds.has(record.id));
+  const packageSourceRecords = selectedPackageRecords.length > 0 ? selectedPackageRecords : filteredRecords;
+  const packageSourceLabel = selectedPackageRecords.length > 0 ? '已勾选记录' : '当前筛选结果';
+  const packageCopyableCount = packageSourceRecords.filter((record) => record.fileExists).length;
   const existsCount = filteredRecords.filter((record) => record.fileExists).length;
   const missingCount = filteredRecords.length - existsCount;
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
+
+  useEffect(() => {
+    if (!window.archiveAssistant.onArchivePackageProgress) return undefined;
+    return window.archiveAssistant.onArchivePackageProgress((progress) => {
+      setStatus({ type: 'idle', text: `正在生成资料包：${progress.current} / ${progress.total}` });
+    });
+  }, []);
 
   async function chooseArchiveRoot() {
     const selected = await window.archiveAssistant.selectArchiveRoot();
@@ -87,6 +102,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
       setLedgerPath(result.ledgerPath || '');
       setRecords(result.records || []);
       setSelectedId('');
+      setSelectedPackageIds(new Set());
       setPage(1);
       if (result.missingLedger) {
         setStatus({ type: 'warning', text: '当前归档目录下未找到照片归档台账，请先完成归档或重新选择归档目录。' });
@@ -102,7 +118,42 @@ export default function ArchiveRecordsPage({ archiveState }) {
 
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
+    setSelectedPackageIds(new Set());
     setPage(1);
+  }
+
+  function resetFilters() {
+    setFilters(defaultFilters);
+    setSelectedPackageIds(new Set());
+    setPage(1);
+  }
+
+  function togglePackageRecord(recordId) {
+    setSelectedPackageIds((current) => {
+      const next = new Set(current);
+      if (next.has(recordId)) {
+        next.delete(recordId);
+      } else {
+        next.add(recordId);
+      }
+      return next;
+    });
+  }
+
+  function toggleCurrentPageSelection() {
+    const pageIds = pageRecords.map((record) => record.id);
+    const isAllSelected = pageIds.length > 0 && pageIds.every((id) => selectedPackageIds.has(id));
+    setSelectedPackageIds((current) => {
+      const next = new Set(current);
+      pageIds.forEach((id) => {
+        if (isAllSelected) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+      });
+      return next;
+    });
   }
 
   async function openPhoto(record) {
@@ -157,6 +208,49 @@ export default function ArchiveRecordsPage({ archiveState }) {
       : { type: 'error', text: `导出失败：${result?.message || '未知错误'}` });
   }
 
+  async function startPackageFlow() {
+    if (packageSourceRecords.length === 0) {
+      setStatus({ type: 'error', text: '当前没有可生成资料包的记录，请调整筛选条件。' });
+      return;
+    }
+    if (packageCopyableCount === 0) {
+      setStatus({ type: 'error', text: '当前记录没有任何可复制照片，无法生成资料包。' });
+      return;
+    }
+    const targetRoot = await window.archiveAssistant.selectArchivePackageTargetRoot();
+    if (!targetRoot) return;
+    try {
+      const plan = await window.archiveAssistant.buildArchivePackagePlan(packageSourceRecords, targetRoot);
+      setPackagePlan({ ...plan, sourceLabel: packageSourceLabel, records: packageSourceRecords });
+    } catch (error) {
+      setStatus({ type: 'error', text: `生成资料包预检查失败：${error.message}` });
+    }
+  }
+
+  async function confirmGeneratePackage() {
+    if (!packagePlan) return;
+    setIsPackageGenerating(true);
+    setStatus({ type: 'idle', text: `正在生成资料包：0 / ${packagePlan.total}` });
+    try {
+      const result = await window.archiveAssistant.generateArchivePackage(packagePlan.records, {
+        targetRoot: packagePlan.targetRoot,
+        packagePath: packagePlan.packagePath
+      });
+      setPackageResult(result);
+      setPackagePlan(null);
+      setStatus({
+        type: result.failedCount > 0 || result.missingCount > 0 ? 'warning' : 'success',
+        text: `资料包生成完成：成功 ${result.copiedCount}，缺失 ${result.missingCount}，失败 ${result.failedCount}。`
+      });
+    } catch (error) {
+      setStatus({ type: 'error', text: `资料包生成失败：${error.message}` });
+    } finally {
+      setIsPackageGenerating(false);
+    }
+  }
+
+  const allPageSelected = pageRecords.length > 0 && pageRecords.every((record) => selectedPackageIds.has(record.id));
+
   return (
     <div className="archive-records-page">
       <section className="archive-query-toolbar panel">
@@ -168,6 +262,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
         <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
+        <button type="button" className="primary subtle" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
         <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载台账'}</span>
       </section>
 
@@ -179,7 +274,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
       </section>
       {missingCount > 0 && (
         <div className="archive-missing-banner">
-          当前筛选结果中有 {missingCount} 条文件缺失，可能是照片被移动、删除或归档目录发生变化。
+          当前筛选结果中有 {missingCount} 条文件缺失，可能是照片被移动、删除或归档目录发生变化。生成资料包时会跳过缺失文件，并写入资料包目录。
         </div>
       )}
 
@@ -190,7 +285,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
               <strong>常用筛选</strong>
               <div>
                 <button type="button" onClick={() => setShowMoreFilters((value) => !value)}>{showMoreFilters ? '收起更多筛选' : '展开更多筛选'}</button>
-                <button type="button" onClick={() => { setFilters(defaultFilters); setPage(1); }}>重置筛选</button>
+                <button type="button" onClick={resetFilters}>重置筛选</button>
               </div>
             </header>
             <div className="archive-filter-grid common">
@@ -216,10 +311,19 @@ export default function ArchiveRecordsPage({ archiveState }) {
 
           <div className={`archive-query-status ${status.type}`}>{status.text}</div>
 
+          <div className="archive-selection-toolbar">
+            <span>已选择 {selectedPackageIds.size} 条；当前筛选结果 {filteredRecords.length} 条。{selectedPackageIds.size > 0 ? '生成资料包将优先使用已勾选记录。' : '未勾选时使用当前筛选结果。'}</span>
+            <div>
+              <button type="button" onClick={toggleCurrentPageSelection} disabled={pageRecords.length === 0}>{allPageSelected ? '取消当前页全选' : '当前页全选'}</button>
+              <button type="button" onClick={() => setSelectedPackageIds(new Set())} disabled={selectedPackageIds.size === 0}>清空选择</button>
+            </div>
+          </div>
+
           <div className="archive-results-table-wrap">
             <table className="archive-results-table">
               <thead>
                 <tr>
+                  <th className="archive-check-column">选择</th>
                   <th><button type="button" onClick={() => setSortDirection((value) => value === 'desc' ? 'asc' : 'desc')}>日期 {sortDirection === 'desc' ? '↓' : '↑'}</button></th>
                   <th>项目</th>
                   <th>水印分类</th>
@@ -235,6 +339,15 @@ export default function ArchiveRecordsPage({ archiveState }) {
               <tbody>
                 {pageRecords.map((record) => (
                   <tr key={record.id} className={selectedRecord?.id === record.id ? 'selected' : ''} onClick={() => setSelectedId(record.id)}>
+                    <td className="archive-check-column">
+                      <input
+                        type="checkbox"
+                        checked={selectedPackageIds.has(record.id)}
+                        onChange={() => togglePackageRecord(record.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`选择 ${record.newFileName || record.originalName || '归档记录'}`}
+                      />
+                    </td>
                     <Cell value={record.date} />
                     <Cell value={record.project} />
                     <Cell value={record.watermarkCategory} />
@@ -248,7 +361,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
                   </tr>
                 ))}
                 {pageRecords.length === 0 && (
-                  <tr><td colSpan="10" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
+                  <tr><td colSpan="11" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
                 )}
               </tbody>
             </table>
@@ -271,6 +384,24 @@ export default function ArchiveRecordsPage({ archiveState }) {
 
         <ArchiveRecordDetail record={selectedRecord} onOpen={openPhoto} onShowFolder={showInFolder} onCopy={copyPath} onCopySummary={copySummary} />
       </div>
+
+      {packagePlan && (
+        <ArchivePackageConfirmDialog
+          plan={packagePlan}
+          isGenerating={isPackageGenerating}
+          onCancel={() => setPackagePlan(null)}
+          onConfirm={confirmGeneratePackage}
+        />
+      )}
+
+      {packageResult && (
+        <ArchivePackageResultDialog
+          result={packageResult}
+          onClose={() => setPackageResult(null)}
+          onOpenPackage={() => window.archiveAssistant.openPath(packageResult.packagePath)}
+          onOpenCatalog={() => window.archiveAssistant.showItemInFolder(packageResult.catalogPath)}
+        />
+      )}
     </div>
   );
 }
@@ -319,6 +450,79 @@ function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy, onCopySumma
         ))}
       </dl>
     </aside>
+  );
+}
+
+function ArchivePackageConfirmDialog({ plan, isGenerating, onCancel, onConfirm }) {
+  return (
+    <div className="archive-confirm-backdrop">
+      <section className="archive-confirm-dialog archive-package-dialog" role="dialog" aria-modal="true" aria-label="生成资料包确认">
+        <header className="archive-confirm-heading">
+          <div>
+            <span>资料包生成前确认</span>
+            <h2>确认生成资料包？</h2>
+          </div>
+          <strong>{plan.total} 条</strong>
+        </header>
+        <section className="archive-confirm-section">
+          <h3>生成范围</h3>
+          <dl className="archive-confirm-grid">
+            <div><dt>来源范围</dt><dd>{plan.sourceLabel}</dd></div>
+            <div><dt>记录总数</dt><dd>{plan.total}</dd></div>
+            <div><dt>文件存在</dt><dd>{plan.existsCount}</dd></div>
+            <div><dt>文件缺失</dt><dd>{plan.missingCount}</dd></div>
+            <div><dt>目标保存位置</dt><dd title={plan.targetRoot}>{plan.targetRoot}</dd></div>
+            <div><dt>预计资料包名称</dt><dd title={plan.packageName}>{plan.packageName}</dd></div>
+            <div><dt>分组规则</dt><dd>{plan.groupingRule}</dd></div>
+          </dl>
+        </section>
+        {plan.missingCount > 0 && (
+          <section className="archive-confirm-section warning">
+            存在 {plan.missingCount} 条文件缺失记录。生成资料包时不会复制缺失文件，但会在资料包目录 Excel 中标记“文件缺失”。
+          </section>
+        )}
+        <section className="archive-confirm-section safe">
+          本次操作只复制照片，不移动、不删除、不压缩原图或归档照片，不修改原始台账。
+        </section>
+        <footer className="archive-confirm-actions">
+          <button type="button" onClick={onCancel} disabled={isGenerating}>取消</button>
+          <button type="button" className="primary" onClick={onConfirm} disabled={isGenerating || plan.existsCount === 0}>
+            {isGenerating ? `正在生成资料包：0 / ${plan.total}` : '确认生成'}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function ArchivePackageResultDialog({ result, onClose, onOpenPackage, onOpenCatalog }) {
+  return (
+    <div className="archive-confirm-backdrop">
+      <section className="archive-confirm-dialog archive-package-dialog" role="dialog" aria-modal="true" aria-label="资料包生成结果">
+        <header className="archive-confirm-heading">
+          <div>
+            <span>资料包生成结果</span>
+            <h2>{result.failedCount > 0 || result.missingCount > 0 ? '资料包已生成，存在需核对项' : '资料包生成成功'}</h2>
+          </div>
+          <strong>{result.copiedCount}/{result.total}</strong>
+        </header>
+        <section className="archive-confirm-section">
+          <dl className="archive-confirm-grid">
+            <div><dt>资料包路径</dt><dd title={result.packagePath}>{result.packagePath}</dd></div>
+            <div><dt>资料目录</dt><dd title={result.catalogPath}>{result.catalogPath}</dd></div>
+            <div><dt>总记录数</dt><dd>{result.total}</dd></div>
+            <div><dt>成功复制</dt><dd>{result.copiedCount}</dd></div>
+            <div><dt>文件缺失</dt><dd>{result.missingCount}</dd></div>
+            <div><dt>复制失败</dt><dd>{result.failedCount}</dd></div>
+          </dl>
+        </section>
+        <footer className="archive-confirm-actions">
+          <button type="button" onClick={onOpenPackage}>打开资料包</button>
+          <button type="button" onClick={onOpenCatalog}>打开资料目录</button>
+          <button type="button" className="primary" onClick={onClose}>关闭</button>
+        </footer>
+      </section>
+    </div>
   );
 }
 

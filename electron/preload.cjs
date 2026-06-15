@@ -33,6 +33,14 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
   loadLedgerRecords: (archiveRoot) => ipcRenderer.invoke('ledger:loadRecords', archiveRoot),
   exportLedgerRecords: (records) => ipcRenderer.invoke('ledger:exportRecords', records),
+  selectArchivePackageTargetRoot: () => ipcRenderer.invoke('archivePackage:selectTargetRoot'),
+  buildArchivePackagePlan: (records, targetRoot) => ipcRenderer.invoke('archivePackage:buildPlan', records, targetRoot),
+  generateArchivePackage: (records, options) => ipcRenderer.invoke('archivePackage:generate', records, options),
+  onArchivePackageProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('archivePackage:progress', listener);
+    return () => ipcRenderer.removeListener('archivePackage:progress', listener);
+  },
   saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
   loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')
