@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
+const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const {
   loadConfigs,
@@ -329,6 +330,11 @@ ipcMain.handle('archivePackage:buildPlan', async (_event, records, targetRoot, o
 ipcMain.handle('archivePackage:generate', async (event, records, options) => generateArchivePackage(records, {
   ...options,
   onProgress: (progress) => event.sender.send('archivePackage:progress', progress)
+}));
+
+ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport({
+  documentsPath: getWritableDocumentsPath(),
+  projectRoot: path.resolve(__dirname, '..')
 }));
 
 ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {

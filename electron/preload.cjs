@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectArchivePackageTargetRoot: () => ipcRenderer.invoke('archivePackage:selectTargetRoot'),
   buildArchivePackagePlan: (records, targetRoot, options) => ipcRenderer.invoke('archivePackage:buildPlan', records, targetRoot, options),
   generateArchivePackage: (records, options) => ipcRenderer.invoke('archivePackage:generate', records, options),
+  getDataMaintenanceReport: () => ipcRenderer.invoke('dataMaintenance:getReport'),
   onArchivePackageProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on('archivePackage:progress', listener);
