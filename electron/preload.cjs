@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   saveRectificationItem: (item) => ipcRenderer.invoke('rectification:saveItem', item),
   selectRectificationPhotos: () => ipcRenderer.invoke('rectification:selectPhotos'),
   exportRectificationItems: (items) => ipcRenderer.invoke('rectification:exportItems', items),
+  loadSummaryData: (archiveRoot) => ipcRenderer.invoke('summary:loadData', archiveRoot),
+  exportSummaryWorkbook: (payload) => ipcRenderer.invoke('summary:exportWorkbook', payload),
   onArchivePackageProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on('archivePackage:progress', listener);

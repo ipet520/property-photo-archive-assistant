@@ -7,6 +7,7 @@ const { buildArchivePreview, archivePhotos } = require('./services/archiveServic
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
+const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
 const {
   exportRectificationItems,
   loadRectificationItems,
@@ -373,6 +374,25 @@ ipcMain.handle('rectification:exportItems', async (_event, items) => {
   });
   if (result.canceled || !result.filePath) return { success: false, canceled: true };
   return exportRectificationItems(result.filePath, items);
+});
+
+ipcMain.handle('summary:loadData', async (_event, archiveRoot) => loadSummaryData({
+  archiveRoot,
+  documentsPath: getWritableDocumentsPath(),
+  projectRoot: path.resolve(__dirname, '..')
+}));
+
+ipcMain.handle('summary:exportWorkbook', async (_event, payload) => {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const result = await dialog.showSaveDialog({
+    title: '导出资料汇总台账',
+    defaultPath: path.join(app.getPath('documents'), `资料汇总台账_${timestamp}.xlsx`),
+    filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  return exportSummaryWorkbook(result.filePath, payload);
 });
 
 ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {
