@@ -8,6 +8,11 @@ const { buildPackagePlan, generateArchivePackage } = require('./services/archive
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const {
+  exportRectificationItems,
+  loadRectificationItems,
+  saveRectificationItem
+} = require('./services/rectificationService.cjs');
+const {
   loadConfigs,
   loadUserConfigs,
   saveUserConfig,
@@ -336,6 +341,39 @@ ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport
   documentsPath: getWritableDocumentsPath(),
   projectRoot: path.resolve(__dirname, '..')
 }));
+
+ipcMain.handle('rectification:loadItems', async () => loadRectificationItems(getWritableDocumentsPath()));
+ipcMain.handle('rectification:saveItem', async (_event, item) => saveRectificationItem(getWritableDocumentsPath(), item));
+ipcMain.handle('rectification:selectPhotos', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择关联照片',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: '图片文件', extensions: ['jpg', 'jpeg', 'png', 'webp'] }]
+  });
+  if (result.canceled) return [];
+  return result.filePaths.map((filePath) => ({
+    filePath,
+    fileName: path.basename(filePath),
+    sourceType: '手动添加',
+    addedAt: new Date().toISOString(),
+    fileExists: fs.existsSync(filePath)
+  }));
+});
+ipcMain.handle('rectification:exportItems', async (_event, items) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: false, message: '当前没有可导出的整改事项。' };
+  }
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const result = await dialog.showSaveDialog({
+    title: '导出整改台账',
+    defaultPath: path.join(app.getPath('documents'), `整改闭环台账_${timestamp}.xlsx`),
+    filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  return exportRectificationItems(result.filePath, items);
+});
 
 ipcMain.handle('system:showItemInFolder', async (_event, targetPath) => {
   if (!targetPath || !fs.existsSync(targetPath)) return { success: false, message: '文件不存在' };

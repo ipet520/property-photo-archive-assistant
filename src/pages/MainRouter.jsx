@@ -4,6 +4,7 @@ import DashboardPage from './DashboardPage.jsx';
 import DataMaintenancePage from './DataMaintenancePage.jsx';
 import PlaceholderPage from './PlaceholderPage.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
+import RectificationCenterPage from './RectificationCenterPage.jsx';
 import SettingsPage from './SettingsPage.jsx';
 import SortWorkspacePage from './SortWorkspacePage.jsx';
 
@@ -17,27 +18,11 @@ export default function MainRouter({ currentPage, onNavigate, archiveState }) {
   if (currentPage === PAGE_KEYS.sortWorkspace) {
     return <SortWorkspacePage />;
   }
-  if (currentPage === PAGE_KEYS.configCenter) {
-    return <SettingsPage archiveState={archiveState} />;
-  }
-  if (currentPage === PAGE_KEYS.settings) {
-    return <SettingsPage archiveState={archiveState} />;
-  }
   if (currentPage === PAGE_KEYS.searchCenter) {
     return <ArchiveRecordsPage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.rectificationCenter) {
-    return (
-      <PlaceholderPage
-        title="整改闭环中心"
-        description="后续用于管理发现问题、处理过程、处理结果和复查照片。"
-        sections={[
-          { title: '整改事项列表', text: '预留问题事项台账、负责人、期限、状态等字段。' },
-          { title: '整改阶段看板', text: '预留发现、处理中、已完成、复查通过等阶段。' },
-          { title: '整改前后对比', text: '预留前后照片对照和复查记录导出。' }
-        ]}
-      />
-    );
+    return <RectificationCenterPage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.reportCenter) {
     return (
@@ -54,6 +39,9 @@ export default function MainRouter({ currentPage, onNavigate, archiveState }) {
   }
   if (currentPage === PAGE_KEYS.dataMaintenance) {
     return <DataMaintenancePage onNavigate={onNavigate} />;
+  }
+  if (currentPage === PAGE_KEYS.configCenter || currentPage === PAGE_KEYS.settings) {
+    return <SettingsPage archiveState={archiveState} />;
   }
 
   return <DashboardPage archiveState={archiveState} onNavigate={onNavigate} />;

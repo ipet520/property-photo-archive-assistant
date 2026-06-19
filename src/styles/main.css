@@ -6066,3 +6066,492 @@ body,
     padding: 8px;
   }
 }
+
+/* V1.8.0 整改闭环中心 */
+.rectification-page {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rectification-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rectification-hero-actions button {
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  white-space: nowrap;
+}
+
+.rectification-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rectification-stats article {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #dce7f4;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.rectification-stats article.warning {
+  border-color: #ffd9a8;
+  background: #fff8ed;
+}
+
+.rectification-stats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rectification-stats strong {
+  color: var(--navy);
+  font-size: 22px;
+}
+
+.rectification-toolbar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr)) minmax(220px, 1.6fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+}
+
+.rectification-toolbar label,
+.rectification-ledger-toolbar label,
+.rectification-form label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.rectification-toolbar label span,
+.rectification-ledger-toolbar label span,
+.rectification-form label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rectification-toolbar input,
+.rectification-toolbar select,
+.rectification-ledger-toolbar input,
+.rectification-ledger-toolbar select,
+.rectification-form input,
+.rectification-form select,
+.rectification-form textarea,
+.rectification-detail-actions select {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid #d4e1f0;
+  border-radius: 10px;
+  padding: 6px 9px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.rectification-form textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.rectification-toolbar .wide,
+.rectification-ledger-toolbar .wide,
+.rectification-form .wide {
+  grid-column: span 2;
+}
+
+.rectification-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 390px;
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.rectification-list-panel,
+.rectification-detail {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.rectification-list-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rectification-list-panel h2,
+.rectification-detail h2,
+.rectification-form h2 {
+  margin: 0;
+  color: var(--navy);
+}
+
+.rectification-list-panel header span,
+.rectification-form header p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.rectification-list-panel header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.rectification-list-panel header select {
+  min-height: 30px;
+  border: 1px solid #d4e1f0;
+  border-radius: 9px;
+  padding: 5px 8px;
+}
+
+.rectification-table-wrap {
+  min-width: 0;
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid #dce7f4;
+  border-radius: 14px;
+}
+
+.rectification-table {
+  width: max(1120px, 100%);
+  min-width: 1120px;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.rectification-table th,
+.rectification-table td {
+  border-bottom: 1px solid #e8eef6;
+  padding: 9px 10px;
+  color: var(--text);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.rectification-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--navy);
+  background: #f6f9fd;
+}
+
+.rectification-table td {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rectification-table tr {
+  cursor: pointer;
+}
+
+.rectification-table tbody tr:hover {
+  background: #f7fbff;
+}
+
+.rectification-table tbody tr.selected {
+  background: #eaf3ff;
+  box-shadow: inset 3px 0 0 #1677ff;
+}
+
+.rectification-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.rectification-status.pending {
+  color: #8a5400;
+  background: #fff4df;
+}
+
+.rectification-status.doing {
+  color: #0f5bb5;
+  background: #e8f2ff;
+}
+
+.rectification-status.done {
+  color: #176642;
+  background: #e8f7ef;
+}
+
+.rectification-status.closed {
+  color: #5f6c7b;
+  background: #eef2f7;
+}
+
+.rectification-overdue {
+  color: #b54708 !important;
+  font-weight: 800;
+}
+
+.rectification-detail {
+  max-height: calc(100vh - 230px);
+  overflow: auto;
+}
+
+.rectification-form,
+.rectification-detail-content {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rectification-form > header,
+.rectification-detail-content > header,
+.rectification-photo-group > header,
+.rectification-photo-editor header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rectification-detail-content > header span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.rectification-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.rectification-form footer,
+.rectification-detail-actions,
+.rectification-photo-group footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rectification-detail-actions {
+  align-items: center;
+}
+
+.rectification-detail-actions select {
+  flex: 1 1 130px;
+}
+
+.rectification-detail-content dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.rectification-detail-content dl div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid #e2ebf5;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+
+.rectification-detail-content dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rectification-detail-content dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+}
+
+.rectification-photo-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.rectification-photo-editor section,
+.rectification-photo-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.rectification-photo-editor p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.rectification-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rectification-photo-grid article {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.rectification-photo-grid img,
+.rectification-photo-grid .missing-photo {
+  width: 100%;
+  height: 88px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: #eef3f9;
+}
+
+.rectification-photo-grid .missing-photo {
+  display: grid;
+  place-items: center;
+  color: #9a3412;
+  font-weight: 800;
+}
+
+.rectification-photo-grid strong,
+.rectification-photo-grid span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rectification-photo-grid strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.rectification-photo-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rectification-ledger-dialog {
+  width: min(1080px, calc(100vw - 48px));
+}
+
+.rectification-ledger-toolbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 2fr) repeat(2, auto) repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.rectification-ledger-list {
+  display: grid;
+  gap: 8px;
+  max-height: 430px;
+  overflow: auto;
+  padding: 4px;
+}
+
+.rectification-ledger-row {
+  display: grid;
+  grid-template-columns: auto minmax(220px, 1.2fr) minmax(240px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.rectification-ledger-row span,
+.rectification-ledger-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rectification-ledger-row span {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.rectification-ledger-row small {
+  color: var(--muted);
+}
+
+.rectification-ledger-row b {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.rectification-ledger-row b.exists {
+  color: #176642;
+  background: #eaf8ef;
+}
+
+.rectification-ledger-row b.missing {
+  color: #9a3412;
+  background: #fff1e8;
+}
+
+@media (max-width: 1320px) {
+  .rectification-layout {
+    grid-template-columns: minmax(0, 1fr) 350px;
+  }
+
+  .rectification-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .rectification-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .rectification-toolbar .wide {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 1080px) {
+  .rectification-layout,
+  .rectification-ledger-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .rectification-detail {
+    max-height: none;
+  }
+
+  .rectification-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
