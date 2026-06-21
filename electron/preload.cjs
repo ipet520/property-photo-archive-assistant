@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   buildArchivePackagePlan: (records, targetRoot, options) => ipcRenderer.invoke('archivePackage:buildPlan', records, targetRoot, options),
   generateArchivePackage: (records, options) => ipcRenderer.invoke('archivePackage:generate', records, options),
   getDataMaintenanceReport: () => ipcRenderer.invoke('dataMaintenance:getReport'),
+  loadDashboardData: () => ipcRenderer.invoke('dashboard:loadData'),
   loadRectificationItems: () => ipcRenderer.invoke('rectification:loadItems'),
   saveRectificationItem: (item) => ipcRenderer.invoke('rectification:saveItem', item),
   selectRectificationPhotos: () => ipcRenderer.invoke('rectification:selectPhotos'),

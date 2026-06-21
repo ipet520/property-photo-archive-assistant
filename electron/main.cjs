@@ -6,6 +6,7 @@ const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
+const { loadDashboardData } = require('./services/dashboardService.cjs');
 const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
 const {
@@ -339,6 +340,11 @@ ipcMain.handle('archivePackage:generate', async (event, records, options) => gen
 }));
 
 ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport({
+  documentsPath: getWritableDocumentsPath(),
+  projectRoot: path.resolve(__dirname, '..')
+}));
+
+ipcMain.handle('dashboard:loadData', async () => loadDashboardData({
   documentsPath: getWritableDocumentsPath(),
   projectRoot: path.resolve(__dirname, '..')
 }));
