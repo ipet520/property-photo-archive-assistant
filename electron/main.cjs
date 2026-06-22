@@ -7,7 +7,7 @@ const { buildArchivePreview, archivePhotos } = require('./services/archiveServic
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
-const { exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
+const { deleteLedgerRecords, exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
 const {
   exportRectificationItems,
@@ -307,6 +307,8 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
 });
 
 ipcMain.handle('ledger:loadRecords', async (_event, archiveRoot) => loadLedgerRecords(archiveRoot));
+
+ipcMain.handle('ledger:deleteRecords', async (_event, archiveRoot, selections, options) => deleteLedgerRecords(archiveRoot, selections, options));
 
 ipcMain.handle('ledger:exportRecords', async (_event, records) => {
   if (!Array.isArray(records) || records.length === 0) {

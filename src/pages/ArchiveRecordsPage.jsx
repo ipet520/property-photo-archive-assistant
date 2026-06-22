@@ -39,6 +39,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const [packageResult, setPackageResult] = useState(null);
   const [isPackageGenerating, setIsPackageGenerating] = useState(false);
   const [systemSettings, setSystemSettings] = useState(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState('records');
+  const [deleteFilesConfirmed, setDeleteFilesConfirmed] = useState(false);
+  const [deleteResult, setDeleteResult] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     window.archiveAssistant.loadSettings().then((settings) => {
@@ -98,6 +103,8 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const pageRecords = filteredRecords.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedRecord = filteredRecords.find((record) => record.id === selectedId) || null;
   const selectedPackageRecords = filteredRecords.filter((record) => selectedPackageIds.has(record.id));
+  const selectedRecords = selectedPackageRecords;
+  const singleSelectedRecord = selectedRecords.length === 1 ? selectedRecords[0] : null;
   const packageSourceRecords = selectedPackageRecords.length > 0 ? selectedPackageRecords : filteredRecords;
   const packageSourceLabel = selectedPackageRecords.length > 0 ? '已勾选记录' : '当前筛选结果';
   const packageCopyableCount = packageSourceRecords.filter((record) => record.fileExists).length;
@@ -174,18 +181,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     });
   }
 
-  function toggleCurrentPageSelection() {
+  function selectCurrentPage() {
     const pageIds = pageRecords.map((record) => record.id);
-    const isAllSelected = pageIds.length > 0 && pageIds.every((id) => selectedPackageIds.has(id));
     setSelectedPackageIds((current) => {
       const next = new Set(current);
-      pageIds.forEach((id) => {
-        if (isAllSelected) {
-          next.delete(id);
-        } else {
-          next.add(id);
-        }
-      });
+      pageIds.forEach((id) => next.add(id));
       return next;
     });
   }
@@ -193,13 +193,54 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   async function openPhoto(record) {
     if (!record?.fileExists) return;
     const result = await window.archiveAssistant.openPath(record.archivePath);
-    if (!result?.success) setStatus({ type: 'error', text: `打开照片失败：${result?.message || '未知错误'}` });
+    if (!result?.success) setStatus({ type: 'error', text: `问题：打开归档照片失败，${result?.message || '系统未能打开该文件'}。处理：请确认文件未被移动，并检查系统默认图片查看器。` });
   }
 
   async function showInFolder(record) {
     if (!record?.fileExists) return;
     const result = await window.archiveAssistant.showItemInFolder(record.archivePath);
-    if (!result?.success) setStatus({ type: 'error', text: `打开所在文件夹失败：${result?.message || '未知错误'}` });
+    if (!result?.success) setStatus({ type: 'error', text: `问题：打开归档照片所在文件夹失败，${result?.message || '系统未能定位该文件'}。处理：请确认归档文件仍存在并检查目录访问权限。` });
+  }
+
+  function requestDeleteRecords() {
+    if (selectedRecords.length === 0) return;
+    setDeleteMode('records');
+    setDeleteFilesConfirmed(false);
+    setDeleteDialogOpen(true);
+  }
+
+  async function confirmDeleteRecords() {
+    if (selectedRecords.length === 0 || (deleteMode === 'records-and-files' && !deleteFilesConfirmed)) return;
+    setIsDeleting(true);
+    try {
+      const selections = selectedRecords.map((record) => ({
+        rowNumber: record.rowNumber,
+        newFileName: record.newFileName,
+        archivePath: record.archivePath
+      }));
+      const result = await window.archiveAssistant.deleteLedgerRecords(archiveRoot, selections, {
+        deleteFiles: deleteMode === 'records-and-files'
+      });
+      setDeleteResult(result);
+      setDeleteDialogOpen(false);
+      setSelectedPackageIds(new Set());
+      setSelectedId('');
+      await loadLedger(archiveRoot);
+      setStatus({
+        type: result.failedCount > 0 ? 'warning' : 'success',
+        text: `删除完成：记录 ${result.deletedRecordCount}/${result.selectedCount}，归档文件 ${result.deletedFileCount}，未找到 ${result.missingFileCount}，失败 ${result.failedCount}。台账备份：${result.backupPath}`
+      });
+    } catch (error) {
+      const detail = String(error?.message || '未知错误');
+      const treatment = detail.includes('备份')
+        ? '请检查归档根目录写入权限和磁盘空间后重试。'
+        : detail.includes('台账') || detail.includes('更新')
+          ? '请关闭 Excel 中打开的台账文件，重新加载台账后再试。'
+          : '请重新加载台账并核对所选记录后重试。';
+      setStatus({ type: 'error', text: `问题：删除归档记录失败，${detail}。处理：${treatment}` });
+    } finally {
+      setIsDeleting(false);
+    }
   }
 
   async function copyPath(record) {
@@ -297,16 +338,26 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
 
   return (
     <div className="archive-records-page">
-      <section className="archive-query-toolbar panel">
+      <section className="page-hero compact archive-records-hero">
+        <div>
+          <p className="eyebrow">历史归档</p>
+          <h1>归档记录</h1>
+          <p>查询、核对历史照片归档记录，支持筛选、定位、导出和记录维护。</p>
+        </div>
+        <div className="archive-hero-actions">
+          <button type="button" className="primary" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
+          <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
+          <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
+          <button ref={packageButtonRef} type="button" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
+        </div>
+      </section>
+
+      <section className="archive-query-toolbar panel archive-directory-toolbar">
         <div className="archive-root-box">
-          <span>归档根目录</span>
+          <span>当前归档根目录</span>
           <strong title={archiveRoot}>{archiveRoot || '请选择归档根目录'}</strong>
         </div>
         <button type="button" className="primary" onClick={chooseArchiveRoot}>选择归档根目录</button>
-        <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
-        <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
-        <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
-        <button ref={packageButtonRef} type="button" className="primary subtle" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
         <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载台账'}</span>
       </section>
 
@@ -354,13 +405,19 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
             )}
           </section>
 
-          <div className={`archive-query-status ${status.type}`}>{status.text}</div>
+          <div className="archive-message-stack">
+            <div className={`archive-query-status ${status.type}`}>{status.text}</div>
+            {deleteResult && <ArchiveDeleteResult result={deleteResult} />}
+          </div>
 
           <div className="archive-selection-toolbar">
             <span>已选择 {selectedPackageIds.size} 条；当前筛选结果 {filteredRecords.length} 条。{selectedPackageIds.size > 0 ? '生成资料包将优先使用已勾选记录。' : '未勾选时使用当前筛选结果。'}</span>
             <div>
-              <button type="button" onClick={toggleCurrentPageSelection} disabled={pageRecords.length === 0}>{allPageSelected ? '取消当前页全选' : '当前页全选'}</button>
+              <button type="button" onClick={selectCurrentPage} disabled={pageRecords.length === 0 || allPageSelected}>当前页全选</button>
               <button type="button" onClick={() => setSelectedPackageIds(new Set())} disabled={selectedPackageIds.size === 0}>清空选择</button>
+              <button type="button" onClick={() => openPhoto(singleSelectedRecord)} disabled={!singleSelectedRecord?.fileExists}>打开照片</button>
+              <button type="button" onClick={() => showInFolder(singleSelectedRecord)} disabled={!singleSelectedRecord?.fileExists}>打开所在文件夹</button>
+              <button type="button" className="danger" onClick={requestDeleteRecords} disabled={selectedRecords.length === 0}>删除</button>
             </div>
           </div>
 
@@ -449,6 +506,19 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
           onOpenCatalog={() => window.archiveAssistant.showItemInFolder(packageResult.catalogPath)}
         />
       )}
+
+      {deleteDialogOpen && (
+        <ArchiveDeleteDialog
+          count={selectedRecords.length}
+          mode={deleteMode}
+          filesConfirmed={deleteFilesConfirmed}
+          isDeleting={isDeleting}
+          onModeChange={(mode) => { setDeleteMode(mode); setDeleteFilesConfirmed(false); }}
+          onFilesConfirmedChange={setDeleteFilesConfirmed}
+          onCancel={() => setDeleteDialogOpen(false)}
+          onConfirm={confirmDeleteRecords}
+        />
+      )}
     </div>
   );
 }
@@ -497,6 +567,65 @@ function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy, onCopySumma
         ))}
       </dl>
     </aside>
+  );
+}
+
+function ArchiveDeleteDialog({ count, mode, filesConfirmed, isDeleting, onModeChange, onFilesConfirmedChange, onCancel, onConfirm }) {
+  const deletesFiles = mode === 'records-and-files';
+  return (
+    <div className="archive-confirm-backdrop">
+      <section className="archive-confirm-dialog archive-delete-dialog" role="dialog" aria-modal="true" aria-label="删除归档记录">
+        <header className="archive-confirm-heading">
+          <div>
+            <span>记录维护</span>
+            <h2>删除归档记录</h2>
+          </div>
+          <strong>{count} 条</strong>
+        </header>
+        <p className="archive-delete-intro">请选择删除方式。删除后不可恢复，请谨慎操作。</p>
+        <div className="archive-delete-options">
+          <label className={mode === 'records' ? 'active' : ''}>
+            <input type="radio" name="archive-delete-mode" value="records" checked={mode === 'records'} onChange={() => onModeChange('records')} />
+            <span><strong>仅删除归档记录</strong><small>从照片归档台账中移除记录，保留归档照片和原始照片。</small></span>
+          </label>
+          <label className={deletesFiles ? 'active danger' : ''}>
+            <input type="radio" name="archive-delete-mode" value="records-and-files" checked={deletesFiles} onChange={() => onModeChange('records-and-files')} />
+            <span><strong>删除归档记录和归档文件</strong><small>删除台账记录及其明确对应的归档照片副本。</small></span>
+          </label>
+        </div>
+        {deletesFiles && (
+          <section className="archive-delete-risk">
+            <strong>此操作会删除已归档照片文件，但不会删除原始照片。</strong>
+            <label>
+              <input type="checkbox" checked={filesConfirmed} onChange={(event) => onFilesConfirmedChange(event.target.checked)} />
+              <span>我确认删除选中记录及对应归档文件</span>
+            </label>
+          </section>
+        )}
+        <footer className="archive-confirm-actions">
+          <button type="button" onClick={onCancel} disabled={isDeleting}>返回</button>
+          <button type="button" className="danger" onClick={onConfirm} disabled={isDeleting || (deletesFiles && !filesConfirmed)}>
+            {isDeleting ? '正在删除...' : deletesFiles ? '确认删除记录和归档文件' : '确认删除记录'}
+          </button>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function ArchiveDeleteResult({ result }) {
+  return (
+    <section className={`archive-delete-result ${result.failedCount > 0 ? 'warning' : 'success'}`}>
+      <strong>删除结果</strong>
+      <dl>
+        <div><dt>选中记录数</dt><dd>{result.selectedCount}</dd></div>
+        <div><dt>成功删除记录数</dt><dd>{result.deletedRecordCount}</dd></div>
+        <div><dt>成功删除归档文件数</dt><dd>{result.deletedFileCount}</dd></div>
+        <div><dt>未找到文件数</dt><dd>{result.missingFileCount}</dd></div>
+        <div><dt>失败数</dt><dd>{result.failedCount}</dd></div>
+        <div className="wide"><dt>备注</dt><dd title={(result.notes || []).join('；')}>{(result.notes || []).join('；') || '无'}</dd></div>
+      </dl>
+    </section>
   );
 }
 

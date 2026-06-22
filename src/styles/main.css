@@ -10553,3 +10553,196 @@ table tbody tr.selected td {
   margin-top: 4px;
   line-height: 18px;
 }
+
+/* V2.2.0 archive records enhancement. */
+.archive-records-hero {
+  align-items: center;
+}
+
+.archive-hero-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.archive-hero-actions button {
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.46);
+  border-radius: 10px;
+  padding: 6px 12px;
+  color: #17365d;
+  background: #fff;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.archive-hero-actions button.primary {
+  color: #fff;
+  border-color: var(--ui-orange);
+  background: var(--ui-orange);
+}
+
+.archive-hero-actions button:disabled {
+  color: #8b98a8;
+  border-color: rgba(214, 224, 234, 0.86);
+  background: #edf1f5;
+}
+
+.archive-directory-toolbar .archive-ledger-path {
+  flex: 1 1 260px;
+}
+
+.archive-message-stack {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.archive-selection-toolbar {
+  flex-wrap: wrap;
+}
+
+.archive-selection-toolbar > span {
+  min-width: 220px;
+  flex: 1 1 320px;
+}
+
+.archive-selection-toolbar > div {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.archive-selection-toolbar button.danger:not(:disabled) {
+  color: #a12626;
+  border-color: #e7b4b4;
+  background: #fff2f2;
+}
+
+.archive-delete-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.archive-delete-intro {
+  margin: 0;
+  color: #52677e;
+}
+
+.archive-delete-options {
+  display: grid;
+  gap: 8px;
+}
+
+.archive-delete-options > label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  border: 1px solid var(--ui-border);
+  border-radius: 11px;
+  padding: 10px;
+  background: #fff;
+}
+
+.archive-delete-options > label.active {
+  border-color: #8eb8e7;
+  background: #f2f7fd;
+}
+
+.archive-delete-options > label.active.danger {
+  border-color: #e1a6a6;
+  background: #fff5f5;
+}
+
+.archive-delete-options span,
+.archive-delete-options strong,
+.archive-delete-options small {
+  display: block;
+  min-width: 0;
+}
+
+.archive-delete-options small {
+  margin-top: 3px;
+  color: var(--ui-muted);
+  line-height: 1.45;
+}
+
+.archive-delete-risk {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e5aeae;
+  border-radius: 11px;
+  padding: 10px;
+  color: #8f2929;
+  background: #fff3f3;
+}
+
+.archive-delete-risk label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #5f3030;
+}
+
+.archive-delete-dialog .archive-confirm-actions button.danger:not(:disabled) {
+  color: #fff;
+  border-color: #b83232;
+  background: #b83232;
+}
+
+.archive-delete-result {
+  display: grid;
+  gap: 6px;
+  border: 1px solid #afd6bd;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #1d5e3b;
+  background: #effaf3;
+}
+
+.archive-delete-result.warning {
+  color: #805300;
+  border-color: #e8c48e;
+  background: #fff8eb;
+}
+
+.archive-delete-result dl {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(86px, auto)) minmax(160px, 1fr);
+  gap: 8px;
+  margin: 0;
+}
+
+.archive-delete-result dl > div {
+  min-width: 0;
+}
+
+.archive-delete-result dt {
+  color: inherit;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.archive-delete-result dd {
+  min-width: 0;
+  margin: 2px 0 0;
+  overflow: hidden;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1366px) {
+  .archive-records-hero {
+    align-items: flex-start;
+  }
+
+  .archive-hero-actions {
+    max-width: 420px;
+  }
+
+  .archive-delete-result dl {
+    grid-template-columns: repeat(3, minmax(86px, 1fr));
+  }
+}
