@@ -8,13 +8,7 @@ const TAB_KEYS = {
   result: 'result'
 };
 
-const THUMB_SIZE_CLASS = {
-  small: 'thumb-small',
-  medium: 'thumb-medium',
-  large: 'thumb-large'
-};
-
-const PAGE_SIZE_OPTIONS = [10, 30, 50, 100];
+const PAGE_SIZE_OPTIONS = [50, 100, 200];
 
 const PREVIEW_COLUMNS = [
   { key: 'index', label: '序号', width: 56, minWidth: 48, maxWidth: 70 },
@@ -47,10 +41,9 @@ export default function QuickArchivePage({ archiveState }) {
   const [assistTab, setAssistTab] = useState('scene');
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
   const [photoAreaMode, setPhotoAreaMode] = useState('expanded');
-  const [thumbSize, setThumbSize] = useState('medium');
-  const [photoPagination, setPhotoPagination] = useState({ page: 1, pageSize: 10 });
-  const [previewPagination, setPreviewPagination] = useState({ page: 1, pageSize: 10 });
-  const [resultPagination, setResultPagination] = useState({ page: 1, pageSize: 10 });
+  const [photoPagination, setPhotoPagination] = useState({ page: 1, pageSize: 50 });
+  const [previewPagination, setPreviewPagination] = useState({ page: 1, pageSize: 50 });
+  const [resultPagination, setResultPagination] = useState({ page: 1, pageSize: 50 });
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const workAreaRef = useRef(null);
   const resultItems = archiveState.previewItems.filter((item) => item.status === '归档成功' || item.status === '归档失败');
@@ -210,8 +203,6 @@ export default function QuickArchivePage({ archiveState }) {
                   photos={archiveState.photos}
                   pagination={photoPagination}
                   setPagination={setPhotoPagination}
-                  thumbSize={thumbSize}
-                  setThumbSize={setThumbSize}
                   onClear={clearPhotosAndResetPages}
                   onRescan={rescanAndShowPhotos}
                   onOpenPhotoFolder={() => archiveState.photoFolder && window.archiveAssistant.openPath(archiveState.photoFolder)}
@@ -464,7 +455,7 @@ function PaginationBar({ paginationInfo, setPagination, scopeLabel }) {
         <button type="button" className="mini-button" onClick={() => setPagination((current) => ({ ...current, page: Math.max(1, page - 1) }))} disabled={page <= 1}>上一页</button>
         <button type="button" className="mini-button" onClick={() => setPagination((current) => ({ ...current, page: Math.min(totalPages, page + 1) }))} disabled={page >= totalPages}>下一页</button>
         <button type="button" className="mini-button" onClick={() => setPagination((current) => ({ ...current, page: totalPages }))} disabled={page >= totalPages}>末页</button>
-        <label>
+        <label className="ui-page-size">
           每页
           <select
             value={pageSize}
@@ -472,7 +463,6 @@ function PaginationBar({ paginationInfo, setPagination, scopeLabel }) {
           >
             {PAGE_SIZE_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
           </select>
-          条
         </label>
       </div>
     </div>
@@ -604,7 +594,7 @@ function QuickAssistContent({ activeTab, archiveState }) {
   );
 }
 
-function PhotoList({ photos, pagination, setPagination, thumbSize, setThumbSize, onClear, onRescan, onOpenPhotoFolder, disabled, hasPhotoFolder }) {
+function PhotoList({ photos, pagination, setPagination, onClear, onRescan, onOpenPhotoFolder, disabled, hasPhotoFolder }) {
   const { widths, resizeColumn, resetColumn, resetAll, autoFit } = useResizableColumns('archiveAssistant.photoColumnWidths', PHOTO_COLUMNS);
   const tableWidth = PHOTO_COLUMNS.reduce((total, column) => total + widths[column.key], 0);
   const paginationInfo = paginateItems(photos, pagination);
@@ -625,17 +615,6 @@ function PhotoList({ photos, pagination, setPagination, thumbSize, setThumbSize,
             <button className="ghost" onClick={() => autoFit(photos)} disabled={photos.length === 0}>自动列宽</button>
             <button className="ghost" onClick={resetAll}>恢复默认列宽</button>
           </div>
-          <div className="table-toolbar-group">
-            <div className="thumb-size-control" aria-label="缩略图大小">
-              {[
-                ['small', '小'],
-                ['medium', '中'],
-                ['large', '大']
-              ].map(([key, label]) => (
-                <button key={key} className={thumbSize === key ? 'active' : ''} onClick={() => setThumbSize(key)}>{label}</button>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
 
@@ -643,7 +622,7 @@ function PhotoList({ photos, pagination, setPagination, thumbSize, setThumbSize,
         <div className="photo-list-empty-state" role="status">请选择照片文件夹并扫描照片。</div>
       ) : (
         <div className="quick-table-scroll">
-          <table className={`quick-table photo-table resizable-table ${THUMB_SIZE_CLASS[thumbSize]}`} style={{ width: getTableWidthStyle(tableWidth) }}>
+          <table className="quick-table photo-table resizable-table thumb-medium" style={{ width: getTableWidthStyle(tableWidth) }}>
             <ResizableColGroup columns={PHOTO_COLUMNS} widths={widths} />
             <thead>
               <tr>

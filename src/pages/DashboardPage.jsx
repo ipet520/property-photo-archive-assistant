@@ -11,6 +11,12 @@ const QUICK_ENTRIES = [
   { key: PAGE_KEYS.settings, marker: '设', title: '系统设置', text: '维护基础数据、默认目录和资料包偏好。' }
 ];
 
+const AUTO_LOAD_ACTIONS = {
+  [PAGE_KEYS.searchCenter]: 'load-ledger',
+  [PAGE_KEYS.reportCenter]: 'load-summary',
+  [PAGE_KEYS.rectificationCenter]: 'load-rectifications'
+};
+
 export default function DashboardPage({ archiveState, onNavigate }) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -66,7 +72,7 @@ export default function DashboardPage({ archiveState, onNavigate }) {
         <SectionHeader eyebrow="常用功能" title="快速进入工作模块" hint="不打开新窗口，直接切换到对应页面。" />
         <div className="dashboard-entry-grid">
           {QUICK_ENTRIES.map((entry) => (
-            <button type="button" className="dashboard-entry-card" key={entry.key} onClick={() => onNavigate(entry.key)}>
+            <button type="button" className="dashboard-entry-card" key={entry.key} onClick={() => onNavigate({ page: entry.key, action: AUTO_LOAD_ACTIONS[entry.key] || '' })}>
               <span className="dashboard-entry-marker">{entry.marker}</span>
               <span className="dashboard-entry-copy"><strong>{entry.title}</strong><small>{entry.text}</small></span>
               <span className="dashboard-entry-arrow">进入</span>
@@ -78,7 +84,7 @@ export default function DashboardPage({ archiveState, onNavigate }) {
       <div className="dashboard-two-column">
         <section className="dashboard-section dashboard-overview-panel">
           <SectionHeader eyebrow="归档数据" title="工作数据总览" hint={archiveMetrics.message} actions={(
-            <><button type="button" className="text-button" onClick={() => onNavigate(PAGE_KEYS.searchCenter)}>查看归档记录</button><button type="button" className="text-button" onClick={() => onNavigate(PAGE_KEYS.reportCenter)}>打开资料汇总</button></>
+            <><button type="button" className="text-button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' })}>查看归档记录</button><button type="button" className="text-button" onClick={() => onNavigate({ page: PAGE_KEYS.reportCenter, action: 'load-summary' })}>打开资料汇总</button></>
           )} />
           <div className="dashboard-metric-grid archive">
             <MetricCard label="归档照片总数" value={archiveMetrics.total} tone="primary" />
@@ -92,7 +98,7 @@ export default function DashboardPage({ archiveState, onNavigate }) {
         </section>
 
         <section className="dashboard-section dashboard-rectification-panel">
-          <SectionHeader eyebrow="整改闭环" title="整改事项概览" hint="逾期仅按截止日期只读判断，不自动修改事项状态。" actions={<button type="button" className="text-button" onClick={() => onNavigate(PAGE_KEYS.rectificationCenter)}>查看整改闭环中心</button>} />
+          <SectionHeader eyebrow="整改闭环" title="整改事项概览" hint="逾期仅按截止日期只读判断，不自动修改事项状态。" actions={<button type="button" className="text-button" onClick={() => onNavigate({ page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' })}>查看整改闭环中心</button>} />
           <div className="dashboard-metric-grid rectification">
             <MetricCard label="事项总数" value={rectificationMetrics.total} tone="primary" />
             <MetricCard label="待整改" value={rectificationMetrics.pendingCount} />
@@ -108,11 +114,11 @@ export default function DashboardPage({ archiveState, onNavigate }) {
       <div className="dashboard-two-column activity">
         <section className="dashboard-section">
           <SectionHeader eyebrow="工作动态" title="最近归档记录" hint="最多显示 5 条，只读展示。" />
-          <RecentArchiveList records={data?.recentArchiveRecords || []} loading={isLoading} onOpen={() => onNavigate(PAGE_KEYS.searchCenter)} />
+          <RecentArchiveList records={data?.recentArchiveRecords || []} loading={isLoading} onOpen={(record) => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'select-record', payload: record })} />
         </section>
         <section className="dashboard-section">
           <SectionHeader eyebrow="工作动态" title="最近整改事项" hint="按最近更新时间显示。" />
-          <RecentRectificationList items={data?.recentRectificationItems || []} loading={isLoading} onOpen={() => onNavigate(PAGE_KEYS.rectificationCenter)} />
+          <RecentRectificationList items={data?.recentRectificationItems || []} loading={isLoading} onOpen={(item) => onNavigate({ page: PAGE_KEYS.rectificationCenter, action: 'select-rectification', payload: item })} />
         </section>
       </div>
 
@@ -146,19 +152,28 @@ function MetricCard({ label, value, tone = 'neutral', compact = false }) {
 function RecentArchiveList({ records, loading, onOpen }) {
   if (loading && records.length === 0) return <LoadingRows />;
   if (records.length === 0) return <EmptyState text="暂无最近归档记录。" />;
-  return <div className="dashboard-activity-list">{records.map((record) => <button type="button" key={record.id} onClick={onOpen}><span><strong>{record.project || '未填写项目'}</strong><small>{record.watermarkCategory || '未分类'} · {record.workContent || '未填写工作内容'}</small></span><span><b>{record.archivedAt || record.date || '-'}</b><small title={record.newFileName}>{record.newFileName || '未记录文件名'}</small></span></button>)}</div>;
+  return <div className="dashboard-activity-list">{records.map((record) => <button type="button" key={record.id} onClick={() => onOpen(record)}><span className="dashboard-activity-main"><strong>{record.project || '未填写项目'}</strong><small>{record.watermarkCategory || '未分类'} · {record.workContent || '未填写工作内容'}</small><small title={record.newFileName}>{record.newFileName || '未记录文件名'}</small></span><time>{formatDateTime(record.archivedAt || record.date)}</time></button>)}</div>;
 }
 
 function RecentRectificationList({ items, loading, onOpen }) {
   if (loading && items.length === 0) return <LoadingRows />;
   if (items.length === 0) return <EmptyState text="暂无最近整改事项。" />;
-  return <div className="dashboard-activity-list">{items.map((item) => <button type="button" key={item.id} onClick={onOpen}><span><strong>{item.rectificationNo || '未编号'} · {item.project || '未填写项目'}</strong><small>{item.title || '未填写问题标题'}</small></span><span><b className={`dashboard-status-tag ${statusTone(item.status)}`}>{item.status || '待整改'}</b><small>{formatDateTime(item.updatedAt || item.createdAt)}</small></span></button>)}</div>;
+  return <div className="dashboard-activity-list">{items.map((item) => <button type="button" key={item.id} onClick={() => onOpen(item)}><span><strong>{item.rectificationNo || '未编号'} · {item.project || '未填写项目'}</strong><small>{item.title || '未填写问题标题'}</small></span><span><b className={`dashboard-status-tag ${statusTone(item.status)}`}>{item.status || '待整改'}</b><small>{formatDateTime(item.updatedAt || item.createdAt)}</small></span></button>)}</div>;
 }
 
 function HealthAlerts({ alerts, loading, onNavigate }) {
   if (loading && alerts.length === 0) return <LoadingRows count={3} />;
   if (alerts.length === 0) return <div className="dashboard-health-ok"><span>✓</span><strong>当前暂无明显数据异常</strong><small>目录、台账与配置仍建议定期在数据维护中心检查。</small></div>;
-  return <div className="dashboard-alert-list">{alerts.map((alert) => <article className={alert.level} key={alert.title}><span className="dashboard-alert-dot" /><div><strong>{alert.title}</strong><p>{alert.text}</p></div>{alert.targetPage ? <button type="button" onClick={() => onNavigate(alert.targetPage)}>去查看</button> : null}</article>)}</div>;
+  return <div className="dashboard-alert-list">{alerts.map((alert) => <article className={alert.level} key={alert.title}><span className="dashboard-alert-dot" /><div><strong>{alert.title}</strong><p>{alert.text}</p></div>{alert.targetPage ? <button type="button" onClick={() => onNavigate(getHealthTarget(alert))}>去查看</button> : null}</article>)}</div>;
+}
+
+function getHealthTarget(alert) {
+  const text = `${alert.title || ''} ${alert.text || ''}`;
+  if (text.includes('缺失')) return { page: PAGE_KEYS.searchCenter, action: 'missing-files' };
+  if (text.includes('资料包')) return { page: PAGE_KEYS.searchCenter, action: 'package' };
+  if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
+  if (text.includes('目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
+  return { page: alert.targetPage, action: AUTO_LOAD_ACTIONS[alert.targetPage] || '' };
 }
 
 function SystemStatusList({ status, onNavigate }) {

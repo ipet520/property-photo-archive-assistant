@@ -8,7 +8,7 @@ import SettingsPage from './SettingsPage.jsx';
 import SortWorkspacePage from './SortWorkspacePage.jsx';
 import SummaryCenterPage from './SummaryCenterPage.jsx';
 
-export default function MainRouter({ currentPage, onNavigate, archiveState }) {
+export default function MainRouter({ currentPage, onNavigate, navigationRequest, archiveState }) {
   if (currentPage === PAGE_KEYS.dashboard) {
     return <DashboardPage archiveState={archiveState} onNavigate={onNavigate} />;
   }
@@ -19,19 +19,19 @@ export default function MainRouter({ currentPage, onNavigate, archiveState }) {
     return <SortWorkspacePage />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
-    return <ArchiveRecordsPage archiveState={archiveState} />;
+      return <ArchiveRecordsPage archiveState={archiveState} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.rectificationCenter) {
-    return <RectificationCenterPage archiveState={archiveState} />;
+      return <RectificationCenterPage archiveState={archiveState} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.reportCenter) {
-    return <SummaryCenterPage archiveState={archiveState} />;
+      return <SummaryCenterPage archiveState={archiveState} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.dataMaintenance) {
     return <DataMaintenancePage onNavigate={onNavigate} />;
   }
   if (currentPage === PAGE_KEYS.configCenter || currentPage === PAGE_KEYS.settings) {
-    return <SettingsPage archiveState={archiveState} />;
+      return <SettingsPage archiveState={archiveState} navigationRequest={navigationRequest} />;
   }
 
   return <DashboardPage archiveState={archiveState} onNavigate={onNavigate} />;

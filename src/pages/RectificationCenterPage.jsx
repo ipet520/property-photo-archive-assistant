@@ -46,13 +46,13 @@ const defaultForm = {
   closeNote: ''
 };
 
-export default function RectificationCenterPage({ archiveState }) {
+export default function RectificationCenterPage({ archiveState, navigationRequest }) {
   const [items, setItems] = useState([]);
   const [configs, setConfigs] = useState(null);
   const [selectedId, setSelectedId] = useState('');
   const [filters, setFilters] = useState(defaultFilters);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(50);
   const [form, setForm] = useState(defaultForm);
   const [isEditing, setIsEditing] = useState(false);
   const [showLedgerPicker, setShowLedgerPicker] = useState(false);
@@ -66,6 +66,16 @@ export default function RectificationCenterPage({ archiveState }) {
   useEffect(() => {
     loadInitialData();
   }, []);
+
+  useEffect(() => {
+    if (!navigationRequest?.nonce || !items.length) return;
+    if (navigationRequest.action === 'select-rectification') {
+      const target = navigationRequest.payload || {};
+      const matched = items.find((item) => item.id === target.id)
+        || items.find((item) => item.rectificationNo && item.rectificationNo === target.rectificationNo);
+      if (matched) setSelectedId(matched.id);
+    }
+  }, [navigationRequest?.nonce, items.length]);
 
   const configOptions = useMemo(() => normalizeConfigOptions(configs), [configs]);
   const selectedItem = useMemo(() => items.find((item) => item.id === selectedId) || null, [items, selectedId]);
@@ -366,10 +376,10 @@ export default function RectificationCenterPage({ archiveState }) {
               <h2>整改事项列表</h2>
               <span>当前筛选 {filteredItems.length} 条</span>
             </div>
-            <label>
+            <label className="ui-page-size">
               每页
               <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
-                {[20, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}
+                {[50, 100, 200].map((size) => <option key={size} value={size}>{size}</option>)}
               </select>
             </label>
           </header>

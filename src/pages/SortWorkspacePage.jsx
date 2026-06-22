@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { APP_VERSION } from '../constants/app.js';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
-import { getUsableArchiveRoot, getUsablePhotoFolder, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
+import { loadRecentRecords } from '../utils/recentRecords.js';
+import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 
 const defaultForm = {
   photoSource: '',
@@ -43,13 +43,16 @@ const groupExamples = ['楼道杂物清理', '飞线充电治理', '公共设施
 
 const assistTabs = [
   ['scenes', '常见场景'],
-  ['keywords', '关键词']
+  ['keywords', '关键词'],
+  ['recent', '最近记录']
 ];
 
 const viewModes = [
-  { key: 'grid', label: '网格视图' },
-  { key: 'list', label: '列表视图' }
+  { key: 'grid', label: '网格', title: '网格视图' },
+  { key: 'list', label: '列表', title: '列表视图' }
 ];
+
+const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 
 export default function SortWorkspacePage() {
   const rightPanelRef = useRef(null);
@@ -63,7 +66,6 @@ export default function SortWorkspacePage() {
   const [activeGroup, setActiveGroup] = useState('all');
   const [searchText, setSearchText] = useState('');
   const [viewMode, setViewMode] = useState('grid');
-  const [thumbSize, setThumbSize] = useState('standard');
   const [sortMode, setSortMode] = useState('timeAsc');
   const [selectedIds, setSelectedIds] = useState([]);
   const [lastClickedId, setLastClickedId] = useState(null);
@@ -71,8 +73,10 @@ export default function SortWorkspacePage() {
   const [activeSceneTitle, setActiveSceneTitle] = useState('');
   const [editingPhotoId, setEditingPhotoId] = useState('');
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
+  const [hasSavedDraft, setHasSavedDraft] = useState(() => window.localStorage.getItem(sortDraftAvailableKey) === 'true');
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [moreOperationsOpen, setMoreOperationsOpen] = useState(false);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹并扫描照片。' });
   const [isBusy, setIsBusy] = useState(false);
   const [page, setPage] = useState(1);
@@ -84,12 +88,10 @@ export default function SortWorkspacePage() {
       window.archiveAssistant.loadSettings()
     ]).then(([loadedConfigs, loadedSettings]) => {
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
-      const restoredPhotoFolder = getUsablePhotoFolder(loadedSettings);
       const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
       setForm(reconcileForm(defaultForm, safeConfigs));
-      if (restoredPhotoFolder) setPhotoFolder(restoredPhotoFolder);
       if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
     }).catch((error) => {
       const safeConfigs = withRuntimeConfigFallback(null);
@@ -130,9 +132,9 @@ export default function SortWorkspacePage() {
   const pagePhotos = visiblePhotos.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedPhotos = photos.filter((photo) => selectedIds.includes(photo.id));
   const primaryPhoto = selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
-  const stats = getStats(photos, selectedIds);
   const suggestedKeywords = splitKeywords(getSuggestedKeywords({ ...toArchiveForm(form), workItem: form.itemName }, configs));
   const activeKeywords = splitKeywords(form.keywords);
+  const recentRecords = loadRecentRecords();
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
@@ -189,13 +191,22 @@ export default function SortWorkspacePage() {
     });
   }
 
-  async function selectPhotoFolder() {
+  async function selectPhotoFolder({ scanAfterSelect = false } = {}) {
     const selected = await window.archiveAssistant.selectPhotoFolder();
-    if (!selected) return;
+    if (!selected) return false;
+    if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录并扫描会覆盖当前列表和分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
+      return false;
+    }
     setPhotoFolder(selected);
     const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
     setSettings(nextSettings);
-    setStatus({ type: 'idle', text: '照片来源目录已选择，请点击扫描照片。' });
+    setMoreOperationsOpen(false);
+    if (scanAfterSelect) {
+      await scanPhotos(true, selected);
+    } else {
+      setStatus({ type: 'idle', text: '照片来源目录已选择，请点击扫描。' });
+    }
+    return true;
   }
 
   async function selectArchiveRoot() {
@@ -212,17 +223,17 @@ export default function SortWorkspacePage() {
     setStatus({ type: hadPreview ? 'warning' : 'success', text: hadPreview ? '归档根目录已变更，分拣信息已变化，请重新生成归档预览。' : '归档根目录已选择，分拣预览和台账将写入该目录。' });
   }
 
-  async function scanPhotos(force = false) {
-    if (!photoFolder) {
+  async function scanPhotos(force = false, folder = photoFolder) {
+    if (!folder) {
       setStatus({ type: 'error', text: '请先选择照片文件夹。' });
       return;
     }
-    if (!force && photos.some((photo) => photo.sortStatus !== 'unassigned') && !window.confirm('重新扫描会覆盖当前分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
+    if (!force && photos.length > 0 && !window.confirm('重新扫描会覆盖当前列表和分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
       return;
     }
     setIsBusy(true);
     try {
-      const scanned = await window.archiveAssistant.scanImages(photoFolder);
+      const scanned = await window.archiveAssistant.scanImages(folder);
       setPhotos(scanned.map((photo) => ({
         id: photo.id,
         originalPath: photo.path,
@@ -251,6 +262,14 @@ export default function SortWorkspacePage() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function importOrScanPhotos() {
+    if (photoFolder) {
+      await scanPhotos(false, photoFolder);
+      return;
+    }
+    await selectPhotoFolder({ scanAfterSelect: true });
   }
 
   function clearList() {
@@ -414,6 +433,24 @@ export default function SortWorkspacePage() {
     setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。` });
   }
 
+  function applyRecentRecord(record) {
+    setForm(reconcileForm({
+      ...defaultForm,
+      photoSource: record.photoSource || '',
+      project: record.project || '',
+      department: record.department || '',
+      watermarkCategory: record.watermarkCategory || '',
+      workContent: record.workContent || '',
+      location: record.location || '',
+      itemName: record.workItem || '',
+      photoStage: record.photoStage || '',
+      processStatus: record.processStatus || '',
+      keywords: record.keywords || '',
+      remark: record.remark || ''
+    }, configs));
+    setStatus({ type: 'success', text: '已套用最近使用记录。' });
+  }
+
   async function saveDraft() {
     if (photos.length === 0) {
       setStatus({ type: 'error', text: '当前没有可保存的分拣内容。' });
@@ -429,13 +466,14 @@ export default function SortWorkspacePage() {
       activeGroup,
       selectedIds,
       sortMode,
-      thumbSize,
       pageSize,
       photos: photos.map(({ previewUrl, thumbnailPath, ...photo }) => photo)
     };
     const result = await window.archiveAssistant.saveSortDraft(payload);
     if (result?.success) {
       setLastDraftSavedAt(savedAt);
+      setHasSavedDraft(true);
+      window.localStorage.setItem(sortDraftAvailableKey, 'true');
       setHasUnsavedChanges(false);
       setStatus({ type: 'success', text: '分拣进度已保存。' });
     }
@@ -463,14 +501,16 @@ export default function SortWorkspacePage() {
     setArchiveRoot(result.draft.archiveRoot || '');
     setFilter(result.draft.filter || 'all');
     setActiveGroup(result.draft.activeGroup || 'all');
-    setThumbSize(normalizeThumbSize(result.draft.thumbSize));
     setSortMode(result.draft.sortMode || 'timeAsc');
-    setPageSize(result.draft.pageSize || 50);
+    const restoredPageSize = Number(result.draft.pageSize);
+    setPageSize([50, 100, 200].includes(restoredPageSize) ? restoredPageSize : 50);
     setPhotos(loadedPhotos);
     setSelectedIds((result.draft.selectedIds || []).filter((id) => loadedPhotos.some((photo) => photo.id === id)));
     setPage(1);
     setEditingPhotoId('');
     setLastDraftSavedAt(result.draft.savedAt || '');
+    setHasSavedDraft(true);
+    window.localStorage.setItem(sortDraftAvailableKey, 'true');
     setHasUnsavedChanges(false);
     const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
     setStatus({ type: missingCount ? 'warning' : 'success', text: `分拣进度已恢复，共 ${loadedPhotos.length} 张照片。${missingCount ? `其中 ${missingCount} 张原图缺失，请核对。` : ''}` });
@@ -629,38 +669,10 @@ export default function SortWorkspacePage() {
 
   return (
     <div className="sort-workbench">
-      <section className="sort-topbar panel">
-        <div className="sort-paths">
-          <label>
-            <span>照片来源目录</span>
-            <strong title={photoFolder}>{photoFolder || '请选择照片文件夹'}</strong>
-          </label>
-          <label>
-            <span>归档根目录</span>
-            <strong title={archiveRoot}>{archiveRoot || '请选择归档根目录'}</strong>
-          </label>
-        </div>
-        <div className="sort-top-actions">
-          <div className="sort-action-group primary-group">
-            <button type="button" className="primary" onClick={selectPhotoFolder}>选择照片文件夹</button>
-            <button type="button" onClick={selectArchiveRoot}>选择归档目录</button>
-            <button type="button" className="primary orange" disabled={!photoFolder || isBusy} onClick={() => scanPhotos(false)}>扫描照片</button>
-          </div>
-          <div className="sort-action-group maintenance-group">
-            <button type="button" disabled={!photoFolder || isBusy} onClick={() => scanPhotos(false)}>重新扫描</button>
-            <button type="button" onClick={clearList}>清空列表</button>
-            <button type="button" onClick={saveDraft}>保存进度</button>
-            <button type="button" onClick={loadDraft}>恢复进度</button>
-            {missingOriginalCount > 0 && <button type="button" onClick={relocateMissingPhotos}>重新定位照片文件夹</button>}
-          </div>
-          <span className="sort-draft-chip">{lastDraftSavedAt ? `最近保存：${formatDateTime(lastDraftSavedAt)}` : '暂无保存进度'}</span>
-        </div>
-      </section>
-
       <div className="sort-main-grid">
         <aside className="sort-left-panel panel">
           <SortSection title="状态筛选">
-            {statusFilters.map(([key, label]) => (
+            {statusFilters.filter(([key, label]) => key && label).map(([key, label]) => (
               <button type="button" key={key} className={filter === key ? 'active' : ''} onClick={() => { setFilter(key); setPage(1); }}>
                 <span>{label}</span>
                 <strong>{getFilterCount(key, photos, selectedIds)}</strong>
@@ -694,46 +706,58 @@ export default function SortWorkspacePage() {
         </aside>
 
         <main className="sort-center-panel panel">
-          <div className="sort-grid-toolbar">
-            <div className="sort-view-tabs">
+          <div className="sort-workspace-toolbar">
+            <div className="sort-toolbar-group sort-import-tools">
+              <button type="button" className="primary orange" title={photoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{photoFolder ? '扫描' : '导入'}</button>
+              <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0}>清空</button>
+              <button type="button" title="更换照片目录或归档目录" className={moreOperationsOpen ? 'active' : ''} onClick={() => setMoreOperationsOpen((current) => !current)}>更多</button>
+            </div>
+            <div className="sort-toolbar-group sort-view-tools">
+              <div className="sort-view-tabs">
               {viewModes.map((mode) => (
-                <button type="button" key={mode.key} className={viewMode === mode.key ? 'active' : ''} onClick={() => setViewMode(mode.key)}>
+                <button type="button" key={mode.key} title={mode.title} className={viewMode === mode.key ? 'active' : ''} onClick={() => setViewMode(mode.key)}>
                   {mode.label}
                 </button>
               ))}
-            </div>
-            <label className="sort-thumb-control">
-              <span>缩略图</span>
-              <select value={thumbSize} onChange={(event) => setThumbSize(event.target.value)}>
-                <option value="standard">标准</option>
-                <option value="large">大图</option>
+              </div>
+              <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} aria-label="排序方式">
+                <option value="timeAsc">时间升序</option>
+                <option value="timeDesc">时间降序</option>
+                <option value="nameAsc">文件名升序</option>
+                <option value="nameDesc">文件名降序</option>
               </select>
-            </label>
-            <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} aria-label="排序方式">
-              <option value="timeAsc">按时间升序</option>
-              <option value="timeDesc">按时间降序</option>
-              <option value="nameAsc">按文件名升序</option>
-              <option value="nameDesc">按文件名降序</option>
-            </select>
-            <label className="sort-search">
-              <input value={searchText} placeholder="搜索文件名" onChange={(event) => { setSearchText(event.target.value); setPage(1); }} />
-            </label>
+              <label className="sort-search">
+                <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => { setSearchText(event.target.value); setPage(1); }} />
+              </label>
+            </div>
           </div>
+
+          {moreOperationsOpen && (
+            <div className="sort-more-operations">
+              <button type="button" onClick={() => selectPhotoFolder({ scanAfterSelect: true })}>更换照片目录</button>
+              <button type="button" onClick={selectArchiveRoot}>更换归档目录</button>
+            </div>
+          )}
 
           <div className="sort-batch-toolbar">
-            <button type="button" onClick={selectCurrentPage}>全选当前页</button>
-            <button type="button" onClick={() => setSelectedIds([])}>取消选择</button>
-            <button type="button" onClick={selectUnassigned}>选择未分拣</button>
-            <button type="button" onClick={invertCurrentPage}>反选当前页</button>
-            <button type="button" onClick={markIgnored}>标记忽略</button>
-            <button type="button" onClick={cancelIgnored}>取消忽略</button>
-            <span>已选择 <strong>{selectedIds.length}</strong> 张</span>
-            <small className="sort-selection-help">单击选择/取消；Ctrl+单击多选；Shift+单击连续选择。</small>
+            <button type="button" title="全选当前页" onClick={selectCurrentPage}>全选</button>
+            <button type="button" title="反选当前页" onClick={invertCurrentPage}>反选</button>
+            <button type="button" title="选择所有未分拣照片" onClick={selectUnassigned}>未分拣</button>
+            <button type="button" title="取消当前选择" onClick={() => setSelectedIds([])}>取消</button>
+            <button type="button" title="标记选中照片为忽略" onClick={markIgnored}>忽略</button>
+            <button type="button" title="取消选中照片的忽略状态" onClick={cancelIgnored}>还原</button>
+            <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || isBusy}>保存</button>
+            <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || isBusy}>恢复</button>
+            <span className="sort-selected-count">已选 <strong>{selectedIds.length}</strong> 张</span>
           </div>
 
-          <div className={`sort-photo-browser ${viewMode} thumb-${thumbSize}`}>
+          <div className={`sort-photo-browser ${viewMode} thumb-standard`}>
             {pagePhotos.length === 0 ? (
-              <div className="sort-empty-state">暂无照片。请选择照片文件夹并扫描，或调整筛选条件。</div>
+              <div className="sort-empty-state">
+                <strong>{photoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
+                <span>{visiblePhotos.length === 0 && photos.length > 0 ? '当前筛选条件下没有照片，可调整左侧筛选。' : '原始照片只读取，不移动、不删除、不压缩。'}</span>
+                {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{photoFolder ? '扫描' : '导入'}</button>}
+              </div>
             ) : viewMode === 'grid' ? pagePhotos.map((photo) => (
               <PhotoCard key={photo.id} photo={photo} selected={selectedIds.includes(photo.id)} onClick={(event) => handlePhotoClick(photo, event)} />
             )) : (
@@ -757,28 +781,29 @@ export default function SortWorkspacePage() {
           </div>
 
           <div className="sort-pagination">
-            <span>当前显示：第 {visiblePhotos.length ? (safePage - 1) * pageSize + 1 : 0}-{Math.min(safePage * pageSize, visiblePhotos.length)} 条 / 共 {visiblePhotos.length} 条</span>
+            <span>显示 {visiblePhotos.length ? (safePage - 1) * pageSize + 1 : 0}-{Math.min(safePage * pageSize, visiblePhotos.length)} / {visiblePhotos.length}</span>
             <div>
               <button type="button" disabled={safePage <= 1} onClick={() => setPage(1)}>首页</button>
               <button type="button" disabled={safePage <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</button>
               <strong>第 {safePage} / {totalPages} 页</strong>
               <button type="button" disabled={safePage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
               <button type="button" disabled={safePage >= totalPages} onClick={() => setPage(totalPages)}>末页</button>
-              <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
-                <option value={50}>50 / 页</option>
-                <option value={100}>100 / 页</option>
-              </select>
+              <label className="ui-page-size">每页
+                <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={200}>200</option>
+                </select>
+              </label>
             </div>
           </div>
         </main>
 
         <aside className="sort-right-panel panel" ref={rightPanelRef}>
           <div className="sort-selected-summary">
-            <span>当前选中：</span>
-            <strong>{selectedIds.length} 张</strong>
-            <small>{selectedIds.length ? '可将当前归档信息应用到选中照片。' : '请在左侧照片区选择照片后应用归档信息。'}</small>
+            <strong>已选择 {selectedIds.length} 张</strong>
+            <small>{selectedIds.length ? '可应用右侧归档信息' : '请先在照片区选择照片'}</small>
           </div>
-          <PhotoDetail photo={primaryPhoto} selectedCount={selectedIds.length} onEdit={editCurrentPhotoInfo} />
           <div className="sort-form-section">
             <h2>归档信息</h2>
             <div className="sort-form-grid">
@@ -804,7 +829,7 @@ export default function SortWorkspacePage() {
               ))}
             </div>
             <div className="sort-assist-content">
-              {activeRightTab === 'scenes' && configs.sceneExamples.map((scene) => (
+              {activeRightTab === 'scenes' && configs.sceneExamples.filter((scene) => scene?.title?.trim()).map((scene) => (
                 <button type="button" className={`sort-scene-card ${activeSceneTitle === scene.title ? 'selected' : ''}`} key={scene.title} onClick={() => applyScene(scene)}>
                   <strong>{scene.title}</strong>
                   <span>{scene.watermarkCategory} / {scene.workContent}</span>
@@ -818,39 +843,41 @@ export default function SortWorkspacePage() {
                   {suggestedKeywords.length === 0 && <span className="muted">填写位置/事项后会出现更多推荐关键词。</span>}
                 </div>
               )}
+              {activeRightTab === 'recent' && (
+                <div className="sort-template-list">
+                  {recentRecords.map((record) => (
+                    <button type="button" className="sort-template-card" key={record.id} onClick={() => applyRecentRecord(record)}>
+                      <strong>{record.workContent || '最近归档记录'}</strong>
+                      <span>{record.project || '-'} / {record.location || '现场'}</span>
+                    </button>
+                  ))}
+                  {recentRecords.length === 0 && <span className="muted">暂无最近使用记录。</span>}
+                </div>
+              )}
             </div>
-          </div>
-
-          <div className="sort-main-actions">
-            <section className="sort-action-section">
-              <h3>当前照片</h3>
-              <button type="button" className="sort-secondary-action" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑</button>
-              <button type="button" className="primary sort-save-current-button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
-            </section>
-            <section className="sort-action-section batch">
-              <h3>批量操作</h3>
-              <button type="button" className="primary sort-apply-button" title={`应用到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用（{selectedIds.length}）</button>
-              <button type="button" className="sort-secondary-action" title="生成归档预览" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>预览</button>
-              <button type="button" className="primary orange" title={`确认归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>归档（{previewPhotos.length}）</button>
-              <button type="button" className="sort-secondary-action danger" title={`清除归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除（{selectedIds.length}）</button>
-            </section>
-            <p className={`sort-right-tip ${status.type}`}>{status.text}</p>
           </div>
         </aside>
       </div>
 
       <footer className="sort-bottom-bar">
-        <div className="sort-stat-cards">
-          <Stat label="全部" value={stats.total} />
-          <Stat label="已选择" value={stats.selected} />
-          <Stat label="未分拣" value={stats.unassigned} />
-          <Stat label="已分拣" value={stats.assigned} />
-          <Stat label="已预览" value={stats.previewed} />
-          <Stat label="已归档" value={stats.archived} />
-          <Stat label="失败" value={stats.failed} />
-          <Stat label="已忽略" value={stats.ignored} />
+        <div className="sort-bottom-status">
+          <span>显示 {visiblePhotos.length ? (safePage - 1) * pageSize + 1 : 0}-{Math.min(safePage * pageSize, visiblePhotos.length)} / {visiblePhotos.length}</span>
+          <span>第 {safePage}/{totalPages} 页</span>
+          <span>已选 {selectedIds.length}</span>
         </div>
-        <div className={`sort-status ${status.type}`}>{status.text} <span>版本：{APP_VERSION}</span></div>
+        <strong className={`sort-bottom-message ${status.type}`} title={status.text}>{status.text}</strong>
+        <div className="sort-bottom-actions">
+          <div className="sort-bottom-action-group single">
+            <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑</button>
+            <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
+          </div>
+          <div className="sort-bottom-action-group batch">
+            <button type="button" className="primary" title={`应用到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用</button>
+            <button type="button" title="生成分拣归档预览" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>预览</button>
+            <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>归档</button>
+            <button type="button" className="danger" title={`清除选中照片归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除</button>
+          </div>
+        </div>
       </footer>
 
       {showConfirm && (
@@ -902,59 +929,6 @@ function PhotoCard({ photo, selected, onClick }) {
         <small>{formatFileSize(photo.size)}</small>
       </footer>
     </button>
-  );
-}
-
-function PhotoDetail({ photo, selectedCount, onEdit }) {
-  if (!photo) {
-    return <section className="sort-detail-empty">请选择或扫描照片。</section>;
-  }
-  const info = photo.archiveInfo;
-  return (
-    <section className="sort-detail-card">
-      <h2>照片详情</h2>
-      {selectedCount === 1
-        ? (photo.originalMissing ? <div className="sort-missing-detail">原始照片文件未找到。<br />请点击“重新定位照片文件夹”尝试恢复。</div> : <img src={photo.previewUrl} alt={photo.originalName} />)
-        : <div className="sort-multi-selected">已选择 {selectedCount} 张照片，可批量应用右侧归档信息。</div>}
-      <dl>
-        <div><dt>文件名</dt><dd title={photo.originalName}>{photo.originalName}</dd></div>
-        <div><dt>时间</dt><dd>{formatDateTime(photo.modifiedAt)}</dd></div>
-        <div><dt>大小</dt><dd>{formatFileSize(photo.size)}</dd></div>
-        <div><dt>当前状态</dt><dd><StatusBadge status={photo.sortStatus} missing={photo.originalMissing} /></dd></div>
-        {photo.originalMissing && <div><dt>缺失说明</dt><dd>原始照片文件未找到，可能已被移动、删除或来源目录已变更。请点击“重新定位照片文件夹”尝试恢复。</dd></div>}
-        {photo.previewInfo && <div><dt>新文件名</dt><dd title={photo.previewInfo.newName || photo.previewInfo.newFileName || photo.previewInfo.targetName || '-'}>{photo.previewInfo.newName || photo.previewInfo.newFileName || photo.previewInfo.targetName || '-'}</dd></div>}
-        <div><dt>所属分组</dt><dd title={getPhotoGroupName(photo)}>{getPhotoGroupName(photo)}</dd></div>
-        <div><dt>是否已分拣</dt><dd>{info ? '已应用归档信息' : '未分拣'}</dd></div>
-      </dl>
-      {info ? (
-        <div className="sort-info-summary">
-          <header>
-            <strong>已应用归档信息</strong>
-            <button type="button" onClick={onEdit}>编辑当前照片归档信息</button>
-          </header>
-          <dl>
-            {[
-              ['照片来源', info.photoSource],
-              ['项目', info.project],
-              ['部门', info.department],
-              ['水印分类', info.watermarkCategory],
-              ['工作内容', info.workContent],
-              ['位置/区域', info.location || '现场'],
-              ['事项名称', info.itemName || info.workItem || info.workContent],
-              ['日期', info.date],
-              ['照片阶段', info.photoStage],
-              ['处理状态', info.processStatus],
-              ['关键词', info.keywords],
-              ['备注', info.remark]
-            ].map(([label, value]) => (
-              <div key={label}><dt>{label}</dt><dd title={value || '-'}>{value || '-'}</dd></div>
-            ))}
-          </dl>
-        </div>
-      ) : (
-        <p className="sort-unassigned-note">该照片尚未应用归档信息。</p>
-      )}
-    </section>
   );
 }
 
@@ -1038,10 +1012,6 @@ function StatusBadge({ status, missing }) {
   return <span className={`sort-status-badge ${missing ? 'failed' : status}`}>{missing ? '原图缺失' : statusLabels[status] || status}</span>;
 }
 
-function Stat({ label, value }) {
-  return <span><small>{label}</small><strong>{value}</strong></span>;
-}
-
 function reconcileForm(current, configs) {
   const categories = Object.keys(configs.watermarkCategories || {});
   const watermarkCategory = pick(current.watermarkCategory, categories);
@@ -1099,27 +1069,10 @@ function toArchiveForm(value) {
   };
 }
 
-function getStats(photos, selectedIds) {
-  return {
-    total: photos.length,
-    selected: selectedIds.length,
-    unassigned: photos.filter((photo) => photo.sortStatus === 'unassigned').length,
-    assigned: photos.filter((photo) => photo.sortStatus === 'assigned').length,
-    previewed: photos.filter((photo) => photo.sortStatus === 'previewed').length,
-    archived: photos.filter((photo) => photo.sortStatus === 'archived').length,
-    failed: photos.filter((photo) => photo.sortStatus === 'failed').length,
-    ignored: photos.filter((photo) => photo.sortStatus === 'ignored').length
-  };
-}
-
 function getFilterCount(key, photos, selectedIds) {
   if (key === 'all') return photos.length;
   if (key === 'selected') return selectedIds.length;
   return photos.filter((photo) => photo.sortStatus === key).length;
-}
-
-function getPhotoGroupName(photo) {
-  return photo.archiveInfo?.itemName || photo.archiveInfo?.workContent || '未分组';
 }
 
 function buildGridPhotoSummary(photo) {
@@ -1137,11 +1090,6 @@ function buildGridPhotoSummary(photo) {
     sub,
     full: [workContent, location, stage, info.processStatus].filter(Boolean).join(' / ')
   };
-}
-
-function normalizeThumbSize(value) {
-  if (value === 'large') return 'large';
-  return 'standard';
 }
 
 function findBestPhotoMatch(photo, candidates) {

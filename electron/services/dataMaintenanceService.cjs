@@ -8,7 +8,6 @@ const { loadSettings } = require('./settingsService.cjs');
 
 async function getDataMaintenanceReport(options = {}) {
   const documentsPath = options.documentsPath;
-  const projectRoot = options.projectRoot || path.resolve(__dirname, '..', '..');
   const checkedAt = new Date();
   const configPaths = getConfigPaths(documentsPath);
   const settings = await safeLoadSettings(documentsPath);
@@ -18,8 +17,7 @@ async function getDataMaintenanceReport(options = {}) {
   const directoryStatus = await inspectDirectories({
     settings,
     configPaths,
-    appDataDir,
-    projectRoot
+    appDataDir
   });
   const ledgerStatus = await inspectLedgerStatus(settings);
   const sortProgressStatus = await inspectSortProgressStatus(appDataDir);
@@ -159,8 +157,7 @@ async function inspectConfigStatus(configPaths) {
   };
 }
 
-async function inspectDirectories({ settings, configPaths, appDataDir, projectRoot }) {
-  const releaseDir = path.join(projectRoot, 'release');
+async function inspectDirectories({ settings, configPaths, appDataDir }) {
   const directories = [
     {
       key: 'defaultPhotoFolder',
@@ -191,12 +188,6 @@ async function inspectDirectories({ settings, configPaths, appDataDir, projectRo
       label: '设置备份目录',
       path: configPaths.backupDir,
       source: '系统配置'
-    },
-    {
-      key: 'release',
-      label: 'release 发布包目录',
-      path: releaseDir,
-      source: '项目目录'
     }
   ];
 
@@ -526,16 +517,16 @@ async function canAccess(targetPath, mode) {
 function getDirectoryHealth(directory, status) {
   if (!directory.path) return 'unset';
   if (!status.exists || !status.readable) {
-    return directory.key === 'release' ? 'warning' : 'error';
+    return 'error';
   }
   return 'normal';
 }
 
 function getDirectoryMessage(directory, status) {
   if (!directory.path) return '未配置';
-  if (!status.exists) return directory.key === 'release' ? '未发现发布包目录，不影响日常使用' : '目录不可用';
+  if (!status.exists) return '目录不可用';
   if (!status.readable) return '目录不可读取';
-  if (!status.writable && directory.key !== 'release') return '可读取，但写入权限需要确认';
+  if (!status.writable) return '可读取，但写入权限需要确认';
   return '目录可访问';
 }
 

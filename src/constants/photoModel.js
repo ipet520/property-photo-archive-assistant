@@ -5,7 +5,7 @@ export const SORT_STATUSES = {
   failed: 'failed'
 };
 
-// V1.3.0 照片分拣工作台预留结构，当前版本只作为字段约定使用。
+// 照片分拣工作台的统一字段约定。
 export const FUTURE_SORT_PHOTO_SHAPE = {
   id: '',
   sourcePath: '',

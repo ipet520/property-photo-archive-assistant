@@ -108,7 +108,7 @@ export default function DataMaintenancePage({ onNavigate }) {
             <div className="empty-state">{isLoading ? '正在读取本地维护状态...' : '暂无维护状态，请点击重新检查。'}</div>
           ) : (
             <>
-              {activeSection === 'overview' && <OverviewSection report={report} />}
+              {activeSection === 'overview' && <OverviewSection report={report} onNavigate={onNavigate} />}
               {activeSection === 'config' && (
                 <ConfigSection
                   report={report}
@@ -149,7 +149,7 @@ export default function DataMaintenancePage({ onNavigate }) {
                   onNavigate={onNavigate}
                 />
               )}
-              {activeSection === 'suggestions' && <SuggestionSection report={report} />}
+              {activeSection === 'suggestions' && <SuggestionSection report={report} onNavigate={onNavigate} />}
             </>
           )}
         </main>
@@ -158,18 +158,26 @@ export default function DataMaintenancePage({ onNavigate }) {
   );
 }
 
-function OverviewSection({ report }) {
+function OverviewSection({ report, onNavigate }) {
   return (
-    <div className="maintenance-overview-grid">
-      {report.overview.map((item) => (
-        <article key={item.key} className="maintenance-card">
-          <div>
-            <span>{item.label}</span>
-            <StatusBadge status={item.status} />
-          </div>
-          <strong title={item.summary}>{item.summary}</strong>
-        </article>
-      ))}
+    <div className="maintenance-overview-stack">
+      <div className="maintenance-overview-grid">
+        {report.overview.map((item) => (
+          <article key={item.key} className="maintenance-card">
+            <div>
+              <span>{item.label}</span>
+              <StatusBadge status={item.status} />
+            </div>
+            <strong title={item.summary}>{item.summary}</strong>
+          </article>
+        ))}
+      </div>
+      <div className="maintenance-direct-actions">
+        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' })}>核对归档台账</button>
+        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' })}>生成资料包</button>
+        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' })}>查看整改事项数据</button>
+        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>设置默认目录</button>
+      </div>
     </div>
   );
 }
@@ -195,7 +203,7 @@ function ConfigSection({ report, onOpen, onCopy, onNavigate }) {
         value={configStatus.paths.userConfigDir}
         onOpen={() => onOpen(configStatus.paths.userConfigDir)}
         onCopy={() => onCopy(configStatus.paths.userConfigDir)}
-        extraAction={{ label: '打开系统设置', onClick: () => onNavigate(PAGE_KEYS.settings) }}
+        extraAction={{ label: '管理基础数据', onClick: () => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-base-data' }) }}
       />
       <div className="maintenance-table-wrap">
         <table className="maintenance-table">
@@ -237,7 +245,7 @@ function DirectoriesSection({ report, onOpen, onCopy, onNavigate }) {
           description={`${item.message} · 来源：${item.source}`}
           onOpen={() => onOpen(item.path)}
           onCopy={() => onCopy(item.path)}
-          extraAction={item.key === 'release' ? null : { label: '去系统设置', onClick: () => onNavigate(PAGE_KEYS.settings) }}
+          extraAction={getDirectoryAction(item.key, onNavigate)}
         />
       ))}
     </div>
@@ -266,7 +274,7 @@ function LedgerSection({ report, onOpen, onCopy, onNavigate }) {
         description={ledger.message}
         onOpen={() => onOpen(ledger.ledgerPath || ledger.archiveRoot)}
         onCopy={() => onCopy(ledger.ledgerPath || ledger.archiveRoot)}
-        extraAction={{ label: '打开归档记录', onClick: () => onNavigate(PAGE_KEYS.searchCenter) }}
+        extraAction={{ label: '加载归档台账', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' }) }}
       />
       <Distribution title="项目分布" items={ledger.projectTop} />
       <Distribution title="水印分类分布" items={ledger.categoryTop} />
@@ -293,7 +301,7 @@ function SortProgressSection({ report, onOpen, onCopy, onNavigate }) {
         description={progress.message}
         onOpen={() => onOpen(progress.draftsDir)}
         onCopy={() => onCopy(progress.draftsDir)}
-        extraAction={{ label: '打开分拣工作台', onClick: () => onNavigate(PAGE_KEYS.sortWorkspace) }}
+        extraAction={{ label: '恢复分拣进度', onClick: () => onNavigate(PAGE_KEYS.sortWorkspace) }}
       />
       <p className="maintenance-muted">分拣草稿由用户手动保存和加载。本页仅检查本地草稿目录与文件数量，不会自动恢复、修改或清理草稿。</p>
     </div>
@@ -318,14 +326,14 @@ function PackageSection({ report, onOpen, onCopy, onNavigate }) {
         description={packageStatus.message}
         onOpen={() => onOpen(packageStatus.root)}
         onCopy={() => onCopy(packageStatus.root)}
-        extraAction={{ label: '打开归档记录', onClick: () => onNavigate(PAGE_KEYS.searchCenter) }}
+        extraAction={{ label: '生成资料包', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' }) }}
       />
       <p className="maintenance-muted">资料包状态只检查默认导出目录的直接子目录，不扫描整盘，也不会删除、移动或压缩资料包。</p>
     </div>
   );
 }
 
-function SuggestionSection({ report }) {
+function SuggestionSection({ report, onNavigate }) {
   return (
     <div className="maintenance-suggestion-list">
       {report.suggestions.map((suggestion, index) => (
@@ -335,10 +343,37 @@ function SuggestionSection({ report }) {
             <strong>{suggestion.title}</strong>
             <p>{suggestion.text}</p>
           </div>
+          <button type="button" onClick={() => onNavigate(getSuggestionTarget(suggestion))}>去处理</button>
         </article>
       ))}
     </div>
   );
+}
+
+function getDirectoryAction(key, onNavigate) {
+  const actions = {
+    defaultPhotoFolder: { label: '设置照片目录', action: 'settings-default-paths', settingKey: 'defaultPhotoFolder' },
+    defaultArchiveRoot: { label: '设置归档目录', action: 'settings-default-paths', settingKey: 'defaultArchiveRoot' },
+    defaultArchivePackageRoot: { label: '设置资料包目录', action: 'settings-default-paths', settingKey: 'defaultArchivePackageRoot' },
+    sortDrafts: { label: '打开分拣工作台', action: null },
+    configBackup: { label: '管理设置备份', action: 'settings-backup' }
+  };
+  const target = actions[key] || { label: '打开系统设置', action: 'settings-default-paths' };
+  return {
+    label: target.label,
+    onClick: () => onNavigate(target.action
+      ? { page: PAGE_KEYS.settings, action: target.action, payload: { settingKey: target.settingKey || '' } }
+      : PAGE_KEYS.sortWorkspace)
+  };
+}
+
+function getSuggestionTarget(suggestion) {
+  const text = `${suggestion.title || ''} ${suggestion.text || ''}`;
+  if (text.includes('文件缺失') || text.includes('台账')) return { page: PAGE_KEYS.searchCenter, action: text.includes('文件缺失') ? 'missing-files' : 'load-ledger' };
+  if (text.includes('资料包')) return { page: PAGE_KEYS.searchCenter, action: 'package' };
+  if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
+  if (text.includes('配置')) return { page: PAGE_KEYS.settings, action: 'settings-base-data' };
+  return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
 }
 
 function SummaryGrid({ items }) {

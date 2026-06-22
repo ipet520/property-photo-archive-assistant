@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const defaultFilters = {
   project: '',
@@ -17,7 +17,8 @@ const detailTabs = [
   { key: 'rectifications', label: '整改明细' }
 ];
 
-export default function SummaryCenterPage({ archiveState }) {
+export default function SummaryCenterPage({ archiveState, navigationRequest }) {
+  const handledNavigationRef = useRef(0);
   const [archiveRoot, setArchiveRoot] = useState(archiveState?.archiveRoot || '');
   const [ledgerPath, setLedgerPath] = useState('');
   const [rectificationPath, setRectificationPath] = useState('');
@@ -42,6 +43,12 @@ export default function SummaryCenterPage({ archiveState }) {
       if (usableRoot) setArchiveRoot(usableRoot);
     }).catch(() => {});
   }, [archiveState?.archiveRoot]);
+
+  useEffect(() => {
+    if (!archiveRoot || navigationRequest?.action !== 'load-summary' || handledNavigationRef.current === navigationRequest.nonce) return;
+    handledNavigationRef.current = navigationRequest.nonce;
+    loadSummary(archiveRoot);
+  }, [archiveRoot, navigationRequest?.nonce]);
 
   const options = useMemo(() => ({
     project: unique([
@@ -216,7 +223,7 @@ export default function SummaryCenterPage({ archiveState }) {
     <div className="summary-center-page">
       <section className="page-hero compact">
         <div>
-          <p className="eyebrow">V1.9.0 资料汇总中心</p>
+          <p className="eyebrow">资料汇总</p>
           <h1>资料汇总中心</h1>
           <p>汇总照片归档台账与整改闭环事项，生成项目、部门、分类和整改维度的本地资料统计。</p>
         </div>
@@ -339,9 +346,11 @@ export default function SummaryCenterPage({ archiveState }) {
             <strong>{safePage} / {totalPages}</strong>
             <button type="button" disabled={safePage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
             <button type="button" disabled={safePage >= totalPages} onClick={() => setPage(totalPages)}>末页</button>
-            <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
-              {pageSizeOptions.map((value) => <option key={value} value={value}>{value} / 页</option>)}
-            </select>
+            <label className="ui-page-size">每页
+              <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+                {pageSizeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
           </div>
         </footer>
       </section>

@@ -18,8 +18,9 @@ const PACKAGE_GROUPING_OPTIONS = [
   { value: 'none', label: '不分组' }
 ];
 
-export default function SettingsPage({ archiveState }) {
+export default function SettingsPage({ archiveState, navigationRequest }) {
   const [activeTab, setActiveTab] = useState('baseData');
+  const [highlightedPathKey, setHighlightedPathKey] = useState('');
   const [settings, setSettings] = useState(archiveState.settings || null);
   const [message, setMessage] = useState({ type: 'idle', text: '系统设置已就绪。' });
   const appPaths = archiveState.appPaths || {};
@@ -30,6 +31,26 @@ export default function SettingsPage({ archiveState }) {
       .then((loaded) => setSettings(loaded))
       .catch((error) => setMessage({ type: 'error', text: `设置加载失败：${error.message}` }));
   }, []);
+
+  useEffect(() => {
+    const targetTab = {
+      'settings-base-data': 'baseData',
+      'settings-default-paths': 'defaultPaths',
+      'settings-package': 'packageSettings',
+      'settings-backup': 'backup',
+      'settings-system-info': 'systemInfo'
+    }[navigationRequest?.action];
+    if (targetTab) {
+      setActiveTab(targetTab);
+      const settingKey = navigationRequest?.payload?.settingKey || '';
+      setHighlightedPathKey(settingKey);
+      if (settingKey) {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+          document.querySelector(`[data-setting-key="${settingKey}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }));
+      }
+    }
+  }, [navigationRequest?.nonce]);
 
   const pathRows = useMemo(() => ([
     { key: 'defaultPhotoFolder', label: '默认照片导入目录', value: settings?.defaultPhotoFolder || '' },
@@ -184,7 +205,7 @@ export default function SettingsPage({ archiveState }) {
               </label>
               <div className="settings-path-list">
                 {pathRows.map((row) => (
-                  <article className="settings-path-row" key={row.key}>
+                  <article className={`settings-path-row ${highlightedPathKey === row.key ? 'highlighted' : ''}`} key={row.key} data-setting-key={row.key}>
                     <div>
                       <span>{row.label}</span>
                       <strong title={row.value}>{row.value || '未设置'}</strong>
@@ -207,7 +228,7 @@ export default function SettingsPage({ archiveState }) {
               <header>
                 <p className="eyebrow">资料包设置</p>
                 <h2>资料包导出的默认偏好</h2>
-                <p>这些设置为后续资料包导出提供默认值；缺失时仍使用安全默认值，不影响 V1.5.0 已有资料包生成功能。</p>
+                <p>这些设置为资料包导出提供默认值；缺失时仍使用安全默认值，不影响现有资料包生成功能。</p>
               </header>
               <div className="settings-form-grid">
                 <label>

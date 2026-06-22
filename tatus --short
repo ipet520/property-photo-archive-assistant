@@ -1,0 +1,45 @@
+warning: in the working copy of 'CHANGELOG.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'electron/services/dataMaintenanceService.cjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package-lock.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/App.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/components/ConfigManager.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/constants/app.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/constants/photoModel.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/layout/HeaderBar.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/layout/SideNav.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/ArchiveRecordsPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/ConfigCenterPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/DashboardPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/DataMaintenancePage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/MainRouter.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/QuickArchivePage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/RectificationCenterPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SettingsPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SortWorkspacePage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/pages/SummaryCenterPage.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/styles/main.css', LF will be replaced by CRLF the next time Git touches it
+ CHANGELOG.md                                 |   16 [32m+[m
+ README.md                                    |   15 [32m+[m
+ electron/services/dataMaintenanceService.cjs |   19 [32m+[m[31m-[m
+ package-lock.json                            |    4 [32m+[m[31m-[m
+ package.json                                 |    2 [32m+[m[31m-[m
+ src/App.jsx                                  |   18 [32m+[m[31m-[m
+ src/components/ConfigManager.jsx             |   48 [32m+[m[31m-[m
+ src/constants/app.js                         |    2 [32m+[m[31m-[m
+ src/constants/photoModel.js                  |    2 [32m+[m[31m-[m
+ src/layout/HeaderBar.jsx                     |    7 [32m+[m[31m-[m
+ src/layout/SideNav.jsx                       |   57 [32m+[m[31m-[m
+ src/pages/ArchiveRecordsPage.jsx             |   54 [32m+[m[31m-[m
+ src/pages/ConfigCenterPage.jsx               |    2 [32m+[m[31m-[m
+ src/pages/DashboardPage.jsx                  |   31 [32m+[m[31m-[m
+ src/pages/DataMaintenancePage.jsx            |   73 [32m+[m[31m-[m
+ src/pages/MainRouter.jsx                     |   10 [32m+[m[31m-[m
+ src/pages/QuickArchivePage.jsx               |   35 [32m+[m[31m-[m
+ src/pages/RectificationCenterPage.jsx        |   18 [32m+[m[31m-[m
+ src/pages/SettingsPage.jsx                   |   27 [32m+[m[31m-[m
+ src/pages/SortWorkspacePage.jsx              |  332 [32m++[m[31m-[m
+ src/pages/SummaryCenterPage.jsx              |   21 [32m+[m[31m-[m
+ src/styles/main.css                          | 2903 [32m+++++++++++++++++++++++++[m[31m-[m
+ 22 files changed, 3257 insertions(+), 439 deletions(-)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getDefaultArchivePackageSettings, getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 
 const defaultFilters = {
@@ -14,12 +14,15 @@ const defaultFilters = {
   keyword: '',
   location: '',
   fileName: '',
-  remark: ''
+  remark: '',
+  fileStatus: ''
 };
 
 const pageSizeOptions = [50, 100, 200];
 
-export default function ArchiveRecordsPage({ archiveState }) {
+export default function ArchiveRecordsPage({ archiveState, navigationRequest }) {
+  const handledNavigationRef = useRef(0);
+  const packageButtonRef = useRef(null);
   const [archiveRoot, setArchiveRoot] = useState(archiveState?.archiveRoot || '');
   const [ledgerPath, setLedgerPath] = useState('');
   const [records, setRecords] = useState([]);
@@ -44,6 +47,32 @@ export default function ArchiveRecordsPage({ archiveState }) {
       if (root) setArchiveRoot(root);
     }).catch(() => {});
   }, [archiveState?.archiveRoot]);
+
+  useEffect(() => {
+    if (!archiveRoot || !navigationRequest?.nonce || handledNavigationRef.current === navigationRequest.nonce) return;
+    handledNavigationRef.current = navigationRequest.nonce;
+    const action = navigationRequest.action;
+    if (!['load-ledger', 'select-record', 'missing-files', 'package'].includes(action)) return;
+    loadLedger(archiveRoot).then((result) => {
+      const loadedRecords = result?.records || [];
+      if (action === 'missing-files') {
+        setFilters((current) => ({ ...current, fileStatus: 'missing' }));
+        setShowMoreFilters(true);
+        setStatus({ type: 'warning', text: '已加载台账并筛选文件缺失记录。' });
+      }
+      if (action === 'select-record') {
+        const target = navigationRequest.payload || {};
+        const matched = loadedRecords.find((record) => record.id === target.id)
+          || loadedRecords.find((record) => record.archivePath && record.archivePath === target.archivePath)
+          || loadedRecords.find((record) => record.newFileName && record.newFileName === target.newFileName);
+        if (matched) setSelectedId(matched.id);
+      }
+      if (action === 'package') {
+        window.requestAnimationFrame(() => packageButtonRef.current?.focus());
+        setStatus({ type: 'idle', text: '台账已加载，可使用“生成资料包”创建当前筛选结果资料包。' });
+      }
+    });
+  }, [archiveRoot, navigationRequest?.nonce]);
 
   const options = useMemo(() => ({
     project: unique(records.map((record) => record.project)),
@@ -112,8 +141,10 @@ export default function ArchiveRecordsPage({ archiveState }) {
       } else {
         setStatus({ type: 'success', text: `已加载 ${result.records.length} 条归档记录。` });
       }
+      return result;
     } catch (error) {
       setStatus({ type: 'error', text: `台账读取失败：${error.message}` });
+      return null;
     } finally {
       setIsLoading(false);
     }
@@ -275,7 +306,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
         <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
         <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
-        <button type="button" className="primary subtle" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
+        <button ref={packageButtonRef} type="button" className="primary subtle" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
         <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载台账'}</span>
       </section>
 
@@ -316,6 +347,7 @@ export default function ArchiveRecordsPage({ archiveState }) {
                 <FilterSelect label="照片来源" value={filters.photoSource} options={options.photoSource} onChange={(value) => updateFilter('photoSource', value)} />
                 <FilterSelect label="照片阶段" value={filters.photoStage} options={options.photoStage} onChange={(value) => updateFilter('photoStage', value)} />
                 <FilterSelect label="处理状态" value={filters.processStatus} options={options.processStatus} onChange={(value) => updateFilter('processStatus', value)} />
+                <FilterSelect label="文件状态" value={filters.fileStatus} options={['文件存在', '文件缺失']} onChange={(value) => updateFilter('fileStatus', value === '文件缺失' ? 'missing' : value === '文件存在' ? 'exists' : '')} displayValue={filters.fileStatus === 'missing' ? '文件缺失' : filters.fileStatus === 'exists' ? '文件存在' : ''} />
                 <InputFilter label="位置/区域" value={filters.location} onChange={(value) => updateFilter('location', value)} />
                 <InputFilter label="备注" value={filters.remark} onChange={(value) => updateFilter('remark', value)} />
               </div>
@@ -388,9 +420,11 @@ export default function ArchiveRecordsPage({ archiveState }) {
               <strong>{safePage} / {totalPages}</strong>
               <button type="button" disabled={safePage >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</button>
               <button type="button" disabled={safePage >= totalPages} onClick={() => setPage(totalPages)}>末页</button>
-              <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
-                {pageSizeOptions.map((value) => <option key={value} value={value}>{value} / 页</option>)}
-              </select>
+              <label className="ui-page-size">每页
+                <select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
+                  {pageSizeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+                </select>
+              </label>
             </div>
           </footer>
         </main>
@@ -545,11 +579,11 @@ function StatCard({ label, value, tone = '' }) {
   return <span className={`archive-stat-card ${tone}`}><small>{label}</small><strong>{value}</strong></span>;
 }
 
-function FilterSelect({ label, value, options, onChange }) {
+function FilterSelect({ label, value, options, onChange, displayValue }) {
   return (
     <label>
       <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select value={displayValue ?? value} onChange={(event) => onChange(event.target.value)}>
         <option value="">全部</option>
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
@@ -579,6 +613,8 @@ function matchesFilters(record, filters) {
   if (!contains(record.location, filters.location)) return false;
   if (filters.fileName && !contains(`${record.originalName} ${record.newFileName}`, filters.fileName)) return false;
   if (!contains(record.remark, filters.remark)) return false;
+  if (filters.fileStatus === 'missing' && record.fileExists) return false;
+  if (filters.fileStatus === 'exists' && !record.fileExists) return false;
   return true;
 }
 

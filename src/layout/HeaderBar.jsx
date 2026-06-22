@@ -1,7 +1,10 @@
 import { APP_NAME, APP_VERSION, PAGE_KEYS } from '../constants/app.js';
 
 export default function HeaderBar({ onNavigate, archiveState }) {
-  const archiveRoot = archiveState.archiveRoot || archiveState.settings?.lastArchiveRoot || '未设置';
+  const archiveRoot = archiveState.archiveRoot
+    || archiveState.settings?.defaultArchiveRoot
+    || archiveState.settings?.lastArchiveRoot
+    || '';
 
   return (
     <header className="header-bar">
@@ -14,7 +17,7 @@ export default function HeaderBar({ onNavigate, archiveState }) {
       </div>
       <div className="header-current-path">
         <span>当前归档根目录</span>
-        <strong title={archiveRoot}>{archiveRoot}</strong>
+        <strong title={archiveRoot}>{archiveRoot || '未设置归档根目录'}</strong>
       </div>
       <div className="header-actions">
         <button onClick={() => onNavigate(PAGE_KEYS.quickArchive)}>快速归档</button>

@@ -124,9 +124,9 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
     <section className={`config-manager ${embedded ? 'embedded' : ''}`}>
         <header className="config-header">
           <div>
-            <p className="eyebrow">V1.2.1</p>
-            <h2>配置管理中心</h2>
-            <p>新增、修改、停用和导入导出配置。暂时不用的配置，建议停用而不是删除。</p>
+            <p className="eyebrow">基础数据管理</p>
+            <h2>配置数据管理</h2>
+            <p>维护项目、部门、分类、关键词和常见场景。暂时不用的配置，建议停用而不是删除。</p>
           </div>
           <div className="config-header-actions">
             <button className="ghost" onClick={loadConfigs} disabled={isSaving}>重新加载</button>
@@ -200,6 +200,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
 }
 
 function SimpleConfigEditor({ title, items, onChange, defaultable = false }) {
+  const nameSize = title === '部门管理' || title === '照片阶段' || title === '处理状态' ? 'short' : 'medium';
   return (
     <ConfigSection title={title} onAdd={() => onChange([...items, createSimpleItem(`新${title}`)])}>
       <EditableTable
@@ -207,8 +208,8 @@ function SimpleConfigEditor({ title, items, onChange, defaultable = false }) {
         onChange={onChange}
         defaultable={defaultable}
         columns={[
-          { key: 'name', label: '名称', type: 'text' },
-          { key: 'description', label: '说明', type: 'text' }
+          { key: 'name', label: '名称', type: 'text', size: nameSize },
+          { key: 'description', label: '说明', type: 'text', size: 'text' }
         ]}
       />
     </ConfigSection>
@@ -247,9 +248,9 @@ function KeywordEditor({ items, onChange }) {
         items={items}
         onChange={onChange}
         columns={[
-          { key: 'name', label: '关键词', type: 'text' },
-          { key: 'group', label: '分组', type: 'text' },
-          { key: 'description', label: '说明', type: 'text' }
+          { key: 'name', label: '关键词', type: 'text', size: 'medium' },
+          { key: 'group', label: '分组', type: 'text', size: 'short' },
+          { key: 'description', label: '说明', type: 'text', size: 'text' }
         ]}
       />
     </ConfigSection>
@@ -330,7 +331,7 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
                 <div className="config-form-grid">
                   <Field label="分类名称" value={selectedCategory.name} onChange={(name) => updateCategory(selectedCategory.id, { name })} />
                   <Field label="分类说明" value={selectedCategory.description} onChange={(description) => updateCategory(selectedCategory.id, { description })} wide />
-                  <label className="field">
+                  <label className="field config-short-field">
                     <span>是否兜底分类</span>
                     <select value={selectedCategory.isFallback ? 'yes' : 'no'} onChange={(event) => updateCategory(selectedCategory.id, { isFallback: event.target.value === 'yes' })}>
                       <option value="no">否</option>
@@ -352,10 +353,10 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
                 items={selectedCategory.items || []}
                 onChange={updateWorkItems}
                 columns={[
-                  { key: 'name', label: '工作内容名称', type: 'text' },
-                  { key: 'description', label: '说明', type: 'text' },
-                  { key: 'keywords', label: '推荐关键词', type: 'keywords' },
-                  { key: 'remarkTemplate', label: '备注模板', type: 'textarea' }
+                  { key: 'name', label: '工作内容名称', type: 'text', size: 'long' },
+                  { key: 'description', label: '说明', type: 'text', size: 'text' },
+                  { key: 'keywords', label: '推荐关键词', type: 'keywords', size: 'text' },
+                  { key: 'remarkTemplate', label: '备注模板', type: 'textarea', size: 'longText' }
                 ]}
               />
             </>
@@ -437,6 +438,15 @@ function ConfigSection({ title, onAdd, children }) {
 
 function EditableTable({ items, onChange, columns, defaultable = false, deleteHint }) {
   const sorted = sortItems(items);
+  const widthBySize = {
+    short: 'minmax(120px, 0.7fr)',
+    medium: 'minmax(180px, 1fr)',
+    long: 'minmax(240px, 1.2fr)',
+    text: 'minmax(240px, 1.35fr)',
+    longText: 'minmax(280px, 1.5fr)'
+  };
+  const fieldColumns = columns.map((column) => widthBySize[column.size] || 'minmax(180px, 1fr)').join(' ');
+  const tableColumns = `46px ${defaultable ? '52px ' : ''}${fieldColumns} 64px 200px`;
 
   function patchItem(id, patch) {
     onChange(items.map((item) => {
@@ -453,15 +463,15 @@ function EditableTable({ items, onChange, columns, defaultable = false, deleteHi
 
   return (
     <div className="config-table">
-      <div className="config-table-head">
+      <div className="config-table-head" style={{ gridTemplateColumns: tableColumns }}>
         <span>启用</span>
         {defaultable && <span>默认</span>}
-        {columns.map((column) => <span key={column.key}>{column.label}</span>)}
+        {columns.map((column) => <span className={`config-column-${column.key}`} key={column.key}>{column.label}</span>)}
         <span>排序</span>
         <span>操作</span>
       </div>
       {sorted.map((item) => (
-        <div className="config-table-row" key={item.id}>
+        <div className="config-table-row" key={item.id} style={{ gridTemplateColumns: tableColumns }}>
           <input type="checkbox" checked={item.enabled !== false} onChange={(event) => patchItem(item.id, { enabled: event.target.checked })} />
           {defaultable && <input type="radio" checked={Boolean(item.isDefault)} onChange={() => patchItem(item.id, { isDefault: true })} />}
           {columns.map((column) => (
@@ -481,12 +491,12 @@ function EditableCell({ column, item, onChange }) {
     return <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />;
   }
   if (column.type === 'textarea') {
-    return <textarea rows={2} value={value || ''} onChange={(event) => onChange(event.target.value)} />;
+    return <textarea className={`config-cell config-cell-${column.key}`} rows={2} value={value || ''} onChange={(event) => onChange(event.target.value)} />;
   }
   if (column.type === 'keywords') {
-    return <input value={(value || []).join('、')} onChange={(event) => onChange(splitKeywords(event.target.value))} />;
+    return <input className={`config-cell config-cell-${column.key}`} value={(value || []).join('、')} onChange={(event) => onChange(splitKeywords(event.target.value))} />;
   }
-  return <input value={value || ''} onChange={(event) => onChange(event.target.value)} />;
+  return <input className={`config-cell config-cell-${column.key}`} value={value || ''} onChange={(event) => onChange(event.target.value)} />;
 }
 
 function RowActions({ items, item, onChange, onDelete }) {
