@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import ArchiveForm from '../components/ArchiveForm.jsx';
+import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import { buildRemarkTemplates, formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 
 const TAB_KEYS = {
@@ -641,7 +642,7 @@ function PhotoList({ photos, pagination, setPagination, onClear, onRescan, onOpe
               {paginationInfo.pageItems.map((photo, index) => (
                 <tr key={photo.id}>
                   <td>{paginationInfo.startIndex + index + 1}</td>
-                  <td><img src={photo.previewUrl} alt={photo.name} /></td>
+                  <td><ThumbnailHoverPreview src={photo.previewUrl} alt={photo.name} /></td>
                   <td className="filename table-cell-ellipsis" title={photo.name}>{photo.name}</td>
                   <td>{photo.extension}</td>
                   <td>{formatFileSize(photo.size)}</td>

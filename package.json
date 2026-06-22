@@ -1,6 +1,6 @@
 {
   "name": "property-photo-archive-assistant",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "物业工作照片归档助手 - 本地桌面照片归档整理工具",
   "author": "Property Photo Archive Assistant",
   "main": "electron/main.cjs",
@@ -71,7 +71,7 @@
     "wait-on": "^8.0.1"
   },
   "engines": {
-  "node": ">=20 <21",
-  "npm": ">=10"
-}
+    "node": ">=20 <21",
+    "npm": ">=10"
+  }
 }

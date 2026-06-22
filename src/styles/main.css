@@ -10263,3 +10263,172 @@ table tbody tr.selected td {
     padding-inline: 7px;
   }
 }
+
+/* V2.1.1 界面细节统一与显示修复。 */
+.nav-group button > span svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.dashboard-entry-grid {
+  grid-template-columns: repeat(4, minmax(240px, 1fr));
+  align-items: stretch;
+}
+
+.dashboard-entry-card {
+  min-width: 240px;
+}
+
+.dashboard-entry-copy strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.dashboard-entry-copy small {
+  min-height: 2.9em;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-entry-arrow {
+  white-space: nowrap;
+}
+
+.summary-table-wrap,
+.summary-detail-table-wrap {
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.summary-table,
+.summary-table.detail {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.summary-table th,
+.summary-table td {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-table th:first-child,
+.summary-table td:first-child {
+  width: 12%;
+}
+
+.summary-table.detail th:first-child,
+.summary-table.detail td:first-child,
+.summary-table.detail th:last-child,
+.summary-table.detail td:last-child {
+  width: 9%;
+}
+
+.summary-empty-cell {
+  width: auto !important;
+  text-align: center !important;
+}
+
+.thumbnail-hover-preview {
+  position: fixed;
+  z-index: 10000;
+  display: grid;
+  width: max-content;
+  max-width: 400px;
+  height: max-content;
+  max-height: 340px;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  border: 1px solid #b9cce0;
+  border-radius: 12px;
+  padding: 6px;
+  color: #5f7188;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 48px rgba(20, 52, 88, 0.24);
+}
+
+.thumbnail-hover-preview img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 388px;
+  max-height: 328px;
+  object-fit: contain;
+}
+
+.thumbnail-hover-preview span {
+  min-width: 180px;
+  min-height: 110px;
+  display: grid;
+  place-items: center;
+}
+
+.main-content button.orange:not(:disabled),
+.main-content button.primary.orange:not(:disabled) {
+  color: #fff;
+  border-color: var(--ui-orange);
+  background: var(--ui-orange);
+}
+
+.main-content button.orange:hover:not(:disabled),
+.main-content button.primary.orange:hover:not(:disabled) {
+  color: #fff;
+  border-color: var(--ui-orange-hover);
+  background: var(--ui-orange-hover);
+}
+
+.quick-tabs button.active,
+.assist-tabs button.active,
+.sort-view-tabs button.active,
+.sort-assist-tabs button.active,
+.sort-filter-section button.active,
+.summary-tabs button.active,
+.summary-detail-tabs button.active,
+.settings-center-nav button.active,
+.maintenance-nav button.active {
+  color: #fff !important;
+  border-color: var(--ui-navy) !important;
+  background: var(--ui-navy) !important;
+}
+
+.main-content button:disabled,
+.main-content button.primary:disabled,
+.main-content button.orange:disabled,
+.main-content button.danger:disabled {
+  color: #7f8b99 !important;
+  border-color: #d8e0e8 !important;
+  background: #eef2f6 !important;
+  opacity: 1;
+}
+
+.main-content button.danger:not(:disabled),
+.main-content .mini-button.danger:not(:disabled) {
+  color: #ad2929;
+  border-color: #e8bcbc;
+  background: #fff3f3;
+}
+
+.main-content button.danger:hover:not(:disabled),
+.main-content .mini-button.danger:hover:not(:disabled) {
+  color: #8e1f1f;
+  border-color: #dc9f9f;
+  background: #ffe7e7;
+}
+
+@media (max-width: 1500px) {
+  .dashboard-entry-grid {
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .dashboard-entry-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+}

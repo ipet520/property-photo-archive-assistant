@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 import { loadRecentRecords } from '../utils/recentRecords.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
@@ -911,7 +912,7 @@ function PhotoCard({ photo, selected, onClick }) {
   return (
     <button type="button" className={`sort-photo-card ${selected ? 'selected' : ''}`} onClick={onClick} title={photo.originalPath}>
       <div className="sort-thumb-wrap">
-        {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <img src={photo.previewUrl} alt={photo.originalName} />}
+        {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <ThumbnailHoverPreview src={photo.previewUrl} alt={photo.originalName} />}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
         {selected && <span className="sort-check">✓</span>}
       </div>
