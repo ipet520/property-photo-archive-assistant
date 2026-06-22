@@ -10432,3 +10432,124 @@ table tbody tr.selected td {
     grid-template-columns: repeat(2, minmax(240px, 1fr));
   }
 }
+
+/* V2.1.2 hotfix: keep sort helpers locally scrollable and quick actions visible. */
+.sort-right-panel .sort-assist-section {
+  flex: 0 0 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sort-right-panel .sort-assist-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  flex: 0 0 auto;
+  background: #fff;
+}
+
+.sort-right-panel .sort-assist-content {
+  display: grid;
+  flex: 0 0 144px;
+  height: 144px;
+  min-height: 96px;
+  max-height: 160px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  align-content: start;
+}
+
+.quick-final-workspace .quick-inline-assist .assist-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.quick-final-workspace .quick-inline-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid var(--ui-border);
+  padding: 8px 0 2px;
+  background: #fff;
+  box-shadow: 0 -8px 18px rgba(22, 54, 86, 0.06);
+}
+
+.quick-final-workspace .quick-inline-actions .operation-status {
+  grid-column: 1 / -1;
+}
+
+/* V2.1.2 hotfix: contain all sort-assist text inside its card and scrollbar. */
+.sort-right-panel .sort-assist-content {
+  padding-right: 6px;
+}
+
+.sort-right-panel .sort-assist-content > *,
+.sort-right-panel .sort-keyword-cloud {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.sort-right-panel .sort-scene-card,
+.sort-right-panel .sort-template-card {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+
+.sort-right-panel .sort-scene-card strong,
+.sort-right-panel .sort-scene-card span,
+.sort-right-panel .sort-template-card strong,
+.sort-right-panel .sort-template-card span {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-right-panel .sort-keyword-cloud button {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* V2.1.2 hotfix: reserve complete two-line card height in the sort assist area. */
+.sort-right-panel .sort-assist-content {
+  flex: 0 0 204px;
+  height: 204px;
+  min-height: 180px;
+  max-height: 220px;
+}
+
+.sort-right-panel .sort-scene-card,
+.sort-right-panel .sort-template-card {
+  height: 62px;
+  min-height: 58px;
+  max-height: 68px;
+  padding: 8px 12px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.sort-right-panel .sort-scene-card strong,
+.sort-right-panel .sort-template-card strong {
+  height: 20px;
+  line-height: 20px;
+}
+
+.sort-right-panel .sort-scene-card span,
+.sort-right-panel .sort-template-card span {
+  height: 18px;
+  margin-top: 4px;
+  line-height: 18px;
+}

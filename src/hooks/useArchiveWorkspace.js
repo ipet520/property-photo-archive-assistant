@@ -275,6 +275,12 @@ export function useArchiveWorkspace() {
     setStatus({ type: 'success', text: '已清空当前照片列表，原始照片未受影响。' });
   }
 
+  function clearArchivePreview() {
+    if (previewItems.length === 0) return;
+    setPreviewItems([]);
+    setStatus({ type: 'success', text: '已清除本次归档预览和结果显示，照片列表与归档信息保持不变。' });
+  }
+
   async function buildPreview() {
     const validation = validateArchiveReady(form, photos, archiveRoot, photoFolder);
     if (!validation.valid) {
@@ -419,6 +425,7 @@ export function useArchiveWorkspace() {
     scanPhotos,
     rescanPhotos,
     clearScannedPhotos,
+    clearArchivePreview,
     buildPreview,
     archivePhotos,
     openArchiveRoot,

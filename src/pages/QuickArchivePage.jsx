@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ArchiveForm from '../components/ArchiveForm.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
-import { buildRemarkTemplates, formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
+import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 
 const TAB_KEYS = {
   photos: 'photos',
@@ -136,6 +136,14 @@ export default function QuickArchivePage({ archiveState }) {
     setResultPagination((current) => ({ ...current, page: 1 }));
   }
 
+  function clearPreviewAndResult() {
+    archiveState.clearArchivePreview();
+    setConfirmDialogOpen(false);
+    setPreviewPagination((current) => ({ ...current, page: 1 }));
+    setResultPagination((current) => ({ ...current, page: 1 }));
+    setActiveTab(TAB_KEYS.photos);
+  }
+
   return (
     <div className="quick-archive-workbench">
       <section className={`quick-final-workspace ${photoAreaMode === 'maximized' ? 'photo-maximized' : ''}`} ref={workAreaRef}>
@@ -232,14 +240,13 @@ export default function QuickArchivePage({ archiveState }) {
             <div className="quick-assist-header">
               <div>
                 <p className="eyebrow">辅助填写</p>
-                <h2>场景、关键词、备注</h2>
+                <h2>场景、关键词、最近记录</h2>
               </div>
             </div>
             <div className="assist-tabs">
               {[
                 ['scene', '常见场景'],
                 ['keyword', '关键词'],
-                ['remark', '备注模板'],
                 ['recent', '最近记录']
               ].map(([key, label]) => (
                 <button key={key} className={assistTab === key ? 'active' : ''} onClick={() => setAssistTab(key)}>{label}</button>
@@ -255,8 +262,9 @@ export default function QuickArchivePage({ archiveState }) {
 
           <div className="quick-operation-card quick-inline-actions">
             <button onClick={buildPreviewAndShowTab} disabled={archiveState.isBusy || !archiveState.archiveRoot || archiveState.photos.length === 0}>
-              生成归档预览 <span>{archiveState.previewItems.length}</span>
+              生成预览 <span>{archiveState.previewItems.length}</span>
             </button>
+            <button className="danger" onClick={clearPreviewAndResult} disabled={archiveState.isBusy || archiveState.previewItems.length === 0}>清除预览</button>
             <button className="primary" onClick={requestArchiveConfirmation} disabled={archiveState.isBusy || !archiveState.archiveRoot || archiveState.previewItems.length === 0 || hasArchiveResult}>
               {archiveButtonLabel}
             </button>
@@ -578,21 +586,7 @@ function QuickAssistContent({ activeTab, archiveState }) {
     );
   }
 
-  const remarkTemplates = buildRemarkTemplates(archiveState.form, archiveState.configs.sceneExamples, archiveState.configs);
-  return (
-    <div className="template-list quick-template-list">
-      {remarkTemplates.map((template) => (
-        <button
-          type="button"
-          key={template}
-          className="template-card"
-          onClick={() => archiveState.updateForm({ remark: fillTemplate(template, archiveState.form) })}
-        >
-          {fillTemplate(template, archiveState.form)}
-        </button>
-      ))}
-    </div>
-  );
+  return null;
 }
 
 function PhotoList({ photos, pagination, setPagination, onClear, onRescan, onOpenPhotoFolder, disabled, hasPhotoFolder }) {
@@ -865,14 +859,6 @@ function getCurrentStep(archiveState, resultItems) {
   if (archiveState.previewItems.length === 0) return 'form';
   if (resultItems.length === 0) return 'preview';
   return 'archive';
-}
-
-function fillTemplate(template, form) {
-  return template
-    .replaceAll('具体位置', form.location || '位置/区域')
-    .replaceAll('位置/区域', form.location || '位置/区域')
-    .replaceAll('工作事项', form.workItem || form.workContent || '事项名称')
-    .replaceAll('事项名称', form.workItem || form.workContent || '事项名称');
 }
 
 function copyText(value) {

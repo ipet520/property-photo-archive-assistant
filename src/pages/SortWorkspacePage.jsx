@@ -54,9 +54,18 @@ const viewModes = [
 ];
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
+const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
+
+function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
+  const defaultPhotoFolder = loadedSettings?.pathStatus?.defaultPhotoFolderExists
+    ? String(loadedSettings.defaultPhotoFolder || '').trim()
+    : '';
+  return defaultPhotoFolder || String(sessionPhotoFolder || '').trim();
+}
 
 export default function SortWorkspacePage() {
   const rightPanelRef = useRef(null);
+  const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
@@ -89,10 +98,15 @@ export default function SortWorkspacePage() {
       window.archiveAssistant.loadSettings()
     ]).then(([loadedConfigs, loadedSettings]) => {
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
+      const restoredPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
       const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
       setForm(reconcileForm(defaultForm, safeConfigs));
+      setPhotoFolder(restoredPhotoFolder);
+      if (restoredPhotoFolder) {
+        setStatus({ type: 'idle', text: '点击扫描读取当前照片目录。' });
+      }
       if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
     }).catch((error) => {
       const safeConfigs = withRuntimeConfigFallback(null);
@@ -100,6 +114,19 @@ export default function SortWorkspacePage() {
       setForm(reconcileForm(defaultForm, safeConfigs));
       setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
     });
+  }, []);
+
+  useEffect(() => {
+    const refreshPhotoFolder = () => synchronizePhotoFolderFromSettings();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refreshPhotoFolder();
+    };
+    window.addEventListener('focus', refreshPhotoFolder);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('focus', refreshPhotoFolder);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   const visiblePhotos = useMemo(() => {
@@ -142,6 +169,7 @@ export default function SortWorkspacePage() {
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
+  const effectivePhotoFolder = resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -159,6 +187,33 @@ export default function SortWorkspacePage() {
 
   function markChanged() {
     setHasUnsavedChanges(true);
+  }
+
+  async function synchronizePhotoFolderFromSettings() {
+    try {
+      const loadedSettings = await window.archiveAssistant.loadSettings();
+      setSettings(loadedSettings);
+      const resolvedPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
+      setPhotoFolder(resolvedPhotoFolder);
+      return resolvedPhotoFolder;
+    } catch {
+      // Keep the current directory when settings cannot be refreshed.
+      return resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
+    }
+  }
+
+  function rememberSessionPhotoFolder(folderPath) {
+    const normalizedFolder = String(folderPath || '').trim();
+    sessionPhotoFolderRef.current = normalizedFolder;
+    if (normalizedFolder) window.sessionStorage.setItem(sortSessionPhotoFolderKey, normalizedFolder);
+    else window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
+    setPhotoFolder(normalizedFolder);
+  }
+
+  function clearSessionPhotoFolder() {
+    sessionPhotoFolderRef.current = '';
+    window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
+    setPhotoFolder('');
   }
 
   function invalidatePreviewMessage() {
@@ -198,7 +253,7 @@ export default function SortWorkspacePage() {
     if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录并扫描会覆盖当前列表和分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
       return false;
     }
-    setPhotoFolder(selected);
+    rememberSessionPhotoFolder(selected);
     const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
     setSettings(nextSettings);
     setMoreOperationsOpen(false);
@@ -266,8 +321,8 @@ export default function SortWorkspacePage() {
   }
 
   async function importOrScanPhotos() {
-    if (photoFolder) {
-      await scanPhotos(false, photoFolder);
+    if (effectivePhotoFolder) {
+      await scanPhotos(false, effectivePhotoFolder);
       return;
     }
     await selectPhotoFolder({ scanAfterSelect: true });
@@ -281,7 +336,9 @@ export default function SortWorkspacePage() {
     setPage(1);
     setActiveGroup('all');
     setEditingPhotoId('');
+    clearSessionPhotoFolder();
     markChanged();
+    void synchronizePhotoFolderFromSettings();
     setStatus({ type: 'success', text: '已清空当前分拣列表，原始照片未受影响。' });
   }
 
@@ -551,7 +608,7 @@ export default function SortWorkspacePage() {
         };
       });
       setPhotos(restored);
-      setPhotoFolder(selected);
+      rememberSessionPhotoFolder(selected);
       const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
       setSettings(nextSettings);
       markChanged();
@@ -709,7 +766,7 @@ export default function SortWorkspacePage() {
         <main className="sort-center-panel panel">
           <div className="sort-workspace-toolbar">
             <div className="sort-toolbar-group sort-import-tools">
-              <button type="button" className="primary orange" title={photoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{photoFolder ? '扫描' : '导入'}</button>
+              <button type="button" className="primary orange" title={effectivePhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0}>清空</button>
               <button type="button" title="更换照片目录或归档目录" className={moreOperationsOpen ? 'active' : ''} onClick={() => setMoreOperationsOpen((current) => !current)}>更多</button>
             </div>
@@ -755,9 +812,9 @@ export default function SortWorkspacePage() {
           <div className={`sort-photo-browser ${viewMode} thumb-standard`}>
             {pagePhotos.length === 0 ? (
               <div className="sort-empty-state">
-                <strong>{photoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
+                <strong>{effectivePhotoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
                 <span>{visiblePhotos.length === 0 && photos.length > 0 ? '当前筛选条件下没有照片，可调整左侧筛选。' : '原始照片只读取，不移动、不删除、不压缩。'}</span>
-                {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{photoFolder ? '扫描' : '导入'}</button>}
+                {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
               </div>
             ) : viewMode === 'grid' ? pagePhotos.map((photo) => (
               <PhotoCard key={photo.id} photo={photo} selected={selectedIds.includes(photo.id)} onClick={(event) => handlePhotoClick(photo, event)} />
