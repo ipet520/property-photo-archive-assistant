@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
-import { APP_NAME, APP_VERSION, PAGE_KEYS } from '../constants/app.js';
+import AppNavIcon from '../components/AppNavIcon.jsx';
+import { APP_NAME, APP_VERSION, NAV_GROUPS, PAGE_KEYS } from '../constants/app.js';
 
 const QUICK_ENTRIES = [
-  { key: PAGE_KEYS.quickArchive, marker: '归', title: '快速批量归档', text: '同一批照片使用同一套信息时快速归档。' },
-  { key: PAGE_KEYS.sortWorkspace, marker: '拣', title: '照片分拣工作台', text: '整理混合照片，分组套用归档信息。' },
-  { key: PAGE_KEYS.searchCenter, marker: '查', title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
-  { key: PAGE_KEYS.reportCenter, marker: '汇', title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
-  { key: PAGE_KEYS.rectificationCenter, marker: '改', title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },
-  { key: PAGE_KEYS.dataMaintenance, marker: '维', title: '数据维护中心', text: '只读检查配置、目录、台账和本地进度。' },
-  { key: PAGE_KEYS.settings, marker: '设', title: '系统设置', text: '维护基础数据、默认目录和资料包偏好。' }
+  { key: PAGE_KEYS.quickArchive, title: '快速批量归档', text: '同一批照片使用同一套信息时快速归档。' },
+  { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '整理混合照片，分组套用归档信息。' },
+  { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
+  { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
+  { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },
+  { key: PAGE_KEYS.dataMaintenance, title: '数据维护中心', text: '只读检查配置、目录、台账和本地进度。' },
+  { key: PAGE_KEYS.settings, title: '系统设置', text: '维护基础数据、默认目录和资料包偏好。' }
 ];
+
+const NAV_ICON_BY_PAGE = Object.fromEntries(NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.key, item.icon])));
 
 const AUTO_LOAD_ACTIONS = {
   [PAGE_KEYS.searchCenter]: 'load-ledger',
@@ -17,7 +20,7 @@ const AUTO_LOAD_ACTIONS = {
   [PAGE_KEYS.rectificationCenter]: 'load-rectifications'
 };
 
-export default function DashboardPage({ archiveState, onNavigate }) {
+export default function DashboardPage({ onNavigate }) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notice, setNotice] = useState({ type: 'idle', text: '正在加载首页数据…' });
@@ -44,8 +47,6 @@ export default function DashboardPage({ archiveState, onNavigate }) {
     refreshDashboard();
   }, [refreshDashboard]);
 
-  const settings = data?.settings || archiveState.settings || {};
-  const archiveRoot = data?.archiveRoot || settings.defaultArchiveRoot || settings.lastArchiveRoot || '';
   const archiveMetrics = data?.archiveMetrics || emptyArchiveMetrics;
   const rectificationMetrics = data?.rectificationMetrics || emptyRectificationMetrics;
 
@@ -55,16 +56,11 @@ export default function DashboardPage({ archiveState, onNavigate }) {
         <div className="dashboard-hero-copy">
           <p className="eyebrow">首页总览</p>
           <h1>今天的物业照片工作，从这里开始</h1>
-          <p>{APP_NAME} · V{APP_VERSION}，集中管理照片归档、查询、整改闭环、资料汇总与资料包导出。</p>
-          <div className="dashboard-current-root">
-            <span>当前归档根目录</span>
-            <strong title={archiveRoot}>{archiveRoot || '暂未设置归档根目录，请到系统设置中配置。'}</strong>
-          </div>
+          <p>{APP_NAME}，集中管理照片归档、查询、整改闭环、资料汇总与资料包导出。</p>
         </div>
         <div className="dashboard-hero-actions">
           <div className="dashboard-date"><span>今日</span><strong>{formatCurrentDate()}</strong></div>
           <button type="button" className="primary-button" onClick={refreshDashboard} disabled={isLoading}>{isLoading ? '正在刷新…' : '刷新首页数据'}</button>
-          <button type="button" className="secondary-button" onClick={() => onNavigate(PAGE_KEYS.settings)}>打开系统设置</button>
         </div>
       </section>
 
@@ -73,7 +69,7 @@ export default function DashboardPage({ archiveState, onNavigate }) {
         <div className="dashboard-entry-grid">
           {QUICK_ENTRIES.map((entry) => (
             <button type="button" className="dashboard-entry-card" key={entry.key} onClick={() => onNavigate({ page: entry.key, action: AUTO_LOAD_ACTIONS[entry.key] || '' })}>
-              <span className="dashboard-entry-marker">{entry.marker}</span>
+              <span className="dashboard-entry-marker"><AppNavIcon name={NAV_ICON_BY_PAGE[entry.key]} /></span>
               <span className="dashboard-entry-copy"><strong>{entry.title}</strong><small>{entry.text}</small></span>
               <span className="dashboard-entry-arrow">进入</span>
             </button>
@@ -194,7 +190,7 @@ function SystemStatusList({ status, onNavigate }) {
     if (value) await window.archiveAssistant.openPath(value);
   }
 
-  return <div className="dashboard-system-list">{rows.map(([label, value, description]) => <article key={label}><div><span>{label}</span><strong title={value || description}>{value || description || '未配置'}</strong></div><div className="dashboard-path-actions"><button type="button" disabled={!value} onClick={() => copyPath(value)}>复制</button><button type="button" disabled={!value} onClick={() => openPath(value)}>打开</button></div></article>)}<footer><button type="button" onClick={() => onNavigate(PAGE_KEYS.settings)}>系统设置</button><button type="button" onClick={() => onNavigate(PAGE_KEYS.dataMaintenance)}>数据维护中心</button></footer></div>;
+  return <div className="dashboard-system-list">{rows.map(([label, value, description]) => <article key={label}><div><span>{label}</span><strong title={value || description}>{value || description || '未配置'}</strong></div><div className="dashboard-path-actions"><button type="button" disabled={!value} onClick={() => copyPath(value)}>复制</button><button type="button" disabled={!value} onClick={() => openPath(value)}>打开</button></div></article>)}<footer><button type="button" onClick={() => onNavigate(PAGE_KEYS.dataMaintenance)}>数据维护中心</button></footer></div>;
 }
 
 function EmptyState({ text }) {

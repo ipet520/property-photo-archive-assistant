@@ -2659,6 +2659,132 @@ td small {
   }
 }
 
+/* V2.2.1 dashboard visual and entry consolidation. */
+.header-bar {
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+}
+
+.header-current-path {
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+}
+
+.dashboard-hero-actions {
+  grid-template-columns: auto;
+  justify-items: end;
+}
+
+.dashboard-date {
+  grid-column: 1;
+}
+
+.dashboard-entry-grid {
+  grid-template-columns: repeat(4, minmax(240px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.dashboard-entry-card {
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  column-gap: 9px;
+  row-gap: 4px;
+  width: 100%;
+  min-width: 240px;
+  min-height: 104px;
+  height: 104px;
+  padding: 10px 11px;
+  border-color: #d8e4f0;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(28, 68, 108, 0.04);
+  box-sizing: border-box;
+}
+
+.dashboard-entry-marker {
+  width: 34px;
+  height: 34px;
+  color: #2367aa;
+  border-radius: 9px;
+  background: #edf5fd;
+}
+
+.dashboard-entry-marker svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.dashboard-entry-copy {
+  gap: 2px;
+  min-height: 56px;
+}
+
+.dashboard-entry-copy strong {
+  height: 20px;
+  overflow: hidden;
+  color: var(--dashboard-ink);
+  font-size: 13px;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-entry-copy small {
+  display: -webkit-box;
+  min-height: 34px;
+  max-height: 34px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 17px;
+  overflow-wrap: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.dashboard-entry-arrow {
+  grid-column: 2;
+  min-height: 17px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
+.dashboard-entry-card:hover {
+  color: var(--text);
+  border-color: #83acd7;
+  background: #f4f9ff;
+  box-shadow: 0 7px 18px rgba(31, 102, 169, 0.09);
+}
+
+.dashboard-entry-card:focus-visible {
+  outline: 2px solid #2f74b8;
+  outline-offset: 2px;
+}
+
+@media (max-width: 1500px) {
+  .dashboard-entry-grid {
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 980px) {
+  .dashboard-entry-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .header-bar,
+  .dashboard-entry-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-entry-card {
+    min-width: 0;
+  }
+}
+
 /* V1.2.5 workspace lockup: window-mode layout, compact controls, sane internal scrolling. */
 .app-frame {
   min-width: 0;
