@@ -6,6 +6,7 @@ const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
+const { deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
 const { deleteLedgerRecords, exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
@@ -346,6 +347,24 @@ ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport
   projectRoot: path.resolve(__dirname, '..')
 }));
 
+ipcMain.handle('trialIssues:load', async () => loadTrialIssues(getWritableDocumentsPath()));
+ipcMain.handle('trialIssues:save', async (_event, item) => saveTrialIssue(getWritableDocumentsPath(), item));
+ipcMain.handle('trialIssues:delete', async (_event, id) => deleteTrialIssue(getWritableDocumentsPath(), id));
+ipcMain.handle('trialIssues:export', async (_event, items, format = 'xlsx') => {
+  if (!Array.isArray(items) || items.length === 0) return { success: false, message: '当前没有可导出的试运行问题记录。' };
+  const normalizedFormat = format === 'csv' ? 'csv' : 'xlsx';
+  const timestamp = createFileTimestamp(new Date());
+  const result = await dialog.showSaveDialog({
+    title: '导出试运行问题记录',
+    defaultPath: path.join(app.getPath('documents'), `试运行问题记录_${timestamp}.${normalizedFormat}`),
+    filters: normalizedFormat === 'csv'
+      ? [{ name: 'CSV 文件', extensions: ['csv'] }]
+      : [{ name: 'Excel 文件', extensions: ['xlsx'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  return exportTrialIssues(result.filePath, items, normalizedFormat);
+});
+
 ipcMain.handle('dashboard:loadData', async () => loadDashboardData({
   documentsPath: getWritableDocumentsPath(),
   projectRoot: path.resolve(__dirname, '..')
@@ -419,3 +438,8 @@ ipcMain.handle('app:getPaths', async () => ({
   documents: app.getPath('documents'),
   writableDocuments: getWritableDocumentsPath()
 }));
+
+function createFileTimestamp(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}

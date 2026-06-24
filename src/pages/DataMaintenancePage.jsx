@@ -8,8 +8,14 @@ const SECTIONS = [
   { key: 'ledger', label: '台账状态' },
   { key: 'sortProgress', label: '分拣进度' },
   { key: 'packages', label: '资料包记录' },
+  { key: 'trialIssues', label: '试运行问题记录' },
   { key: 'suggestions', label: '维护建议' }
 ];
+
+const ISSUE_PAGES = ['首页总览', '快速批量归档', '照片分拣工作台', '归档记录', '整改闭环中心', '资料汇总中心', '数据维护中心', '系统设置', '其它'];
+const ISSUE_TYPES = ['界面显示', '按钮状态', '文件目录', '扫描照片', '生成预览', '确认归档', '台账记录', '查询筛选', '删除记录', '打开文件', '数据异常', '操作体验', '其它'];
+const ISSUE_IMPACTS = ['轻微', '一般', '严重'];
+const ISSUE_STATUSES = ['未处理', '处理中', '已处理', '暂不处理'];
 
 const STATUS_LABELS = {
   normal: '正常',
@@ -80,7 +86,7 @@ export default function DataMaintenancePage({ onNavigate }) {
       </section>
 
       <div className={`archive-query-status ${status.type}`}>{status.text}</div>
-      <div className="maintenance-safety-note">安全边界：本页只读取状态并提供打开目录、复制路径、跳转页面，不删除、不移动、不修改任何照片、台账、配置或资料包。</div>
+      <div className="maintenance-safety-note">安全边界：维护检查仍为只读；仅“试运行问题记录”会读写独立的 trial-issues.json，不删除、不移动、不修改任何照片、台账、配置、整改数据或资料包。</div>
 
       <section className="maintenance-layout">
         <aside className="maintenance-nav">
@@ -104,7 +110,9 @@ export default function DataMaintenancePage({ onNavigate }) {
             <small>最近检查：{formatDateTime(report?.checkedAt) || '尚未完成'}</small>
           </header>
 
-          {!report ? (
+          {activeSection === 'trialIssues' ? (
+            <TrialIssuesSection />
+          ) : !report ? (
             <div className="empty-state">{isLoading ? '正在读取本地维护状态...' : '暂无维护状态，请点击重新检查。'}</div>
           ) : (
             <>
@@ -331,6 +339,221 @@ function PackageSection({ report, onOpen, onCopy, onNavigate }) {
       <p className="maintenance-muted">资料包状态只检查默认导出目录的直接子目录，不扫描整盘，也不会删除、移动或压缩资料包。</p>
     </div>
   );
+}
+
+function TrialIssuesSection() {
+  const [items, setItems] = useState([]);
+  const [paths, setPaths] = useState(null);
+  const [filters, setFilters] = useState({ page: '', type: '', impact: '', status: '', keyword: '' });
+  const [form, setForm] = useState(null);
+  const [notice, setNotice] = useState({ type: 'idle', text: '正在读取试运行问题记录...' });
+  const [isBusy, setIsBusy] = useState(false);
+  const [exportFormat, setExportFormat] = useState('xlsx');
+
+  useEffect(() => {
+    loadItems();
+  }, []);
+
+  const filteredItems = useMemo(() => items.filter((item) => {
+    if (filters.page && item.page !== filters.page) return false;
+    if (filters.type && item.type !== filters.type) return false;
+    if (filters.impact && item.impact !== filters.impact) return false;
+    if (filters.status && item.status !== filters.status) return false;
+    const keyword = filters.keyword.trim().toLowerCase();
+    if (keyword && !`${item.description} ${item.handlingNote}`.toLowerCase().includes(keyword)) return false;
+    return true;
+  }), [items, filters]);
+
+  const stats = useMemo(() => ({
+    total: filteredItems.length,
+    pending: filteredItems.filter((item) => item.status === '未处理').length,
+    processing: filteredItems.filter((item) => item.status === '处理中').length,
+    completed: filteredItems.filter((item) => item.status === '已处理').length,
+    severe: filteredItems.filter((item) => item.impact === '严重').length
+  }), [filteredItems]);
+
+  async function loadItems() {
+    setIsBusy(true);
+    try {
+      const result = await window.archiveAssistant.loadTrialIssues();
+      setItems(result.items || []);
+      setPaths(result.paths || null);
+      setNotice({ type: 'success', text: `已加载 ${result.items?.length || 0} 条试运行问题记录。` });
+    } catch (error) {
+      setNotice({
+        type: 'error',
+        text: `问题：试运行问题记录读取失败，数据文件可能损坏。处理：请先备份当前数据文件，再联系维护人员检查 trial-issues.json。${error?.message ? ` 详情：${error.message}` : ''}`
+      });
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function startCreate() {
+    setForm(createEmptyIssue());
+  }
+
+  function startEdit(item) {
+    setForm({ ...item, issueTime: toDateTimeInput(item.issueTime) });
+  }
+
+  function updateForm(key, value) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveItem() {
+    if (!form?.description?.trim()) {
+      setNotice({ type: 'error', text: '问题描述不能为空。' });
+      return;
+    }
+    setIsBusy(true);
+    try {
+      const result = await window.archiveAssistant.saveTrialIssue({
+        ...form,
+        issueTime: String(form.issueTime || '').replace('T', ' ')
+      });
+      setItems(result.items || []);
+      setPaths(result.paths || paths);
+      setForm(null);
+      setNotice({ type: 'success', text: '问题记录已保存。' });
+    } catch (error) {
+      setNotice({ type: 'error', text: `问题：试运行问题记录保存失败，${error?.message || '本地数据文件无法写入'}。处理：请检查数据目录权限和磁盘空间后重试。` });
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function removeItem(item) {
+    if (!window.confirm('确定要删除这条试运行问题记录吗？删除后不可恢复。')) return;
+    setIsBusy(true);
+    try {
+      const result = await window.archiveAssistant.deleteTrialIssue(item.id);
+      setItems(result.items || []);
+      setPaths(result.paths || paths);
+      if (form?.id === item.id) setForm(null);
+      setNotice({ type: 'success', text: '试运行问题记录已删除。' });
+    } catch (error) {
+      setNotice({ type: 'error', text: `问题：试运行问题记录删除失败，${error?.message || '记录未能删除'}。处理：请重新加载记录并检查数据目录权限后重试。` });
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function exportItems() {
+    if (filteredItems.length === 0) return;
+    setIsBusy(true);
+    try {
+      const result = await window.archiveAssistant.exportTrialIssues(filteredItems, exportFormat);
+      if (result?.canceled) return;
+      setNotice(result?.success
+        ? { type: 'success', text: `试运行问题记录已导出：${result.filePath}` }
+        : { type: 'error', text: `问题：试运行问题记录导出失败，${result?.message || '未生成导出文件'}。处理：请选择可写目录后重试。` });
+    } catch (error) {
+      setNotice({ type: 'error', text: `问题：试运行问题记录导出失败，${error?.message || '未生成导出文件'}。处理：请检查目标目录权限后重试。` });
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  return (
+    <div className="trial-issues-section">
+      <header className="trial-issues-heading">
+        <div>
+          <h3>试运行问题记录</h3>
+          <p>记录软件试用期间发现的问题、影响程度、处理状态和修复备注，便于后续版本跟进。</p>
+          {paths?.dataFile && <small title={paths.dataFile}>数据文件：{paths.dataFile}</small>}
+        </div>
+        <div>
+          <button type="button" className="primary orange" onClick={startCreate} disabled={isBusy}>新增问题</button>
+          <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)} aria-label="导出格式">
+            <option value="xlsx">Excel</option>
+            <option value="csv">CSV</option>
+          </select>
+          <button type="button" onClick={exportItems} disabled={isBusy || filteredItems.length === 0}>导出记录</button>
+        </div>
+      </header>
+
+      <div className={`archive-query-status ${notice.type}`}>{notice.text}</div>
+
+      <div className="trial-issue-stats">
+        <TrialStat label="记录总数" value={stats.total} />
+        <TrialStat label="未处理" value={stats.pending} tone="pending" />
+        <TrialStat label="处理中" value={stats.processing} tone="processing" />
+        <TrialStat label="已处理" value={stats.completed} tone="completed" />
+        <TrialStat label="严重问题" value={stats.severe} tone="severe" />
+      </div>
+
+      <div className="trial-issue-filters">
+        <TrialSelect label="问题页面" value={filters.page} options={ISSUE_PAGES} onChange={(value) => setFilters((current) => ({ ...current, page: value }))} />
+        <TrialSelect label="问题类型" value={filters.type} options={ISSUE_TYPES} onChange={(value) => setFilters((current) => ({ ...current, type: value }))} />
+        <TrialSelect label="影响程度" value={filters.impact} options={ISSUE_IMPACTS} onChange={(value) => setFilters((current) => ({ ...current, impact: value }))} />
+        <TrialSelect label="处理状态" value={filters.status} options={ISSUE_STATUSES} onChange={(value) => setFilters((current) => ({ ...current, status: value }))} />
+        <label className="wide"><span>关键词搜索</span><input value={filters.keyword} placeholder="搜索问题描述或处理备注" onChange={(event) => setFilters((current) => ({ ...current, keyword: event.target.value }))} /></label>
+      </div>
+
+      {form && (
+        <section className="trial-issue-form">
+          <header><h3>{form.id ? '编辑问题记录' : '新增问题记录'}</h3></header>
+          <div className="trial-issue-form-grid">
+            <label><span>问题时间</span><input type="datetime-local" value={form.issueTime} onChange={(event) => updateForm('issueTime', event.target.value)} /></label>
+            <TrialSelect label="问题页面" value={form.page} options={ISSUE_PAGES} includeAll={false} onChange={(value) => updateForm('page', value)} />
+            <TrialSelect label="问题类型" value={form.type} options={ISSUE_TYPES} includeAll={false} onChange={(value) => updateForm('type', value)} />
+            <TrialSelect label="影响程度" value={form.impact} options={ISSUE_IMPACTS} includeAll={false} onChange={(value) => updateForm('impact', value)} />
+            <TrialSelect label="处理状态" value={form.status} options={ISSUE_STATUSES} includeAll={false} onChange={(value) => updateForm('status', value)} />
+            <label className="wide"><span>问题描述 *</span><textarea value={form.description} onChange={(event) => updateForm('description', event.target.value)} /></label>
+            <label className="wide"><span>处理备注</span><textarea value={form.handlingNote} onChange={(event) => updateForm('handlingNote', event.target.value)} /></label>
+          </div>
+          <footer><button type="button" onClick={() => setForm(null)} disabled={isBusy}>取消</button><button type="button" className="primary orange" onClick={saveItem} disabled={isBusy}>保存记录</button></footer>
+        </section>
+      )}
+
+      <div className="trial-issue-table-wrap">
+        <table className="trial-issue-table">
+          <thead><tr><th>问题时间</th><th>问题页面</th><th>问题类型</th><th>影响程度</th><th>处理状态</th><th>问题描述</th><th>处理备注</th><th>操作</th></tr></thead>
+          <tbody>
+            {filteredItems.map((item) => (
+              <tr key={item.id}>
+                <td>{formatDateTime(item.issueTime)}</td><td>{item.page}</td><td>{item.type}</td>
+                <td><span className={`trial-tag impact-${impactTone(item.impact)}`}>{item.impact}</span></td>
+                <td><span className={`trial-tag status-${statusTone(item.status)}`}>{item.status}</span></td>
+                <td><span className="trial-two-line" title={item.description}>{item.description}</span></td>
+                <td><span className="trial-two-line" title={item.handlingNote}>{item.handlingNote || '-'}</span></td>
+                <td><div className="trial-row-actions"><button type="button" onClick={() => startEdit(item)}>编辑</button><button type="button" className="danger" onClick={() => removeItem(item)}>删除</button></div></td>
+              </tr>
+            ))}
+            {filteredItems.length === 0 && <tr><td colSpan="8" className="maintenance-empty">暂无试运行问题记录</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TrialStat({ label, value, tone = '' }) {
+  return <article className={tone}><span>{label}</span><strong>{value}</strong></article>;
+}
+
+function TrialSelect({ label, value, options, onChange, includeAll = true }) {
+  return <label><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{includeAll && <option value="">全部</option>}{options.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>;
+}
+
+function createEmptyIssue() {
+  return { id: '', issueTime: toDateTimeInput(new Date()), page: '首页总览', type: '界面显示', impact: '一般', status: '未处理', description: '', handlingNote: '', createdAt: '', updatedAt: '' };
+}
+
+function toDateTimeInput(value) {
+  const date = value instanceof Date ? value : new Date(String(value || '').replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return String(value || '').slice(0, 16).replace(' ', 'T');
+  const pad = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function impactTone(value) {
+  return { 轻微: 'minor', 一般: 'normal', 严重: 'severe' }[value] || 'normal';
+}
+
+function statusTone(value) {
+  return { 未处理: 'pending', 处理中: 'processing', 已处理: 'completed', 暂不处理: 'deferred' }[value] || 'pending';
 }
 
 function SuggestionSection({ report, onNavigate }) {

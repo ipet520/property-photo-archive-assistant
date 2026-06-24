@@ -6551,6 +6551,235 @@ body,
   min-width: 0;
 }
 
+.trial-issues-section {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.trial-issues-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+
+.trial-issues-heading > div:first-child {
+  min-width: 0;
+}
+
+.trial-issues-heading h3,
+.trial-issue-form h3 {
+  margin: 0;
+  color: var(--navy);
+}
+
+.trial-issues-heading p {
+  margin: 5px 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.trial-issues-heading small {
+  display: block;
+  max-width: 680px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trial-issues-heading > div:last-child,
+.trial-row-actions,
+.trial-issue-form footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.trial-issues-heading button,
+.trial-issues-heading select,
+.trial-row-actions button,
+.trial-issue-form footer button {
+  min-height: 34px;
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+
+.trial-issues-heading select {
+  width: 86px;
+}
+
+.trial-issue-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(100px, 1fr));
+  gap: 8px;
+}
+
+.trial-issue-stats article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.trial-issue-stats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trial-issue-stats strong {
+  color: var(--navy);
+  font-size: 20px;
+}
+
+.trial-issue-stats .processing { background: #fff8eb; }
+.trial-issue-stats .completed { background: #effaf4; }
+.trial-issue-stats .severe { background: #fff3f3; }
+
+.trial-issue-filters,
+.trial-issue-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.trial-issue-filters label,
+.trial-issue-form-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trial-issue-filters input,
+.trial-issue-filters select,
+.trial-issue-form-grid input,
+.trial-issue-form-grid select,
+.trial-issue-form-grid textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.trial-issue-filters .wide,
+.trial-issue-form-grid .wide {
+  grid-column: span 2;
+}
+
+.trial-issue-form {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #cfe0f1;
+  border-radius: 14px;
+  background: #f8fbff;
+}
+
+.trial-issue-form-grid textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.trial-issue-form footer {
+  justify-content: flex-end;
+}
+
+.trial-issue-table-wrap {
+  min-width: 0;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid #dce7f4;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.trial-issue-table {
+  width: max(1080px, 100%);
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.trial-issue-table th,
+.trial-issue-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #e8eef6;
+  color: var(--text);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.trial-issue-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--navy);
+  background: #f5f9fd;
+  white-space: nowrap;
+}
+
+.trial-issue-table th:nth-child(1) { width: 142px; }
+.trial-issue-table th:nth-child(2) { width: 124px; }
+.trial-issue-table th:nth-child(3) { width: 110px; }
+.trial-issue-table th:nth-child(4),
+.trial-issue-table th:nth-child(5) { width: 88px; }
+.trial-issue-table th:nth-child(8) { width: 118px; }
+
+.trial-two-line {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.trial-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #40556c;
+  background: #edf3f8;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.trial-tag.impact-severe { color: #a12828; background: #ffeded; }
+.trial-tag.impact-minor { color: #35664e; background: #edf8f2; }
+.trial-tag.status-processing { color: #8a5700; background: #fff2d8; }
+.trial-tag.status-completed { color: #17603d; background: #eaf8f0; }
+.trial-tag.status-deferred { color: #626b78; background: #eef1f5; }
+
+.trial-row-actions .danger {
+  color: #a12828;
+  border-color: #efc7c7;
+  background: #fff8f8;
+}
+
+@media (max-width: 1180px) {
+  .trial-issues-heading {
+    flex-wrap: wrap;
+  }
+
+  .trial-issue-stats {
+    grid-template-columns: repeat(3, minmax(100px, 1fr));
+  }
+
+  .trial-issue-filters,
+  .trial-issue-form-grid {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
 .maintenance-summary-grid > div {
   display: grid;
   gap: 6px;
