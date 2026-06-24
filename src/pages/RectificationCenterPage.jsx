@@ -11,6 +11,7 @@ const defaultFilters = {
   project: '',
   department: '',
   status: '',
+  overdueOnly: false,
   deadlineStart: '',
   deadlineEnd: '',
   keyword: ''
@@ -126,7 +127,16 @@ export default function RectificationCenterPage({ archiveState, navigationReques
   }
 
   function updateFilter(key, value) {
-    setFilters((current) => ({ ...current, [key]: value }));
+    setFilters((current) => ({
+      ...current,
+      [key]: value,
+      ...(key === 'status' ? { overdueOnly: false } : {})
+    }));
+    setPage(1);
+  }
+
+  function applyStatFilter(statusValue = '', overdueOnly = false) {
+    setFilters((current) => ({ ...current, status: statusValue, overdueOnly }));
     setPage(1);
   }
 
@@ -340,12 +350,12 @@ export default function RectificationCenterPage({ archiveState, navigationReques
       </section>
 
       <section className="rectification-stats">
-        <Stat label="全部" value={stats.total} />
-        <Stat label="待整改" value={stats.pending} />
-        <Stat label="整改中" value={stats.doing} />
-        <Stat label="已完成" value={stats.done} />
-        <Stat label="已关闭" value={stats.closed} />
-        <Stat label="逾期提醒" value={stats.overdue} warning />
+        <Stat label="全部" value={stats.total} active={!filters.status && !filters.overdueOnly} onClick={() => applyStatFilter()} />
+        <Stat label="待整改" value={stats.pending} active={filters.status === '待整改' && !filters.overdueOnly} onClick={() => applyStatFilter('待整改')} />
+        <Stat label="整改中" value={stats.doing} active={filters.status === '整改中' && !filters.overdueOnly} onClick={() => applyStatFilter('整改中')} />
+        <Stat label="已完成" value={stats.done} active={filters.status === '已完成' && !filters.overdueOnly} onClick={() => applyStatFilter('已完成')} />
+        <Stat label="已关闭" value={stats.closed} active={filters.status === '已关闭' && !filters.overdueOnly} onClick={() => applyStatFilter('已关闭')} />
+        <Stat label="逾期提醒" value={stats.overdue} warning active={filters.overdueOnly} onClick={() => applyStatFilter('', true)} />
       </section>
 
       <section className="rectification-toolbar panel">
@@ -724,12 +734,12 @@ function StatusBadge({ status }) {
   return <span className={`rectification-status ${statusClass}`}>{status}</span>;
 }
 
-function Stat({ label, value, warning }) {
+function Stat({ label, value, warning, active, onClick }) {
   return (
-    <article className={warning ? 'warning' : ''}>
+    <button type="button" className={`${warning ? 'warning' : ''} ${active ? 'active' : ''}`} onClick={onClick}>
       <span>{label}</span>
       <strong>{value}</strong>
-    </article>
+    </button>
   );
 }
 
@@ -737,6 +747,7 @@ function matchesFilters(item, filters) {
   if (filters.project && item.project !== filters.project) return false;
   if (filters.department && item.responsibleDepartment !== filters.department) return false;
   if (filters.status && item.status !== filters.status) return false;
+  if (filters.overdueOnly && !isOverdue(item)) return false;
   if (filters.deadlineStart && item.deadline < filters.deadlineStart) return false;
   if (filters.deadlineEnd && item.deadline > filters.deadlineEnd) return false;
   const keyword = filters.keyword.trim().toLowerCase();

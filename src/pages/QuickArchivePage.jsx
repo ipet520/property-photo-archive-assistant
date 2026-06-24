@@ -578,7 +578,6 @@ function QuickAssistContent({ activeTab, archiveState }) {
           <button type="button" key={record.id} className="recent-card" onClick={() => archiveState.applyRecentRecord(record)}>
             <strong>{record.project} / {record.department}</strong>
             <span>{record.watermarkCategory} / {record.workContent}</span>
-            <small>{record.location || '未填写位置/区域'} - {record.workItem || '未填写事项名称'}</small>
           </button>
         ))}
         {archiveState.recentRecords.length > 0 && <button type="button" className="mini-button danger" onClick={archiveState.clearRecentRecordList}>清空最近记录</button>}

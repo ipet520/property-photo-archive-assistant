@@ -22,7 +22,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   const [activeTab, setActiveTab] = useState('baseData');
   const [highlightedPathKey, setHighlightedPathKey] = useState('');
   const [settings, setSettings] = useState(archiveState.settings || null);
-  const [message, setMessage] = useState({ type: 'idle', text: '系统设置已就绪。' });
+  const [message, setMessage] = useState({ type: 'idle', text: '' });
   const appPaths = archiveState.appPaths || {};
   const configPaths = archiveState.configPaths || {};
 
@@ -157,7 +157,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
         <button className="primary" type="button" onClick={saveSettings} disabled={!settings}>保存设置</button>
       </section>
 
-      <div className={`config-message ${message.type}`}>{message.text}</div>
+      {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
       <div className="settings-impact-note">
         基础数据会影响快速归档和照片分拣的下拉选项；关键词库和常见场景会影响分拣工作台辅助填写；默认目录会影响快速归档、分拣工作台、归档记录和资料包导出；资料包设置会影响后续资料包默认选项。历史台账和已归档照片不会因为设置修改而改变。
       </div>
@@ -182,7 +182,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
               <header>
                 <p className="eyebrow">基础数据</p>
                 <h2>项目、部门、来源、分类、工作内容、关键词和常见场景</h2>
-                <p>这里复用现有配置管理能力，支持新增、编辑、停用、排序、导入导出和恢复默认。</p>
+                <p>这里集中维护基础配置，支持新增、编辑、停用和排序；配置备份、导入导出与恢复默认统一在“设置备份与恢复”中操作。</p>
               </header>
               <ConfigManager open embedded onClose={() => {}} onSaved={archiveState.handleConfigsSaved} />
             </div>

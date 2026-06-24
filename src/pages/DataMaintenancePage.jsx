@@ -557,9 +557,10 @@ function statusTone(value) {
 }
 
 function SuggestionSection({ report, onNavigate }) {
+  const suggestions = getVisibleSuggestions(report);
   return (
     <div className="maintenance-suggestion-list">
-      {report.suggestions.map((suggestion, index) => (
+      {suggestions.map((suggestion, index) => (
         <article key={`${suggestion.title}-${index}`} className={`maintenance-suggestion ${suggestion.level}`}>
           <StatusBadge status={suggestion.level} />
           <div>
@@ -592,11 +593,30 @@ function getDirectoryAction(key, onNavigate) {
 
 function getSuggestionTarget(suggestion) {
   const text = `${suggestion.title || ''} ${suggestion.text || ''}`;
-  if (text.includes('文件缺失') || text.includes('台账')) return { page: PAGE_KEYS.searchCenter, action: text.includes('文件缺失') ? 'missing-files' : 'load-ledger' };
-  if (text.includes('资料包')) return { page: PAGE_KEYS.searchCenter, action: 'package' };
-  if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
+  if (text.includes('资料包导出目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchivePackageRoot' } };
+  if (text.includes('默认照片') || text.includes('照片导入目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultPhotoFolder' } };
+  if (text.includes('归档根目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchiveRoot' } };
+  if (text.includes('设置备份') || text.includes('配置备份')) return { page: PAGE_KEYS.settings, action: 'settings-backup' };
   if (text.includes('配置')) return { page: PAGE_KEYS.settings, action: 'settings-base-data' };
+  if (text.includes('文件缺失') || text.includes('台账')) return { page: PAGE_KEYS.searchCenter, action: text.includes('文件缺失') ? 'missing-files' : 'load-ledger' };
+  if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
+  if (text.includes('资料包')) return { page: PAGE_KEYS.reportCenter, action: 'load-summary' };
+  if (text.includes('分拣草稿')) return { page: PAGE_KEYS.sortWorkspace };
   return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
+}
+
+function getVisibleSuggestions(report) {
+  const packageDirectory = report.directoryStatus?.items?.find((item) => item.key === 'defaultArchivePackageRoot');
+  const suggestions = (report.suggestions || []).filter((suggestion) => {
+    if (suggestion.title !== '资料包导出目录需要确认') return true;
+    return !packageDirectory?.configured || !packageDirectory?.exists || !packageDirectory?.readable;
+  });
+  if (suggestions.length > 0) return suggestions;
+  return [{
+    level: 'success',
+    title: '当前未发现明显维护风险',
+    text: '配置、目录、台账和资料包状态暂未发现异常。建议定期进入本页刷新检查。'
+  }];
 }
 
 function SummaryGrid({ items }) {

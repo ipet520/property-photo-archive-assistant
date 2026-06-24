@@ -6765,6 +6765,67 @@ body,
   background: #fff8f8;
 }
 
+/* V2.2.3 high-density workspace refinements. */
+.config-import-summary {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.config-import-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 38, 65, 0.42);
+}
+
+.config-import-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(560px, 100%);
+  padding: 18px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 22px 60px rgba(15, 38, 65, 0.22);
+}
+
+.config-import-dialog h3,
+.config-import-dialog p {
+  margin: 0;
+}
+
+.config-import-dialog p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.config-import-dialog textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+}
+
+.config-import-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-center-page .config-manager.embedded .config-layout {
+  min-height: 0;
+}
+
+.settings-center-page .config-manager.embedded .config-content {
+  min-height: 0;
+  max-height: calc(100vh - 300px);
+  overflow: auto;
+}
+
 @media (max-width: 1180px) {
   .trial-issues-heading {
     flex-wrap: wrap;
@@ -11099,5 +11160,189 @@ table tbody tr.selected td {
 
   .archive-delete-result dl {
     grid-template-columns: repeat(3, minmax(86px, 1fr));
+  }
+}
+
+/* V2.2.3 final overrides: keep dense workspaces compact after legacy rules. */
+.archive-records-page .archive-query-summary,
+.summary-center-page .summary-stats,
+.rectification-page .rectification-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.archive-records-page .archive-stat-card,
+.summary-center-page .summary-stats article,
+.rectification-page .rectification-stats button {
+  display: inline-flex;
+  flex: 1 1 130px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 120px;
+  min-height: 44px;
+  padding: 7px 11px;
+  border: 1px solid #dce7f4;
+  border-radius: 9px;
+  color: var(--ui-navy);
+  background: #f9fbfe;
+  box-shadow: none;
+}
+
+.rectification-page .rectification-stats button {
+  min-height: 56px;
+  max-height: 68px;
+}
+
+.archive-records-page .archive-stat-card small,
+.summary-center-page .summary-stats article span,
+.rectification-page .rectification-stats button span {
+  color: var(--ui-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.archive-records-page .archive-stat-card strong,
+.summary-center-page .summary-stats article strong,
+.rectification-page .rectification-stats button strong {
+  color: var(--ui-navy);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.archive-records-page .archive-stat-card.warning,
+.summary-center-page .summary-stats article.warning,
+.rectification-page .rectification-stats button.warning {
+  border-color: #f2c997;
+  background: #fff8ed;
+}
+
+.rectification-page .rectification-stats button:hover {
+  border-color: #9fc0df;
+  background: #eff6fd;
+}
+
+.rectification-page .rectification-stats button.active {
+  border-color: var(--ui-navy);
+  background: var(--ui-navy);
+}
+
+.rectification-page .rectification-stats button.active span,
+.rectification-page .rectification-stats button.active strong {
+  color: #fff;
+}
+
+.rectification-page .rectification-stats button.warning.active,
+.rectification-page .rectification-stats button.warning.active span,
+.rectification-page .rectification-stats button.warning.active strong {
+  color: #7a4600;
+}
+
+.rectification-page .rectification-stats button.warning.active {
+  border-color: #e7a958;
+  background: #ffedcf;
+}
+
+.summary-center-page .summary-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+}
+
+.summary-center-page .summary-path-box {
+  display: flex;
+  flex: 1 1 280px;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 8px;
+  border-radius: 9px;
+}
+
+.summary-center-page .summary-path-box.secondary {
+  flex: 1 1 210px;
+}
+
+.summary-center-page .summary-path-box span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.summary-center-page .summary-path-box strong {
+  flex: 1 1 auto;
+}
+
+.summary-center-page .summary-toolbar > button {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.quick-final-workspace .quick-helper-content {
+  min-height: 118px;
+  max-height: 190px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.quick-final-workspace .quick-inline-assist .quick-scene-list,
+.quick-final-workspace .quick-inline-assist .quick-template-list,
+.quick-final-workspace .quick-inline-assist .recent-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 7px;
+  width: 100%;
+  max-height: none;
+  overflow: visible;
+}
+
+.quick-final-workspace .quick-inline-assist .scene-chip,
+.quick-final-workspace .quick-inline-assist .recent-card {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
+  min-height: 52px;
+  max-height: 58px;
+  margin: 0;
+  padding: 7px 9px;
+  overflow: hidden;
+  border-radius: 9px;
+  box-sizing: border-box;
+  text-align: left;
+}
+
+.quick-final-workspace .quick-inline-assist .scene-chip strong,
+.quick-final-workspace .quick-inline-assist .scene-chip small,
+.quick-final-workspace .quick-inline-assist .recent-card strong,
+.quick-final-workspace .quick-inline-assist .recent-card span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1366px) {
+  .archive-records-page .archive-stat-card,
+  .summary-center-page .summary-stats article,
+  .rectification-page .rectification-stats button {
+    flex-basis: calc(33.333% - 8px);
+  }
+
+  .quick-final-workspace .quick-inline-assist .quick-scene-list,
+  .quick-final-workspace .quick-inline-assist .quick-template-list,
+  .quick-final-workspace .quick-inline-assist .recent-list {
+    grid-template-columns: 1fr;
   }
 }

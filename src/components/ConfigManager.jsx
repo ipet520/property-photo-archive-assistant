@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 const CONFIG_TABS = [
   { key: 'projects', label: '项目管理', type: 'simple', defaultable: true },
@@ -8,8 +8,7 @@ const CONFIG_TABS = [
   { key: 'photoStages', label: '照片阶段', type: 'simple', defaultable: true },
   { key: 'processStatuses', label: '处理状态', type: 'simple', defaultable: true },
   { key: 'keywords', label: '关键词', type: 'keywords' },
-  { key: 'sceneExamples', label: '常见场景', type: 'scenes' },
-  { key: 'backup', label: '配置备份/导入导出', type: 'backup' }
+  { key: 'sceneExamples', label: '常见场景', type: 'scenes' }
 ];
 
 const CONFIG_LABELS = Object.fromEntries(CONFIG_TABS.map((tab) => [tab.key, tab.label]));
@@ -55,6 +54,24 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
   }
 
   async function saveAll() {
+    const invalidSceneName = configs?.sceneExamples?.find((scene) => !String(scene.title || scene.name || '').trim());
+    if (invalidSceneName) {
+      setActiveTab('sceneExamples');
+      setMessage({ type: 'error', text: '常见场景名称不能为空。' });
+      return;
+    }
+    const missingSceneCategory = configs?.sceneExamples?.find((scene) => !String(scene.watermarkCategory || '').trim());
+    if (missingSceneCategory) {
+      setActiveTab('sceneExamples');
+      setMessage({ type: 'error', text: '请选择水印分类。' });
+      return;
+    }
+    const missingSceneWorkContent = configs?.sceneExamples?.find((scene) => !String(scene.workContent || '').trim());
+    if (missingSceneWorkContent) {
+      setActiveTab('sceneExamples');
+      setMessage({ type: 'error', text: '请选择工作内容。' });
+      return;
+    }
     setIsSaving(true);
     try {
       const result = await window.archiveAssistant.saveAllUserConfigs(configs);
@@ -170,19 +187,11 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
                 onSelectCategory={setSelectedCategoryId}
                 onChange={(items) => updateConfig('watermarkCategories', items)}
               />
-            ) : active.type === 'scenes' ? (
+            ) : (
               <SceneEditor
                 scenes={configs.sceneExamples}
                 configs={configs}
                 onChange={(items) => updateConfig('sceneExamples', items)}
-              />
-            ) : (
-              <BackupPanel
-                paths={paths}
-                onBackup={backupNow}
-                onExport={exportAll}
-                onImport={importAll}
-                onReset={resetToDefault}
               />
             )}
           </div>
@@ -200,13 +209,21 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
 }
 
 function SimpleConfigEditor({ title, items, onChange, defaultable = false }) {
+  const [focusItemId, setFocusItemId] = useState('');
   const nameSize = title === '部门管理' || title === '照片阶段' || title === '处理状态' ? 'short' : 'medium';
+  function addItem() {
+    const item = createTopItem(items, createSimpleItem(`新${title}`));
+    setFocusItemId(item.id);
+    onChange([item, ...items]);
+  }
   return (
-    <ConfigSection title={title} onAdd={() => onChange([...items, createSimpleItem(`新${title}`)])}>
+    <ConfigSection title={title} onAdd={addItem}>
       <EditableTable
         items={items}
         onChange={onChange}
         defaultable={defaultable}
+        focusItemId={focusItemId}
+        onFocusComplete={() => setFocusItemId('')}
         columns={[
           { key: 'name', label: '名称', type: 'text', size: nameSize },
           { key: 'description', label: '说明', type: 'text', size: 'text' }
@@ -217,48 +234,84 @@ function SimpleConfigEditor({ title, items, onChange, defaultable = false }) {
 }
 
 function KeywordEditor({ items, onChange }) {
-  function importKeywords() {
-    const value = window.prompt('请输入关键词，多个关键词可用顿号、逗号、空格或换行分隔。');
-    if (!value) return;
-    const nextNames = value.split(/[、,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
-    const existing = new Set(items.map((item) => item.name));
-    const nextItems = [
-      ...items,
-      ...nextNames.filter((name) => !existing.has(name)).map((name) => createSimpleItem(name))
-    ];
-    onChange(sortItems(nextItems));
+  const [focusItemId, setFocusItemId] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importSummary, setImportSummary] = useState('');
+
+  function addKeyword() {
+    const item = createTopItem(items, createSimpleItem('新关键词'));
+    setFocusItemId(item.id);
+    onChange([item, ...items]);
   }
 
-  function dedupe() {
-    const seen = new Set();
-    onChange(items.filter((item) => {
-      if (seen.has(item.name)) return false;
-      seen.add(item.name);
-      return true;
+  function importKeywords() {
+    const rawParts = importText.split(/[\n,，、;；\s]/);
+    const names = rawParts.map((item) => item.trim()).filter(Boolean);
+    const emptyCount = rawParts.length - names.length;
+    const uniqueNames = Array.from(new Set(names));
+    const existing = new Set(items.map((item) => item.name.trim()));
+    const newNames = uniqueNames.filter((name) => !existing.has(name));
+    const duplicateCount = names.length - uniqueNames.length + uniqueNames.filter((name) => existing.has(name)).length;
+    const imported = newNames.map((name, index) => ({
+      ...createSimpleItem(name),
+      sort: getTopSort(items) - newNames.length + index
     }));
+    if (imported.length > 0) onChange([...imported, ...items]);
+    setImportSummary(`本次识别关键词 ${names.length} 个；成功导入 ${imported.length} 个；跳过重复 ${duplicateCount} 个；跳过空项 ${emptyCount} 个。`);
+    setImportText('');
+    setImportOpen(false);
   }
 
   return (
-    <ConfigSection title="关键词" onAdd={() => onChange([...items, createSimpleItem('新关键词')])}>
+    <ConfigSection title="关键词" onAdd={addKeyword}>
       <div className="config-toolbar">
-        <button className="ghost" onClick={importKeywords}>批量导入关键词</button>
-        <button className="ghost" onClick={dedupe}>关键词去重</button>
+        <button className="ghost" onClick={() => setImportOpen(true)}>批量导入关键词</button>
+        {importSummary && <span className="config-import-summary">{importSummary}</span>}
       </div>
       <EditableTable
         items={items}
         onChange={onChange}
+        focusItemId={focusItemId}
+        onFocusComplete={() => setFocusItemId('')}
         columns={[
           { key: 'name', label: '关键词', type: 'text', size: 'medium' },
           { key: 'group', label: '分组', type: 'text', size: 'short' },
           { key: 'description', label: '说明', type: 'text', size: 'text' }
         ]}
       />
+      {importOpen && (
+        <div className="config-import-backdrop" role="dialog" aria-modal="true" aria-labelledby="keyword-import-title">
+          <section className="config-import-dialog">
+            <header>
+              <h3 id="keyword-import-title">批量导入关键词</h3>
+              <p>每行一个关键词，也可使用逗号、顿号、分号或空格分隔。</p>
+            </header>
+            <textarea autoFocus value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="例如：巡查、维修；安全提醒" />
+            <footer>
+              <button type="button" onClick={() => { setImportOpen(false); setImportText(''); }}>取消</button>
+              <button type="button" className="primary" onClick={importKeywords} disabled={!importText.trim()}>导入关键词</button>
+            </footer>
+          </section>
+        </div>
+      )}
     </ConfigSection>
   );
 }
 
 function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCategory, onChange }) {
+  const [focusWorkItemId, setFocusWorkItemId] = useState('');
+  const [focusCategoryId, setFocusCategoryId] = useState('');
+  const categoryNameRef = useRef(null);
   const selectedCategory = categories.find((item) => item.id === selectedCategoryId) || categories[0];
+
+  useEffect(() => {
+    if (!focusCategoryId || selectedCategory?.id !== focusCategoryId) return;
+    categoryNameRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    categoryNameRef.current?.focus();
+    categoryNameRef.current?.select();
+    setFocusCategoryId('');
+  }, [focusCategoryId, selectedCategory?.id]);
 
   function updateCategory(categoryId, patch) {
     onChange(categories.map((category) => (
@@ -273,9 +326,17 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
   }
 
   function addCategory() {
-    const nextCategory = createCategory('新水印分类');
-    onChange([...categories, nextCategory]);
+    const nextCategory = createTopItem(categories, createCategory('新水印分类'));
+    onChange([nextCategory, ...categories]);
     onSelectCategory(nextCategory.id);
+    setFocusCategoryId(nextCategory.id);
+  }
+
+  function addWorkItem() {
+    const currentItems = selectedCategory.items || [];
+    const nextItem = createTopItem(currentItems, createWorkItem('新工作内容'));
+    setFocusWorkItemId(nextItem.id);
+    updateWorkItems([nextItem, ...currentItems]);
   }
 
   function deleteCategory(category) {
@@ -329,7 +390,7 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
                   </div>
                 </div>
                 <div className="config-form-grid">
-                  <Field label="分类名称" value={selectedCategory.name} onChange={(name) => updateCategory(selectedCategory.id, { name })} />
+                  <Field inputRef={categoryNameRef} label="分类名称" value={selectedCategory.name} onChange={(name) => updateCategory(selectedCategory.id, { name })} />
                   <Field label="分类说明" value={selectedCategory.description} onChange={(description) => updateCategory(selectedCategory.id, { description })} wide />
                   <label className="field config-short-field">
                     <span>是否兜底分类</span>
@@ -347,11 +408,13 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
                   <h3>“{selectedCategory.name}”下的工作内容</h3>
                   <p className="muted">推荐关键词、备注模板和说明跟随当前工作内容一起保存。</p>
                 </div>
-                <button onClick={() => updateWorkItems([...(selectedCategory.items || []), createWorkItem('新工作内容')])}>新增工作内容</button>
+                <button onClick={addWorkItem}>新增工作内容</button>
               </div>
               <EditableTable
                 items={selectedCategory.items || []}
                 onChange={updateWorkItems}
+                focusItemId={focusWorkItemId}
+                onFocusComplete={() => setFocusWorkItemId('')}
                 columns={[
                   { key: 'name', label: '工作内容名称', type: 'text', size: 'long' },
                   { key: 'description', label: '说明', type: 'text', size: 'text' },
@@ -368,27 +431,61 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
 }
 
 function SceneEditor({ scenes, configs, onChange }) {
+  const [focusSceneId, setFocusSceneId] = useState('');
+  const sceneRefs = useRef(new Map());
+  const autoSuggestionsRef = useRef(new Map());
   const categories = configs.watermarkCategories.filter((item) => item.enabled !== false);
   const categoryNames = categories.map((item) => item.name);
-  const currentCategory = (scene) => categories.find((item) => item.name === scene.watermarkCategory) || categories[0];
+  const currentCategory = (scene) => categories.find((item) => item.name === scene.watermarkCategory);
+
+  useEffect(() => {
+    if (!focusSceneId) return;
+    const card = sceneRefs.current.get(focusSceneId);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const input = card?.querySelector('input');
+    input?.focus();
+    input?.select();
+    setFocusSceneId('');
+  }, [focusSceneId, scenes]);
+
+  function addScene() {
+    const scene = createTopItem(scenes, createScene());
+    setFocusSceneId(scene.id);
+    onChange([scene, ...scenes]);
+  }
+
+  function updateSceneSelection(scene, selectionPatch) {
+    const nextScene = { ...scene, ...selectionPatch };
+    const suggestions = buildSceneSuggestions(nextScene.watermarkCategory, nextScene.workContent, configs);
+    const previousSuggestions = autoSuggestionsRef.current.get(scene.id)
+      || buildSceneSuggestions(scene.watermarkCategory, scene.workContent, configs);
+    const suggestionPatch = {};
+    Object.entries(suggestions).forEach(([key, value]) => {
+      const currentValue = sceneValue(scene, key);
+      const previousValue = previousSuggestions[key];
+      if (isEmptySceneValue(currentValue) || sameSceneValue(currentValue, previousValue)) suggestionPatch[key] = value;
+    });
+    autoSuggestionsRef.current.set(scene.id, suggestions);
+    updateScene(scenes, scene.id, normalizeSceneSuggestionPatch({ ...selectionPatch, ...suggestionPatch }), onChange);
+  }
 
   return (
-    <ConfigSection title="常见场景" onAdd={() => onChange([...scenes, createScene()])}>
+    <ConfigSection title="常见场景" onAdd={addScene}>
       <div className="scene-config-list">
         {sortItems(scenes).map((scene, index) => (
-          <article className="scene-config-card" key={scene.id}>
+          <article className="scene-config-card" key={scene.id} ref={(node) => node ? sceneRefs.current.set(scene.id, node) : sceneRefs.current.delete(scene.id)}>
             <div className="config-row-actions">
               <strong>场景 {index + 1}</strong>
               <RowActions items={scenes} item={scene} onChange={onChange} />
             </div>
             <div className="config-form-grid">
               <Field label="名称" value={scene.title} onChange={(title) => updateScene(scenes, scene.id, { title, name: title }, onChange)} />
-              <SelectField label="水印分类" value={scene.watermarkCategory} options={categoryNames} onChange={(watermarkCategory) => updateScene(scenes, scene.id, { watermarkCategory, workContent: currentCategory({ watermarkCategory })?.items?.[0]?.name || '' }, onChange)} />
-              <SelectField label="工作内容" value={scene.workContent} options={(currentCategory(scene)?.items || []).map((item) => item.name)} onChange={(workContent) => updateScene(scenes, scene.id, { workContent }, onChange)} />
+              <SelectField label="水印分类" value={scene.watermarkCategory} options={categoryNames} placeholder="请选择水印分类" onChange={(watermarkCategory) => updateSceneSelection(scene, { watermarkCategory, workContent: '' })} />
+              <SelectField label="工作内容" value={scene.workContent} options={(currentCategory(scene)?.items || []).map((item) => item.name)} placeholder="请选择工作内容" disabled={!scene.watermarkCategory} onChange={(workContent) => updateSceneSelection(scene, { workContent })} />
               <Field label="事项名称建议" value={scene.itemName} onChange={(itemName) => updateScene(scenes, scene.id, { itemName, workItemSuggestion: itemName }, onChange)} />
               <Field label="位置/区域提示" value={scene.locationPlaceholder} onChange={(locationPlaceholder) => updateScene(scenes, scene.id, { locationPlaceholder }, onChange)} />
-              <SelectField label="处理状态建议" value={scene.processStatus || scene.processStatusSuggestion} options={configs.processStatuses.map((item) => item.name)} onChange={(processStatus) => updateScene(scenes, scene.id, { processStatus, processStatusSuggestion: processStatus }, onChange)} />
-              <SelectField label="照片阶段建议" value={scene.photoStage || scene.photoStageSuggestion} options={configs.photoStages.map((item) => item.name)} onChange={(photoStage) => updateScene(scenes, scene.id, { photoStage, photoStageSuggestion: photoStage }, onChange)} />
+              <SelectField label="处理状态建议" value={scene.processStatus || scene.processStatusSuggestion} options={configs.processStatuses.map((item) => item.name)} placeholder="请选择处理状态" onChange={(processStatus) => updateScene(scenes, scene.id, { processStatus, processStatusSuggestion: processStatus }, onChange)} />
+              <SelectField label="照片阶段建议" value={scene.photoStage || scene.photoStageSuggestion} options={configs.photoStages.map((item) => item.name)} placeholder="请选择照片阶段" onChange={(photoStage) => updateScene(scenes, scene.id, { photoStage, photoStageSuggestion: photoStage }, onChange)} />
               <Field label="推荐关键词" value={(scene.keywords || []).join('、')} onChange={(value) => updateScene(scenes, scene.id, { keywords: splitKeywords(value) }, onChange)} />
               <Field label="备注模板" value={scene.remarkTemplate} onChange={(remarkTemplate) => updateScene(scenes, scene.id, { remarkTemplate }, onChange)} wide />
             </div>
@@ -396,27 +493,6 @@ function SceneEditor({ scenes, configs, onChange }) {
         ))}
       </div>
     </ConfigSection>
-  );
-}
-
-function BackupPanel({ paths, onBackup, onExport, onImport, onReset }) {
-  return (
-    <section className="config-section">
-      <h3>配置备份、导入导出和恢复默认</h3>
-      <p className="muted">用户自定义配置只保存在本机文档目录，软件升级不会覆盖这些文件。</p>
-      <div className="config-paths">
-        <span>用户配置目录：{paths?.userConfigDir || '加载中'}</span>
-        <span>配置备份目录：{paths?.backupDir || '加载中'}</span>
-        <span>内置默认配置：{paths?.defaultConfigDir || '加载中'}</span>
-      </div>
-      <div className="config-backup-actions">
-        <button onClick={onBackup}>立即备份当前配置</button>
-        <button onClick={onExport}>导出全部配置</button>
-        <button onClick={onImport}>导入配置</button>
-        <button className="danger" onClick={onReset}>恢复默认配置</button>
-      </div>
-      <div className="warning-box">恢复默认或导入配置前会自动备份当前配置；系统最多保留最近 30 个自动备份。</div>
-    </section>
   );
 }
 
@@ -436,7 +512,8 @@ function ConfigSection({ title, onAdd, children }) {
   );
 }
 
-function EditableTable({ items, onChange, columns, defaultable = false, deleteHint }) {
+function EditableTable({ items, onChange, columns, defaultable = false, deleteHint, focusItemId = '', onFocusComplete }) {
+  const rowRefs = useRef(new Map());
   const sorted = sortItems(items);
   const widthBySize = {
     short: 'minmax(120px, 0.7fr)',
@@ -447,6 +524,16 @@ function EditableTable({ items, onChange, columns, defaultable = false, deleteHi
   };
   const fieldColumns = columns.map((column) => widthBySize[column.size] || 'minmax(180px, 1fr)').join(' ');
   const tableColumns = `46px ${defaultable ? '52px ' : ''}${fieldColumns} 64px 200px`;
+
+  useEffect(() => {
+    if (!focusItemId) return;
+    const row = rowRefs.current.get(focusItemId);
+    row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const input = row?.querySelector('.config-cell-name, input[type="text"]');
+    input?.focus();
+    input?.select();
+    onFocusComplete?.();
+  }, [focusItemId, onFocusComplete]);
 
   function patchItem(id, patch) {
     onChange(items.map((item) => {
@@ -471,7 +558,7 @@ function EditableTable({ items, onChange, columns, defaultable = false, deleteHi
         <span>操作</span>
       </div>
       {sorted.map((item) => (
-        <div className="config-table-row" key={item.id} style={{ gridTemplateColumns: tableColumns }}>
+        <div className="config-table-row" key={item.id} ref={(node) => node ? rowRefs.current.set(item.id, node) : rowRefs.current.delete(item.id)} style={{ gridTemplateColumns: tableColumns }}>
           <input type="checkbox" checked={item.enabled !== false} onChange={(event) => patchItem(item.id, { enabled: event.target.checked })} />
           {defaultable && <input type="radio" checked={Boolean(item.isDefault)} onChange={() => patchItem(item.id, { isDefault: true })} />}
           {columns.map((column) => (
@@ -527,20 +614,21 @@ function RowActions({ items, item, onChange, onDelete }) {
   );
 }
 
-function Field({ label, value, onChange, wide = false }) {
+function Field({ label, value, onChange, wide = false, inputRef }) {
   return (
     <label className={`field ${wide ? 'wide' : ''}`}>
       <span>{label}</span>
-      <input value={value || ''} onChange={(event) => onChange(event.target.value)} />
+      <input ref={inputRef} value={value || ''} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
 
-function SelectField({ label, value, options, onChange }) {
+function SelectField({ label, value, options, onChange, placeholder = '', disabled = false }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <select value={value || ''} onChange={(event) => onChange(event.target.value)}>
+      <select value={value || ''} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+        {placeholder && <option value="">{placeholder}</option>}
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
@@ -549,6 +637,103 @@ function SelectField({ label, value, options, onChange }) {
 
 function updateScene(scenes, id, patch, onChange) {
   onChange(scenes.map((scene) => scene.id === id ? { ...scene, ...patch } : scene));
+}
+
+function createTopItem(items, item) {
+  return { ...item, sort: getTopSort(items) - 1 };
+}
+
+function getTopSort(items) {
+  return Math.min(0, ...(items || []).map((item) => Number(item.sort || 0)));
+}
+
+function buildSceneSuggestions(categoryName, workContent, configs) {
+  const category = String(categoryName || '');
+  const work = String(workContent || '');
+  if (!category || !work) return createEmptySceneSuggestions();
+  const direction = SCENE_SUGGESTION_RULES.find((rule) => category.includes(rule.match)) || SCENE_SUGGESTION_RULES[0];
+  const isParkingOccupation = category.includes('机动车违规管理') && work.includes('占用') && work.includes('车位');
+  const processStatus = pickConfigName(configs.processStatuses, '待处理');
+  const photoStage = pickConfigName(configs.photoStages, '远景定位');
+  return {
+    itemName: isParkingOccupation ? '车辆占用车位处理' : `${work || direction.itemStem}${/(处理|维修|巡查|检查|归档|宣传|培训|清理)$/.test(work) ? '' : '处理'}`,
+    locationPlaceholder: isParkingOccupation ? '填写车位号、楼栋单元、地下车库区域等' : direction.location,
+    processStatus,
+    photoStage,
+    keywords: buildRecommendedKeywords(category, work, direction.keywords),
+    remarkTemplate: isParkingOccupation
+      ? '现场发现车辆占用他人车位，已记录并按流程联系处理，后续持续跟进。'
+      : `现场开展${work || direction.itemStem}工作，已完成记录并按流程处理，后续持续跟进。`
+  };
+}
+
+function createEmptySceneSuggestions() {
+  return {
+    itemName: '',
+    locationPlaceholder: '',
+    processStatus: '',
+    photoStage: '',
+    keywords: [],
+    remarkTemplate: ''
+  };
+}
+
+const SCENE_SUGGESTION_RULES = [
+  { match: '安全管理类', itemStem: '安全巡查', location: '填写楼栋、单元、通道或隐患点位', keywords: ['巡查', '隐患', '秩序', '安全提醒'] },
+  { match: '工程类专用', itemStem: '设施设备检查', location: '填写设备房、楼栋单元或设施点位', keywords: ['维修', '检查', '处理', '设备设施'] },
+  { match: '绿化保洁类', itemStem: '环境维护', location: '填写楼栋周边、园区道路或绿化区域', keywords: ['清理', '保洁', '修剪', '消杀'] },
+  { match: '巡查检查类', itemStem: '现场巡查', location: '填写巡查区域、楼栋单元或具体点位', keywords: ['巡查', '记录', '复查'] },
+  { match: '机动车违规管理', itemStem: '车辆秩序维护', location: '填写车位号、道路、出入口或车库区域', keywords: ['车辆停放', '占用通道', '占用车位', '秩序维护'] },
+  { match: '资料整理归档', itemStem: '资料归档', location: '填写资料所属项目、部门或存放区域', keywords: ['资料收集', '分类', '归档', '核对'] },
+  { match: '会议培训宣传', itemStem: '会议培训宣传', location: '填写会议室、活动区域或宣传点位', keywords: ['通知', '宣传', '培训', '活动记录'] }
+];
+
+const WORK_KEYWORD_RULES = [
+  { category: '机动车违规管理', work: ['占用', '车位'], keywords: ['占用车位', '车辆停放', '车位管理', '秩序维护'] },
+  { category: '机动车违规管理', work: ['消防通道'], keywords: ['消防通道', '违规停车', '车辆停放', '安全隐患', '秩序维护'] },
+  { category: '绿化保洁类', work: ['楼道', '杂物'], keywords: ['楼道杂物', '公共区域', '环境卫生', '清理整治'] },
+  { category: '工程类专用', work: ['公共照明'], keywords: ['公共照明', '设施维修', '工程维修', '设备设施'] }
+];
+
+function buildRecommendedKeywords(category, work, categoryKeywords) {
+  if (!category) return [];
+  const matchedRule = WORK_KEYWORD_RULES.find((rule) => (
+    category.includes(rule.category) && rule.work.every((keyword) => work.includes(keyword))
+  ));
+  const workKeywords = work
+    ? (matchedRule?.keywords || [work, ...splitKeywords(work.replace(/[与和、/]/g, '、'))])
+    : [];
+  return Array.from(new Set([...workKeywords, ...(categoryKeywords || [])].filter(Boolean)));
+}
+
+function pickConfigName(items, preferred) {
+  return items.find((item) => item.enabled !== false && item.name === preferred)?.name
+    || items.find((item) => item.enabled !== false)?.name
+    || '';
+}
+
+function sceneValue(scene, key) {
+  if (key === 'processStatus') return scene.processStatus || scene.processStatusSuggestion || '';
+  if (key === 'photoStage') return scene.photoStage || scene.photoStageSuggestion || '';
+  return scene[key];
+}
+
+function isEmptySceneValue(value) {
+  return Array.isArray(value) ? value.length === 0 : !String(value || '').trim();
+}
+
+function sameSceneValue(current, previous) {
+  if (previous === undefined) return false;
+  if (Array.isArray(current) || Array.isArray(previous)) return JSON.stringify(current || []) === JSON.stringify(previous || []);
+  return String(current || '') === String(previous || '');
+}
+
+function normalizeSceneSuggestionPatch(patch) {
+  const next = { ...patch };
+  if (Object.hasOwn(next, 'itemName')) next.workItemSuggestion = next.itemName;
+  if (Object.hasOwn(next, 'processStatus')) next.processStatusSuggestion = next.processStatus;
+  if (Object.hasOwn(next, 'photoStage')) next.photoStageSuggestion = next.photoStage;
+  return next;
 }
 
 function createSimpleItem(name) {
