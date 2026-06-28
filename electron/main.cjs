@@ -6,7 +6,7 @@ const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
-const { deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
+const { clearHandledTrialIssues, deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
 const { deleteLedgerRecords, exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
@@ -350,13 +350,14 @@ ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport
 ipcMain.handle('trialIssues:load', async () => loadTrialIssues(getWritableDocumentsPath()));
 ipcMain.handle('trialIssues:save', async (_event, item) => saveTrialIssue(getWritableDocumentsPath(), item));
 ipcMain.handle('trialIssues:delete', async (_event, id) => deleteTrialIssue(getWritableDocumentsPath(), id));
+ipcMain.handle('trialIssues:clearHandled', async () => clearHandledTrialIssues(getWritableDocumentsPath()));
 ipcMain.handle('trialIssues:export', async (_event, items, format = 'xlsx') => {
-  if (!Array.isArray(items) || items.length === 0) return { success: false, message: '当前没有可导出的试运行问题记录。' };
+  if (!Array.isArray(items) || items.length === 0) return { success: false, message: '当前没有可导出的运行日志或问题反馈记录。' };
   const normalizedFormat = format === 'csv' ? 'csv' : 'xlsx';
   const timestamp = createFileTimestamp(new Date());
   const result = await dialog.showSaveDialog({
-    title: '导出试运行问题记录',
-    defaultPath: path.join(app.getPath('documents'), `试运行问题记录_${timestamp}.${normalizedFormat}`),
+    title: '导出运行日志与问题反馈',
+    defaultPath: path.join(app.getPath('documents'), `运行日志与问题反馈_${timestamp}.${normalizedFormat}`),
     filters: normalizedFormat === 'csv'
       ? [{ name: 'CSV 文件', extensions: ['csv'] }]
       : [{ name: 'Excel 文件', extensions: ['xlsx'] }]

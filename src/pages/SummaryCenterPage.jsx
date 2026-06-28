@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
   project: '',
@@ -126,6 +127,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
         setStatus({ type: 'success', text: `已加载 ${result.photoRecords.length} 条照片记录、${result.rectificationItems.length} 条整改事项。` });
       }
     } catch (error) {
+      recordRuntimeLog({ page: '资料汇总中心', operation: '加载资料汇总', errorType: '资料汇总加载失败', summary: error.message, error });
       setStatus({ type: 'error', text: `资料汇总数据读取失败：${error.message}` });
     } finally {
       setIsLoading(false);

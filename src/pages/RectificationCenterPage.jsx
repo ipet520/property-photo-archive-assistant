@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const RECTIFICATION_STATUSES = ['待整改', '整改中', '已完成', '已关闭'];
 const PHOTO_STAGES = [
@@ -120,6 +121,7 @@ export default function RectificationCenterPage({ archiveState, navigationReques
       setSelectedId(nextItems[0]?.id || '');
       setStatus({ type: 'success', text: `已加载 ${nextItems.length} 条整改事项。` });
     } catch (error) {
+      recordRuntimeLog({ page: '整改闭环中心', operation: '加载整改事项', errorType: '整改事项加载失败', summary: error.message, error });
       setStatus({ type: 'error', text: `整改事项读取失败：${error.message}` });
     } finally {
       setIsLoading(false);
@@ -171,6 +173,7 @@ export default function RectificationCenterPage({ archiveState, navigationReques
       setIsEditing(false);
       setStatus({ type: 'success', text: `已保存整改事项：${result.item.rectificationNo}` });
     } catch (error) {
+      recordRuntimeLog({ page: '整改闭环中心', operation: '保存整改事项', errorType: '整改事项保存失败', summary: error.message || '保存失败', error });
       setStatus({ type: 'error', text: error.message || '保存失败。' });
     }
   }
@@ -226,6 +229,7 @@ export default function RectificationCenterPage({ archiveState, navigationReques
       setSelectedId(result.item.id);
       setStatus({ type: 'success', text: `状态已更新为：${nextStatus}` });
     } catch (error) {
+      recordRuntimeLog({ page: '整改闭环中心', operation: '更新整改状态', errorType: '整改事项保存失败', summary: error.message || '状态更新失败', error });
       setStatus({ type: 'error', text: error.message || '状态更新失败。' });
     }
   }
@@ -273,6 +277,7 @@ export default function RectificationCenterPage({ archiveState, navigationReques
       setLedgerSelectedIds(new Set());
       setStatus({ type: 'success', text: `已加载 ${result.records?.length || 0} 条归档记录，可选择照片创建整改事项。` });
     } catch (error) {
+      recordRuntimeLog({ page: '整改闭环中心', operation: '读取归档记录', errorType: '加载台账失败', summary: error.message, error });
       setStatus({ type: 'error', text: `归档记录读取失败：${error.message}` });
     }
   }

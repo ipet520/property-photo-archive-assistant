@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getDefaultArchivePackageSettings, getUsableArchiveRoot } from '../utils/runtimeConfig.js';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
   project: '',
@@ -150,6 +151,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       }
       return result;
     } catch (error) {
+      recordRuntimeLog({ page: '归档记录', operation: '加载台账', errorType: '加载台账失败', summary: error.message, error });
       setStatus({ type: 'error', text: `台账读取失败：${error.message}` });
       return null;
     } finally {
@@ -193,13 +195,19 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   async function openPhoto(record) {
     if (!record?.fileExists) return;
     const result = await window.archiveAssistant.openPath(record.archivePath);
-    if (!result?.success) setStatus({ type: 'error', text: `问题：打开归档照片失败，${result?.message || '系统未能打开该文件'}。处理：请确认文件未被移动，并检查系统默认图片查看器。` });
+    if (!result?.success) {
+      recordRuntimeLog({ page: '归档记录', operation: '打开照片', errorType: '打开照片失败', summary: result?.message || '系统未能打开文件', technicalDetail: record.archivePath });
+      setStatus({ type: 'error', text: `问题：打开归档照片失败，${result?.message || '系统未能打开该文件'}。处理：请确认文件未被移动，并检查系统默认图片查看器。` });
+    }
   }
 
   async function showInFolder(record) {
     if (!record?.fileExists) return;
     const result = await window.archiveAssistant.showItemInFolder(record.archivePath);
-    if (!result?.success) setStatus({ type: 'error', text: `问题：打开归档照片所在文件夹失败，${result?.message || '系统未能定位该文件'}。处理：请确认归档文件仍存在并检查目录访问权限。` });
+    if (!result?.success) {
+      recordRuntimeLog({ page: '归档记录', operation: '打开所在文件夹', errorType: '打开所在文件夹失败', summary: result?.message || '系统未能定位文件', technicalDetail: record.archivePath });
+      setStatus({ type: 'error', text: `问题：打开归档照片所在文件夹失败，${result?.message || '系统未能定位该文件'}。处理：请确认归档文件仍存在并检查目录访问权限。` });
+    }
   }
 
   function requestDeleteRecords() {
@@ -231,6 +239,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         text: `删除完成：记录 ${result.deletedRecordCount}/${result.selectedCount}，归档文件 ${result.deletedFileCount}，未找到 ${result.missingFileCount}，失败 ${result.failedCount}。台账备份：${result.backupPath}`
       });
     } catch (error) {
+      recordRuntimeLog({ page: '归档记录', operation: '删除归档记录', errorType: '删除归档记录失败', summary: error?.message || '删除失败', error });
       const detail = String(error?.message || '未知错误');
       const treatment = detail.includes('备份')
         ? '请检查归档根目录写入权限和磁盘空间后重试。'
@@ -307,6 +316,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       const plan = await window.archiveAssistant.buildArchivePackagePlan(packageSourceRecords, targetRoot, packageSettings);
       setPackagePlan({ ...plan, sourceLabel: packageSourceLabel, records: packageSourceRecords, packageSettings });
     } catch (error) {
+      recordRuntimeLog({ page: '归档记录', operation: '生成资料包预检查', errorType: '资料包生成失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成资料包预检查失败：${error.message}` });
     }
   }
@@ -328,6 +338,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         text: `资料包生成完成：成功 ${result.copiedCount}，缺失 ${result.missingCount}，失败 ${result.failedCount}。`
       });
     } catch (error) {
+      recordRuntimeLog({ page: '归档记录', operation: '生成资料包', errorType: '资料包生成失败', summary: error.message, error });
       setStatus({ type: 'error', text: `资料包生成失败：${error.message}` });
     } finally {
       setIsPackageGenerating(false);

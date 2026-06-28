@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const CONFIG_TABS = [
   { key: 'projects', label: '项目管理', type: 'simple', defaultable: true },
@@ -42,6 +43,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       setPaths(result.paths);
       setMessage({ type: 'success', text: '配置已加载。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '读取基础数据配置', errorType: '配置读取失败', summary: error.message, error });
       setMessage({ type: 'error', text: `配置加载失败：${error.message}` });
     }
   }
@@ -80,6 +82,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       await onSaved(result.runtimeConfigs);
       setMessage({ type: 'success', text: '配置已保存，主界面已刷新。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '保存基础数据配置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `保存失败：${error.message}` });
     } finally {
       setIsSaving(false);
@@ -96,6 +99,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       await onSaved(result.runtimeConfigs);
       setMessage({ type: 'success', text: '已恢复默认配置，主界面已刷新。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '恢复默认基础数据配置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `恢复默认失败：${error.message}` });
     } finally {
       setIsSaving(false);
@@ -108,6 +112,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       if (result.canceled) return;
       setMessage({ type: 'success', text: `配置已导出：${result.filePath}` });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '导出基础数据配置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `导出失败：${error.message}` });
     }
   }
@@ -122,6 +127,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       await onSaved(result.runtimeConfigs);
       setMessage({ type: 'success', text: '配置已导入，主界面已刷新。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '导入基础数据配置', errorType: '配置读取失败', summary: error.message, error });
       setMessage({ type: 'error', text: `导入失败：${error.message}` });
     }
   }
@@ -131,6 +137,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       const result = await window.archiveAssistant.backupConfigs();
       setMessage({ type: 'success', text: `已生成配置备份：${result.backupFile}` });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '备份基础数据配置', errorType: '设置备份失败', summary: error.message, error });
       setMessage({ type: 'error', text: `备份失败：${error.message}` });
     }
   }

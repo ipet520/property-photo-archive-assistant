@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { PAGE_KEYS } from './constants/app.js';
+import RuntimeErrorBoundary from './components/RuntimeErrorBoundary.jsx';
 import AppLayout from './layout/AppLayout.jsx';
 import { useArchiveWorkspace } from './hooks/useArchiveWorkspace.js';
 import MainRouter from './pages/MainRouter.jsx';
+import { installGlobalRuntimeLoggers } from './utils/runtimeLogger.js';
 
 export default function App() {
   const archiveState = useArchiveWorkspace();
@@ -21,13 +23,17 @@ export default function App() {
     return () => unsubscribe?.();
   }, []);
 
+  useEffect(() => installGlobalRuntimeLoggers(), []);
+
   useEffect(() => {
     window.requestAnimationFrame(() => document.querySelector('.main-content')?.scrollTo({ top: 0, left: 0 }));
   }, [currentPage]);
 
   return (
-    <AppLayout currentPage={currentPage} onNavigate={handleNavigate} archiveState={archiveState}>
-      <MainRouter currentPage={currentPage} onNavigate={handleNavigate} navigationRequest={navigationRequest} archiveState={archiveState} />
-    </AppLayout>
+    <RuntimeErrorBoundary>
+      <AppLayout currentPage={currentPage} onNavigate={handleNavigate} archiveState={archiveState}>
+        <MainRouter currentPage={currentPage} onNavigate={handleNavigate} navigationRequest={navigationRequest} archiveState={archiveState} />
+      </AppLayout>
+    </RuntimeErrorBoundary>
   );
 }

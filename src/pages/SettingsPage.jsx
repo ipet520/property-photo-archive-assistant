@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import ConfigManager from '../components/ConfigManager.jsx';
 import { APP_NAME, APP_VERSION } from '../constants/app.js';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SETTING_TABS = [
   { key: 'baseData', label: '基础数据' },
@@ -29,7 +30,10 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   useEffect(() => {
     window.archiveAssistant.loadSettings()
       .then((loaded) => setSettings(loaded))
-      .catch((error) => setMessage({ type: 'error', text: `设置加载失败：${error.message}` }));
+      .catch((error) => {
+        recordRuntimeLog({ page: '系统设置', operation: '读取系统设置', errorType: '配置读取失败', summary: error.message, error });
+        setMessage({ type: 'error', text: `设置加载失败：${error.message}` });
+      });
   }, []);
 
   useEffect(() => {
@@ -78,6 +82,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       setSettings(saved);
       setMessage({ type: 'success', text: '系统设置已保存到本地。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '保存系统设置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `保存失败：${error.message}` });
     }
   }
@@ -110,6 +115,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       if (result?.canceled) return;
       setMessage({ type: 'success', text: `设置已导出：${result.filePath}` });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '导出配置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `导出失败：${error.message}` });
     }
   }
@@ -122,6 +128,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       await archiveState.handleConfigsSaved(result.runtimeConfigs);
       setMessage({ type: 'success', text: '设置已导入，主界面配置已刷新。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '导入配置', errorType: '配置读取失败', summary: error.message, error });
       setMessage({ type: 'error', text: `导入失败：${error.message}` });
     }
   }
@@ -131,6 +138,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       const result = await window.archiveAssistant.backupConfigs();
       setMessage({ type: 'success', text: `已生成设置备份：${result.backupFile}` });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '备份配置', errorType: '设置备份失败', summary: error.message, error });
       setMessage({ type: 'error', text: `备份失败：${error.message}` });
     }
   }
@@ -142,6 +150,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       await archiveState.handleConfigsSaved(result.runtimeConfigs);
       setMessage({ type: 'success', text: '已恢复默认配置，主界面配置已刷新。' });
     } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '恢复默认配置', errorType: '配置保存失败', summary: error.message, error });
       setMessage({ type: 'error', text: `恢复默认失败：${error.message}` });
     }
   }

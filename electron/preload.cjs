@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   loadTrialIssues: () => ipcRenderer.invoke('trialIssues:load'),
   saveTrialIssue: (item) => ipcRenderer.invoke('trialIssues:save', item),
   deleteTrialIssue: (id) => ipcRenderer.invoke('trialIssues:delete', id),
+  clearHandledTrialIssues: () => ipcRenderer.invoke('trialIssues:clearHandled'),
   exportTrialIssues: (items, format) => ipcRenderer.invoke('trialIssues:export', items, format),
   loadDashboardData: () => ipcRenderer.invoke('dashboard:loadData'),
   loadRectificationItems: () => ipcRenderer.invoke('rectification:loadItems'),

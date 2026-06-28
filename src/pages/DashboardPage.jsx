@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import AppNavIcon from '../components/AppNavIcon.jsx';
 import { APP_NAME, APP_VERSION, NAV_GROUPS, PAGE_KEYS } from '../constants/app.js';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const QUICK_ENTRIES = [
   { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '适合物业日常杂图整理，支持逐张分拣、批量套用和快速归档模式。' },
@@ -36,6 +37,7 @@ export default function DashboardPage({ onNavigate }) {
         text: errorCount ? '首页部分数据读取失败，已保留可用内容。' : `首页数据已更新：${formatDateTime(result.loadedAt)}`
       });
     } catch (error) {
+      recordRuntimeLog({ page: '首页总览', operation: '加载首页数据', errorType: '数据读取失败', summary: error.message, error });
       setNotice({ type: 'error', text: `首页数据读取失败：${error.message}` });
     } finally {
       setIsLoading(false);

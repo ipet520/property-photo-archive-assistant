@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import { getSuggestedKeywords } from '../utils/formatters.js';
 import { addRecentRecord, clearRecentRecords, loadRecentRecords } from '../utils/recentRecords.js';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, getUsablePhotoFolder, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import { validateArchiveReady } from '../utils/validators.js';
 
@@ -52,7 +53,10 @@ export function useArchiveWorkspace() {
         setConfigPaths(loadedConfigPaths);
         restoreSavedPaths(loadedSettings);
       })
-      .catch((error) => setStatus({ type: 'error', text: `配置加载失败：${error.message}` }));
+      .catch((error) => {
+        recordRuntimeLog({ page: '快速归档', operation: '配置读取', errorType: '配置读取失败', summary: error.message, error });
+        setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
+      });
   }, []);
 
   function restoreSavedPaths(loadedSettings) {
@@ -245,6 +249,7 @@ export function useArchiveWorkspace() {
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张图片。` });
       return true;
     } catch (error) {
+      recordRuntimeLog({ page: '快速归档', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
       setStatus({ type: 'error', text: `扫描失败：${error.message}` });
     } finally {
       setIsBusy(false);
@@ -303,6 +308,7 @@ export function useArchiveWorkspace() {
       });
       return true;
     } catch (error) {
+      recordRuntimeLog({ page: '快速归档', operation: '生成预览', errorType: '生成预览失败', summary: error.message, error });
       setStatus({ type: 'error', text: `预览生成失败：${error.message}` });
     } finally {
       setIsBusy(false);
@@ -331,6 +337,7 @@ export function useArchiveWorkspace() {
       });
       return result;
     } catch (error) {
+      recordRuntimeLog({ page: '快速归档', operation: '确认归档', errorType: '确认归档失败', summary: error.message, error });
       setStatus({ type: 'error', text: `归档失败：${error.message}` });
     } finally {
       setIsBusy(false);

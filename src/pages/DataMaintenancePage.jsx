@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { APP_VERSION, PAGE_KEYS } from '../constants/app.js';
+import RuntimeLogCenter from '../components/RuntimeLogCenter.jsx';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SECTIONS = [
   { key: 'overview', label: '总览' },
@@ -8,7 +10,7 @@ const SECTIONS = [
   { key: 'ledger', label: '台账状态' },
   { key: 'sortProgress', label: '分拣进度' },
   { key: 'packages', label: '资料包记录' },
-  { key: 'trialIssues', label: '试运行问题记录' },
+  { key: 'trialIssues', label: '运行日志与问题反馈' },
   { key: 'suggestions', label: '维护建议' }
 ];
 
@@ -45,6 +47,7 @@ export default function DataMaintenancePage({ onNavigate }) {
       setReport(result);
       setStatus({ type: 'success', text: `检查完成：${formatDateTime(result.checkedAt)}。` });
     } catch (error) {
+      recordRuntimeLog({ page: '数据维护中心', operation: '数据维护检查', errorType: '数据维护检查失败', summary: error.message, error });
       setStatus({ type: 'error', text: `数据维护检查失败：${error.message}` });
     } finally {
       setIsLoading(false);
@@ -86,7 +89,7 @@ export default function DataMaintenancePage({ onNavigate }) {
       </section>
 
       <div className={`archive-query-status ${status.type}`}>{status.text}</div>
-      <div className="maintenance-safety-note">安全边界：维护检查仍为只读；仅“试运行问题记录”会读写独立的 trial-issues.json，不删除、不移动、不修改任何照片、台账、配置、整改数据或资料包。</div>
+      <div className="maintenance-safety-note">安全边界：维护检查仍为只读；仅“运行日志与问题反馈”会读写独立的 trial-issues.json，不删除、不移动、不修改任何照片、台账、配置、整改数据或资料包。</div>
 
       <section className="maintenance-layout">
         <aside className="maintenance-nav">
@@ -111,7 +114,7 @@ export default function DataMaintenancePage({ onNavigate }) {
           </header>
 
           {activeSection === 'trialIssues' ? (
-            <TrialIssuesSection />
+            <RuntimeLogCenter />
           ) : !report ? (
             <div className="empty-state">{isLoading ? '正在读取本地维护状态...' : '暂无维护状态，请点击重新检查。'}</div>
           ) : (

@@ -6765,6 +6765,309 @@ body,
   background: #fff8f8;
 }
 
+.runtime-log-center {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.runtime-log-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runtime-log-heading h3,
+.runtime-feedback-form h3,
+.runtime-log-detail h3 {
+  margin: 0;
+  color: var(--ui-navy);
+}
+
+.runtime-log-heading p {
+  margin: 4px 0;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+.runtime-log-heading small {
+  display: block;
+  overflow: hidden;
+  max-width: 680px;
+  color: var(--ui-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-log-heading > div:last-child,
+.runtime-detail-actions,
+.runtime-technical-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.runtime-log-heading button,
+.runtime-log-heading select,
+.runtime-detail-actions button,
+.runtime-technical-detail button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.runtime-log-heading select {
+  width: 84px;
+}
+
+.runtime-log-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.runtime-log-stats button {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 10px;
+  color: var(--ui-navy);
+  border: 1px solid var(--ui-border);
+  background: #fff;
+}
+
+.runtime-log-stats button.active {
+  color: #fff;
+  border-color: var(--ui-navy);
+  background: var(--ui-navy);
+}
+
+.runtime-log-filters,
+.runtime-feedback-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 8px;
+}
+
+.runtime-log-filters label,
+.runtime-feedback-grid label,
+.runtime-note-editor {
+  display: grid;
+  gap: 4px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.runtime-log-filters .wide,
+.runtime-feedback-grid .wide {
+  grid-column: span 2;
+}
+
+.runtime-log-filters input,
+.runtime-log-filters select,
+.runtime-feedback-grid input,
+.runtime-feedback-grid select,
+.runtime-feedback-grid textarea,
+.runtime-note-editor textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 9px;
+  color: var(--ui-text);
+  background: #fff;
+}
+
+.runtime-feedback-form {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.runtime-feedback-form footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.runtime-log-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 34%);
+  gap: 10px;
+  min-width: 0;
+  min-height: 420px;
+}
+
+.runtime-log-table-wrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.runtime-log-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.runtime-log-table th,
+.runtime-log-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--ui-border);
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.runtime-log-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--ui-navy);
+  background: #f4f8ff;
+}
+
+.runtime-log-table tr {
+  cursor: pointer;
+}
+
+.runtime-log-table tr:hover td,
+.runtime-log-table tr.selected td {
+  background: #eef6ff;
+}
+
+.runtime-log-table th:nth-child(1) { width: 86px; }
+.runtime-log-table th:nth-child(2) { width: 128px; }
+.runtime-log-table th:nth-child(5),
+.runtime-log-table th:nth-child(6) { width: 74px; }
+.runtime-log-table th:nth-child(8) { width: 112px; }
+
+.runtime-log-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  max-height: 620px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  background: #fff;
+}
+
+.runtime-log-detail header {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0;
+}
+
+.runtime-detail-grid div {
+  min-width: 0;
+}
+
+.runtime-detail-grid dt {
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+
+.runtime-detail-grid dd {
+  overflow: hidden;
+  margin: 0;
+  color: var(--ui-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-log-detail h4,
+.runtime-log-detail p {
+  margin: 0;
+}
+
+.runtime-log-detail p {
+  color: var(--ui-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.runtime-technical-detail pre {
+  width: 100%;
+  max-height: 220px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--ui-border);
+  border-radius: 10px;
+  color: #23344d;
+  background: #f6f8fb;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.runtime-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--ui-navy);
+  background: #eaf3ff;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.runtime-tag.auto,
+.runtime-tag.level-error {
+  color: #9c2b2b;
+  background: #fff0f0;
+}
+
+.runtime-tag.manual,
+.runtime-tag.level-warn {
+  color: #8a5700;
+  background: #fff4dd;
+}
+
+.runtime-tag.level-info,
+.runtime-tag.status-handled {
+  color: #17603d;
+  background: #eaf8f0;
+}
+
+.runtime-tag.status-ignored {
+  color: #5f6875;
+  background: #eef1f5;
+}
+
+@media (max-width: 1180px) {
+  .runtime-log-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-log-detail {
+    max-height: none;
+  }
+}
+
 /* V2.2.3 high-density workspace refinements. */
 .config-import-summary {
   min-width: 0;

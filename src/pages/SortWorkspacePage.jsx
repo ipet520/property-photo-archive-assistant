@@ -3,6 +3,7 @@ import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 import { loadRecentRecords } from '../utils/recentRecords.js';
+import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 
 const defaultForm = {
@@ -329,6 +330,7 @@ export default function SortWorkspacePage({ archiveState }) {
       markChanged();
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张照片。` });
     } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
       setStatus({ type: 'error', text: `扫描失败：${error.message}` });
     } finally {
       setIsBusy(false);
@@ -642,6 +644,7 @@ export default function SortWorkspacePage({ archiveState }) {
       markChanged();
       setStatus({ type: restoredCount === missingPhotos.length ? 'success' : 'warning', text: `已重新匹配 ${restoredCount} 张照片，仍有 ${missingPhotos.length - restoredCount} 张原图缺失。` });
     } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '重新定位照片文件夹', errorType: '读取目录失败', summary: error.message, error });
       setStatus({ type: 'error', text: `重新定位照片文件夹失败：${error.message}` });
     } finally {
       setIsBusy(false);
@@ -694,6 +697,7 @@ export default function SortWorkspacePage({ archiveState }) {
       setHasUnsavedChanges(true);
       setStatus({ type: (unassignedCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${preview.length} 张照片的归档预览。未分拣 ${unassignedCount} 张，已忽略 ${ignoredCount} 张未纳入预览。` });
     } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '生成分拣归档预览', errorType: '生成预览失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成分拣归档预览失败：${error.message}` });
     } finally {
       setIsBusy(false);
@@ -736,6 +740,7 @@ export default function SortWorkspacePage({ archiveState }) {
           : `归档完成但存在失败：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。`
       });
     } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '确认归档', errorType: '确认归档失败', summary: error.message, error });
       setStatus({ type: 'error', text: `确认归档失败：${error.message}` });
     } finally {
       setIsBusy(false);
