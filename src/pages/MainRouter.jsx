@@ -16,7 +16,7 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
     return <QuickArchivePage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
-    return <SortWorkspacePage />;
+    return <SortWorkspacePage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
       return <ArchiveRecordsPage archiveState={archiveState} navigationRequest={navigationRequest} />;

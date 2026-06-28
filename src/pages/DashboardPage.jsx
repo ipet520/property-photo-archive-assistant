@@ -3,8 +3,7 @@ import AppNavIcon from '../components/AppNavIcon.jsx';
 import { APP_NAME, APP_VERSION, NAV_GROUPS, PAGE_KEYS } from '../constants/app.js';
 
 const QUICK_ENTRIES = [
-  { key: PAGE_KEYS.quickArchive, title: '快速批量归档', text: '同一批照片使用同一套信息时快速归档。' },
-  { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '整理混合照片，分组套用归档信息。' },
+  { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '适合物业日常杂图整理，支持逐张分拣、批量套用和快速归档模式。' },
   { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
   { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
   { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },

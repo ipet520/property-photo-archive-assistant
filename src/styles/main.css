@@ -10277,10 +10277,181 @@ table tbody tr.selected td {
 
 /* V2.1.0 分拣工作台定稿：固定三栏、照片优先、单一右侧滚动。 */
 .sort-workbench {
-  grid-template-rows: minmax(0, 1fr) 50px;
+  grid-template-rows: auto minmax(0, 1fr) 50px;
   gap: 8px;
   min-width: 0;
   overflow: hidden;
+}
+
+.sort-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--ui-border);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: var(--ui-shadow);
+}
+
+.sort-mode-switch button {
+  min-height: 30px;
+  padding: 5px 12px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 9px;
+  color: var(--ui-navy);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-mode-switch button.active {
+  color: #fff;
+  border-color: var(--ui-navy);
+  background: var(--ui-navy);
+}
+
+.sort-workbench .quick-archive-workbench.embedded-quick-mode {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.main-content:has(.sort-workbench.mode-quick) {
+  width: 100%;
+  max-width: none;
+}
+
+.sort-workbench.mode-quick {
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+  align-self: stretch;
+}
+
+.sort-workbench.mode-quick .quick-archive-workbench.embedded-quick-mode {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+}
+
+.sort-workbench.mode-quick .quick-mode-note {
+  margin-bottom: 6px;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  grid-template-columns: minmax(0, 1fr) clamp(420px, 30vw, 560px);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-directory-bar {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-left-workspace {
+  grid-column: 1;
+  grid-row: 2;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-right-operations {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: 100%;
+  max-height: none;
+  max-width: none;
+  min-height: 0;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-tab-body,
+.sort-workbench.mode-quick .quick-final-workspace .quick-workspace-body,
+.sort-workbench.mode-quick .quick-final-workspace .photo-list-panel,
+.sort-workbench.mode-quick .quick-final-workspace .table-panel,
+.sort-workbench.mode-quick .quick-final-workspace .result-panel {
+  min-height: 0;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-table-scroll {
+  max-height: none;
+  min-height: 0;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .quick-workspace-body.photo-empty {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .photo-list-panel.empty {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sort-workbench.mode-quick .quick-final-workspace .photo-list-empty-state {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 180px;
+}
+
+@media (max-width: 1180px) {
+  .sort-workbench.mode-quick .quick-final-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(260px, 1fr) auto;
+    overflow-y: auto;
+  }
+
+  .sort-workbench.mode-quick .quick-final-workspace .quick-right-operations {
+    grid-column: 1;
+    grid-row: 3;
+    max-height: none;
+  }
+}
+
+.quick-mode-note {
+  flex: 0 0 auto;
+  margin: 0 0 6px;
+  padding: 7px 10px;
+  border: 1px solid #d7e6f5;
+  border-radius: 10px;
+  color: #446078;
+  background: #f7fbff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sort-photo-card.archived,
+.sort-photo-card.archived:hover {
+  border-color: #7fb8d8;
+  background: #f2fbff;
+}
+
+.sort-photo-card.failed,
+.sort-photo-card.failed:hover {
+  border-color: #f0b4b4;
+  background: #fff7f7;
 }
 
 .sort-main-grid {

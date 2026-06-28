@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
+import QuickArchivePage from './QuickArchivePage.jsx';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 import { loadRecentRecords } from '../utils/recentRecords.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
@@ -21,22 +22,22 @@ const defaultForm = {
 };
 
 const statusLabels = {
-  unassigned: '未分拣',
+  unassigned: '未归档',
   assigned: '已分拣',
   previewed: '已预览',
   archived: '已归档',
-  failed: '失败',
+  failed: '归档失败',
   ignored: '已忽略'
 };
 
 const statusFilters = [
   ['all', '全部照片'],
-  ['unassigned', '未分拣'],
+  ['unassigned', '未归档'],
   ['selected', '已选择'],
   ['assigned', '已分拣'],
   ['previewed', '已生成预览'],
   ['archived', '已归档'],
-  ['failed', '失败'],
+  ['failed', '归档失败'],
   ['ignored', '已忽略']
 ];
 
@@ -53,6 +54,11 @@ const viewModes = [
   { key: 'list', label: '列表', title: '列表视图' }
 ];
 
+const workspaceModes = [
+  ['standard', '标准分拣模式'],
+  ['quick', '快速归档模式']
+];
+
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
 
@@ -63,9 +69,10 @@ function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
   return defaultPhotoFolder || String(sessionPhotoFolder || '').trim();
 }
 
-export default function SortWorkspacePage() {
+export default function SortWorkspacePage({ archiveState }) {
   const rightPanelRef = useRef(null);
   const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
+  const [workspaceMode, setWorkspaceMode] = useState('standard');
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
@@ -231,6 +238,14 @@ export default function SortWorkspacePage() {
 
   function clearGeneratedPreview(photo) {
     return photo.sortStatus === 'previewed' ? resetPhotoPreview(photo, 'assigned') : photo;
+  }
+
+  function isArchivedPhoto(photo) {
+    return photo.sortStatus === 'archived';
+  }
+
+  function getEditableSelectedPhotos() {
+    return selectedPhotos.filter((photo) => !isArchivedPhoto(photo));
   }
 
   function updateForm(patch, options = {}) {
@@ -406,23 +421,30 @@ export default function SortWorkspacePage() {
       setStatus({ type: 'error', text: '请先选择需要分拣的照片。' });
       return;
     }
+    const editableSelectedPhotos = getEditableSelectedPhotos();
+    const archivedSelectedCount = selectedPhotos.length - editableSelectedPhotos.length;
+    if (editableSelectedPhotos.length === 0) {
+      setStatus({ type: 'warning', text: '选中照片均已归档。默认不允许重复归档，请先到归档记录中处理原记录。' });
+      return;
+    }
     const missing = validateSortForm(form);
     if (missing.length) {
       setStatus({ type: 'error', text: `请补全必填项：${missing.join('、')}` });
       return;
     }
-    const alreadyAssignedCount = selectedPhotos.filter((photo) => photo.archiveInfo || photo.sortStatus === 'assigned' || photo.sortStatus === 'previewed').length;
+    const editableIds = editableSelectedPhotos.map((photo) => photo.id);
+    const alreadyAssignedCount = editableSelectedPhotos.filter((photo) => photo.archiveInfo || photo.sortStatus === 'assigned' || photo.sortStatus === 'previewed').length;
     if (alreadyAssignedCount > 0 && !window.confirm(`当前选中照片中已有 ${alreadyAssignedCount} 张已分拣照片，继续操作将覆盖这些照片的归档信息。是否继续？`)) {
       return;
     }
     const invalidTip = invalidatePreviewMessage();
     const archiveInfo = normalizeArchiveInfo(form);
     setPhotos((current) => current.map((photo) => {
-      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null };
+      if (editableIds.includes(photo.id)) return { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
     markChanged();
-    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已将归档信息应用到 ${selectedIds.length} 张照片。${invalidTip}` });
+    setStatus({ type: archivedSelectedCount || invalidTip ? 'warning' : 'success', text: `已将归档信息应用到 ${editableSelectedPhotos.length} 张照片。${archivedSelectedCount ? `已跳过 ${archivedSelectedCount} 张已归档照片。` : ''}${invalidTip}` });
   }
 
   function editCurrentPhotoInfo() {
@@ -466,13 +488,19 @@ export default function SortWorkspacePage() {
     }
     if (!window.confirm('确定要清除选中照片的归档信息吗？\n\n仅清除软件内的分拣信息。\n不会删除原始照片。\n不会移动原始照片。\n不会删除已归档文件。\n清除后这些照片将恢复为未分拣状态。')) return;
     const invalidTip = invalidatePreviewMessage();
+    const editableIds = getEditableSelectedPhotos().map((photo) => photo.id);
+    const archivedSelectedCount = selectedPhotos.length - editableIds.length;
+    if (editableIds.length === 0) {
+      setStatus({ type: 'warning', text: '选中照片均已归档。请先到归档记录中处理原记录，再重新归档。' });
+      return;
+    }
     setPhotos((current) => current.map((photo) => {
-      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null };
+      if (editableIds.includes(photo.id)) return { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
     setEditingPhotoId((current) => selectedIds.includes(current) ? '' : current);
     markChanged();
-    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已清除 ${selectedIds.length} 张照片的归档信息，原始照片未受影响。${invalidTip}` });
+    setStatus({ type: archivedSelectedCount || invalidTip ? 'warning' : 'success', text: `已清除 ${editableIds.length} 张照片的归档信息，原始照片未受影响。${archivedSelectedCount ? `已跳过 ${archivedSelectedCount} 张已归档照片。` : ''}${invalidTip}` });
   }
 
   function applyScene(scene) {
@@ -690,11 +718,12 @@ export default function SortWorkspacePage() {
     try {
       const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewPhotos.map((photo) => photo.previewInfo) });
       const resultMap = new Map(result.items.map((item) => [item.id, item]));
+      const archivedAt = new Date().toISOString();
       setPhotos((current) => current.map((photo) => {
         const item = resultMap.get(photo.id);
         if (!item) return photo;
         const success = item.status === '归档成功';
-        return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item };
+        return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item, archiveMethod: '标准分拣', archivedAt: success ? archivedAt : '' };
       }));
       setShowConfirm(false);
       setFilter('archived');
@@ -721,12 +750,41 @@ export default function SortWorkspacePage() {
     }
   }
 
+  function handleQuickArchiveComplete(resultItems = []) {
+    const quickPhotos = archiveState?.photos || [];
+    const normalizedResults = resultItems.filter(Boolean);
+    if (normalizedResults.length === 0) return;
+    const archivedAt = new Date().toISOString();
+    setPhotos((current) => mergeQuickArchiveResults(current, quickPhotos, normalizedResults, archivedAt));
+    setSelectedIds([]);
+    setFilter('archived');
+    setPage(1);
+    setHasUnsavedChanges(true);
+    const successCount = normalizedResults.filter((item) => item.status === '归档成功').length;
+    const failedCount = normalizedResults.filter((item) => item.status === '归档失败').length;
+    setStatus({
+      type: failedCount ? 'warning' : 'success',
+      text: failedCount
+        ? `快速归档已回写状态：已归档 ${successCount} 张，归档失败 ${failedCount} 张。`
+        : `快速归档已完成，${successCount} 张照片已标记为“已归档”。`
+    });
+  }
+
   if (!configs) {
     return <section className="panel">正在加载照片分拣工作台...</section>;
   }
 
   return (
-    <div className="sort-workbench">
+    <div className={`sort-workbench mode-${workspaceMode}`}>
+      <div className="sort-mode-switch">
+        {workspaceModes.map(([key, label]) => (
+          <button type="button" key={key} className={workspaceMode === key ? 'active' : ''} onClick={() => setWorkspaceMode(key)}>{label}</button>
+        ))}
+      </div>
+      {workspaceMode === 'quick' ? (
+        <QuickArchivePage archiveState={archiveState} embedded onArchiveComplete={handleQuickArchiveComplete} />
+      ) : (
+      <>
       <div className="sort-main-grid">
         <aside className="sort-left-panel panel">
           <SortSection title="状态筛选">
@@ -950,6 +1008,8 @@ export default function SortWorkspacePage() {
           isBusy={isBusy}
         />
       )}
+      </>
+      )}
     </div>
   );
 }
@@ -967,7 +1027,7 @@ function PhotoCard({ photo, selected, onClick }) {
   const gridSummary = buildGridPhotoSummary(photo);
   const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
   return (
-    <button type="button" className={`sort-photo-card ${selected ? 'selected' : ''}`} onClick={onClick} title={photo.originalPath}>
+    <button type="button" className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''}`} onClick={onClick} title={photo.originalPath}>
       <div className="sort-thumb-wrap">
         {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <ThumbnailHoverPreview src={photo.previewUrl} alt={photo.originalName} />}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
@@ -1137,6 +1197,20 @@ function buildGridPhotoSummary(photo) {
   if (photo.originalMissing) {
     return { main: '原图缺失', sub: '请重新定位照片文件夹', full: '原图缺失，请重新定位照片文件夹后再预览或归档。' };
   }
+  if (photo.sortStatus === 'archived') {
+    return {
+      main: '已归档',
+      sub: [photo.archiveMethod || '快速归档', formatDateTime(photo.archivedAt)].filter(Boolean).join(' · '),
+      full: [photo.archiveMethod || '快速归档', photo.archiveResult?.targetPath].filter(Boolean).join(' / ')
+    };
+  }
+  if (photo.sortStatus === 'failed') {
+    return {
+      main: '归档失败',
+      sub: photo.archiveResult?.error || '请核对归档结果',
+      full: photo.archiveResult?.error || '归档失败，请核对归档结果。'
+    };
+  }
   const info = photo.archiveInfo;
   if (!info) return null;
   const workContent = info.workContent || info.itemName || info.workItem || '已分拣';
@@ -1148,6 +1222,92 @@ function buildGridPhotoSummary(photo) {
     sub,
     full: [workContent, location, stage, info.processStatus].filter(Boolean).join(' / ')
   };
+}
+
+function mergeQuickArchiveResults(currentPhotos, quickPhotos, resultItems, archivedAt) {
+  const resultById = new Map(resultItems.map((item) => [String(item.id || ''), item]));
+  const nextPhotos = [...currentPhotos];
+
+  resultItems.forEach((item) => {
+    const quickPhoto = quickPhotos.find((photo) => isSameArchiveSource(photo, item)) || null;
+    const existingIndex = nextPhotos.findIndex((photo) => isSameArchiveSource(photo, item) || (quickPhoto && isSameSortPhoto(photo, quickPhoto)));
+    const success = item.status === '归档成功';
+    const patch = {
+      sortStatus: success ? 'archived' : 'failed',
+      archiveResult: item,
+      previewInfo: item,
+      archiveMethod: '快速归档',
+      archivedAt: success ? archivedAt : '',
+      originalMissing: false
+    };
+
+    if (existingIndex >= 0) {
+      nextPhotos[existingIndex] = { ...nextPhotos[existingIndex], ...patch };
+      return;
+    }
+
+    const sourcePhoto = quickPhoto || quickPhotos.find((photo) => String(photo.id || '') === String(item.id || ''));
+    if (sourcePhoto) {
+      nextPhotos.push(buildSortPhotoFromQuickPhoto(sourcePhoto, patch));
+    }
+  });
+
+  quickPhotos.forEach((photo) => {
+    if (nextPhotos.some((item) => isSameSortPhoto(item, photo))) return;
+    const result = resultById.get(String(photo.id || ''));
+    if (result) return;
+    nextPhotos.push(buildSortPhotoFromQuickPhoto(photo, {
+      sortStatus: 'unassigned',
+      archiveResult: null,
+      previewInfo: null,
+      archiveMethod: '',
+      archivedAt: ''
+    }));
+  });
+
+  return nextPhotos;
+}
+
+function buildSortPhotoFromQuickPhoto(photo, patch) {
+  return {
+    id: photo.id,
+    originalPath: photo.path || photo.originalPath || photo.sourcePath || '',
+    originalName: photo.name || photo.originalName || getBaseName(photo.path || photo.sourcePath),
+    extension: photo.extension,
+    size: photo.size,
+    modifiedAt: photo.modifiedAt,
+    thumbnailPath: photo.previewUrl || photo.thumbnailPath,
+    previewUrl: photo.previewUrl || photo.thumbnailPath,
+    selected: false,
+    archiveInfo: null,
+    originalMissing: false,
+    ...patch
+  };
+}
+
+function isSameArchiveSource(photo, item) {
+  if (!photo || !item) return false;
+  const photoPath = normalizePath(photo.originalPath || photo.path || photo.sourcePath);
+  const itemPath = normalizePath(item.sourcePath || item.originalPath || item.path);
+  if (photoPath && itemPath && photoPath === itemPath) return true;
+  const photoId = String(photo.id || '');
+  const itemId = String(item.id || '');
+  if (photoId && itemId && photoId === itemId) return true;
+  const photoName = getBaseName(photo.originalName || photo.name || photoPath);
+  const itemName = getBaseName(item.originalName || item.name || itemPath);
+  return Boolean(photoName && itemName && photoName === itemName && Number(photo.size || 0) === Number(item.size || 0));
+}
+
+function isSameSortPhoto(sortPhoto, quickPhoto) {
+  if (!sortPhoto || !quickPhoto) return false;
+  const sortPath = normalizePath(sortPhoto.originalPath);
+  const quickPath = normalizePath(quickPhoto.path || quickPhoto.originalPath || quickPhoto.sourcePath);
+  if (sortPath && quickPath && sortPath === quickPath) return true;
+  return String(sortPhoto.id || '') === String(quickPhoto.id || '');
+}
+
+function normalizePath(value) {
+  return String(value || '').trim().replaceAll('\\', '/').toLowerCase();
 }
 
 function findBestPhotoMatch(photo, candidates) {

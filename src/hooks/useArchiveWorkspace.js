@@ -329,7 +329,7 @@ export function useArchiveWorkspace() {
           ? `归档成功：已复制 ${result.successCount} 张照片，原图仍保留在原文件夹，台账已追加。`
           : `归档完成但有失败：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。请查看预览表格中的失败原因。`
       });
-      return true;
+      return result;
     } catch (error) {
       setStatus({ type: 'error', text: `归档失败：${error.message}` });
     } finally {

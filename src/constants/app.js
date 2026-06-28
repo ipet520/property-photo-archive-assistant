@@ -1,4 +1,4 @@
-export const APP_VERSION = '2.2.3';
+export const APP_VERSION = '2.2.4';
 export const APP_NAME = '物业工作照片归档助手';
 
 export const PAGE_KEYS = {
@@ -18,7 +18,6 @@ export const NAV_GROUPS = [
     title: '工作台',
     items: [
       { key: PAGE_KEYS.dashboard, label: '首页总览', icon: 'dashboard' },
-      { key: PAGE_KEYS.quickArchive, label: '快速批量归档', icon: 'archive' },
       { key: PAGE_KEYS.sortWorkspace, label: '照片分拣工作台', icon: 'grid' }
     ]
   },

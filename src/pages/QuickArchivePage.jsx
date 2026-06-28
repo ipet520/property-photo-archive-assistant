@@ -37,7 +37,7 @@ const PHOTO_COLUMNS = [
   { key: 'status', label: '状态', width: 96, minWidth: 84, maxWidth: 120 }
 ];
 
-export default function QuickArchivePage({ archiveState }) {
+export default function QuickArchivePage({ archiveState, onArchiveComplete, embedded = false }) {
   const [activeTab, setActiveTab] = useState(TAB_KEYS.photos);
   const [assistTab, setAssistTab] = useState('scene');
   const [moreActionsOpen, setMoreActionsOpen] = useState(false);
@@ -102,8 +102,9 @@ export default function QuickArchivePage({ archiveState }) {
   }
 
   async function archiveAndShowResult() {
-    const success = await archiveState.archivePhotos();
-    if (success) {
+    const result = await archiveState.archivePhotos();
+    if (result) {
+      onArchiveComplete?.(result.items || []);
       setConfirmDialogOpen(false);
       setResultPagination((current) => ({ ...current, page: 1 }));
       setActiveTab(TAB_KEYS.result);
@@ -145,7 +146,12 @@ export default function QuickArchivePage({ archiveState }) {
   }
 
   return (
-    <div className="quick-archive-workbench">
+    <div className={`quick-archive-workbench ${embedded ? 'embedded-quick-mode' : ''}`}>
+      {embedded && (
+        <p className="quick-mode-note">
+          快速归档适合同一事项、同一分类、同一位置的一批照片，会统一套用同一套归档信息。每天导出的杂图请优先使用标准分拣模式。
+        </p>
+      )}
       <section className={`quick-final-workspace ${photoAreaMode === 'maximized' ? 'photo-maximized' : ''}`} ref={workAreaRef}>
         <section className="quick-command-bar quick-directory-bar">
           <QuickFlowSteps currentStep={currentStep} />
