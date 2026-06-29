@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import ArchiveForm from '../components/ArchiveForm.jsx';
+import SuggestionPanel from '../components/SuggestionPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 
@@ -242,6 +243,13 @@ export default function QuickArchivePage({ archiveState, onArchiveComplete, embe
 
         <aside className="quick-right-operations quick-form-module">
           <ArchiveForm configs={archiveState.configs} form={archiveState.form} updateForm={archiveState.updateForm} compact />
+          <SuggestionPanel
+            compact
+            suggestion={archiveState.archiveSuggestion}
+            onApply={() => archiveState.applyArchiveSuggestion?.()}
+            onApplyEmpty={() => archiveState.applyArchiveSuggestion?.({ onlyEmpty: true })}
+            onIgnore={archiveState.ignoreArchiveSuggestion}
+          />
           <div className="quick-inline-assist">
             <div className="quick-assist-header">
               <div>

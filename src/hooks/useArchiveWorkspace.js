@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
+import { buildArchiveSuggestion, filterEmptyPatch, suggestionToFormPatch } from '../utils/archiveSuggestionRules.js';
 import { getSuggestedKeywords } from '../utils/formatters.js';
 import { addRecentRecord, clearRecentRecords, loadRecentRecords } from '../utils/recentRecords.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
@@ -35,6 +36,8 @@ export function useArchiveWorkspace() {
   const [recentRecords, setRecentRecords] = useState([]);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹和归档根目录。' });
   const [isBusy, setIsBusy] = useState(false);
+  const [archiveSuggestion, setArchiveSuggestion] = useState(null);
+  const [ignoredSuggestionKey, setIgnoredSuggestionKey] = useState('');
 
   useEffect(() => {
     setRecentRecords(loadRecentRecords());
@@ -58,6 +61,29 @@ export function useArchiveWorkspace() {
         setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
       });
   }, []);
+
+  useEffect(() => {
+    if (!configs) return;
+    const suggestion = buildSuggestion(form);
+    const suggestionKey = getSuggestionKey(suggestion);
+    if (!suggestionKey || suggestionKey === ignoredSuggestionKey || suggestion.isEmpty) {
+      setArchiveSuggestion(null);
+      return;
+    }
+    setArchiveSuggestion(suggestion);
+  }, [
+    configs,
+    form.department,
+    form.watermarkCategory,
+    form.workContent,
+    form.workItem,
+    form.location,
+    form.processStatus,
+    form.photoStage,
+    photos.length,
+    recentRecords,
+    ignoredSuggestionKey
+  ]);
 
   function restoreSavedPaths(loadedSettings) {
     const notices = [];
@@ -124,18 +150,10 @@ export function useArchiveWorkspace() {
   }
 
   function applyScene(scene) {
-    updateForm({
-      watermarkCategory: scene.watermarkCategory,
-      workContent: scene.workContent,
-      workItem: scene.itemName || '',
-      location: '',
-      locationPlaceholder: scene.locationPlaceholder || '',
-      processStatus: scene.processStatusSuggestion || scene.processStatus || form.processStatus,
-      photoStage: scene.photoStageSuggestion || scene.photoStage || form.photoStage,
-      keywords: (scene.keywords || []).join('、'),
-      remark: fillSceneTemplate(scene.remarkTemplate || '', form, scene)
-    }, { preserveKeywords: true });
-    setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。建议补充位置/区域；不填写将默认使用“现场”。` });
+    const suggestion = buildSuggestion({ ...form, watermarkCategory: scene.watermarkCategory, workContent: scene.workContent }, { scene });
+    setArchiveSuggestion(suggestion);
+    setIgnoredSuggestionKey('');
+    setStatus({ type: 'success', text: `已生成“${scene.title}”归档建议，请确认后再应用到表单。` });
   }
 
   function applyRecentRecord(record) {
@@ -153,6 +171,36 @@ export function useArchiveWorkspace() {
       remark: record.remark
     }, { preserveKeywords: true });
     setStatus({ type: 'success', text: '已套用最近使用记录，可继续修改后生成预览。' });
+  }
+
+  function buildSuggestion(nextForm = form, extra = {}) {
+    return buildArchiveSuggestion({
+      ...nextForm,
+      workContent: nextForm.workContent,
+      workItem: nextForm.workItem,
+      historyRecords: recentRecords,
+      photoCount: photos.length,
+      mode: 'quick',
+      ...extra
+    }, configs || {});
+  }
+
+  function applyArchiveSuggestion(options = {}) {
+    if (!archiveSuggestion || archiveSuggestion.isEmpty) return;
+    const patch = suggestionToFormPatch(archiveSuggestion, 'quick');
+    const nextPatch = options.onlyEmpty ? filterEmptyPatch(patch, form) : patch;
+    if (Object.keys(nextPatch).length === 0) {
+      setStatus({ type: 'idle', text: '当前表单没有需要自动填充的空字段。' });
+      return;
+    }
+    updateForm(nextPatch, { preserveKeywords: true });
+    setStatus({ type: 'success', text: options.onlyEmpty ? '已将建议填入空字段，请核对后生成预览。' : '已应用归档建议，请核对后生成预览。' });
+  }
+
+  function ignoreArchiveSuggestion() {
+    setIgnoredSuggestionKey(getSuggestionKey(archiveSuggestion));
+    setArchiveSuggestion(null);
+    setStatus({ type: 'idle', text: '已忽略本次归档建议，仍可手动填写归档信息。' });
   }
 
   function clearRecentRecordList() {
@@ -441,8 +489,21 @@ export function useArchiveWorkspace() {
     handleConfigsSaved,
     clearRecentPhotoFolders,
     clearRecentArchiveRoots,
+    archiveSuggestion,
+    applyArchiveSuggestion,
+    ignoreArchiveSuggestion,
     setStatus
   };
+}
+
+function getSuggestionKey(suggestion) {
+  if (!suggestion) return '';
+  return [
+    suggestion.watermarkCategory,
+    suggestion.workContent,
+    suggestion.itemName,
+    suggestion.location || suggestion.locationPlaceholder
+  ].filter(Boolean).join('|');
 }
 
 function fillSceneTemplate(template, currentForm, scene) {

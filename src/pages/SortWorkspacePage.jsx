@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import SuggestionPanel from '../components/SuggestionPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
+import { buildArchiveSuggestion, filterEmptyPatch, suggestionToFormPatch } from '../utils/archiveSuggestionRules.js';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 import { loadRecentRecords } from '../utils/recentRecords.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
@@ -99,6 +101,8 @@ export default function SortWorkspacePage({ archiveState }) {
   const [isBusy, setIsBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  const [archiveSuggestion, setArchiveSuggestion] = useState(null);
+  const [ignoredSuggestionKey, setIgnoredSuggestionKey] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -193,7 +197,7 @@ export default function SortWorkspacePage({ archiveState }) {
   const primaryPhoto = selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
   const suggestedKeywords = splitKeywords(getSuggestedKeywords({ ...toArchiveForm(form), workItem: form.itemName }, configs));
   const activeKeywords = splitKeywords(form.keywords);
-  const recentRecords = loadRecentRecords();
+  const recentRecords = useMemo(() => loadRecentRecords(), [hasUnsavedChanges]);
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
@@ -215,6 +219,29 @@ export default function SortWorkspacePage({ archiveState }) {
       setActiveRightTab('scenes');
     }
   }, [activeRightTab]);
+
+  useEffect(() => {
+    if (!configs) return;
+    const suggestion = buildSuggestion(form);
+    const suggestionKey = getSuggestionKey(suggestion);
+    if (!suggestionKey || suggestionKey === ignoredSuggestionKey || suggestion.isEmpty) {
+      setArchiveSuggestion(null);
+      return;
+    }
+    setArchiveSuggestion(suggestion);
+  }, [
+    configs,
+    form.department,
+    form.watermarkCategory,
+    form.workContent,
+    form.itemName,
+    form.location,
+    form.processStatus,
+    form.photoStage,
+    recentRecords,
+    photos.length,
+    ignoredSuggestionKey
+  ]);
 
   function markChanged() {
     setHasUnsavedChanges(true);
@@ -284,6 +311,35 @@ export default function SortWorkspacePage({ archiveState }) {
       }
       return next;
     });
+  }
+
+  function buildSuggestion(nextForm = form, extra = {}) {
+    return buildArchiveSuggestion({
+      ...nextForm,
+      workItem: nextForm.itemName,
+      historyRecords: recentRecords,
+      photoCount: photos.length,
+      mode: 'sort',
+      ...extra
+    }, configs || {});
+  }
+
+  function applyArchiveSuggestion(options = {}) {
+    if (!archiveSuggestion || archiveSuggestion.isEmpty) return;
+    const patch = suggestionToFormPatch(archiveSuggestion, 'sort');
+    const nextPatch = options.onlyEmpty ? filterEmptyPatch(patch, form) : patch;
+    if (Object.keys(nextPatch).length === 0) {
+      setStatus({ type: 'idle', text: '当前表单没有需要自动填充的空字段。' });
+      return;
+    }
+    updateForm(nextPatch, { preserveKeywords: true });
+    setStatus({ type: 'success', text: options.onlyEmpty ? '已将建议填入空字段，请核对后再应用到照片。' : '已应用归档建议，请核对后再应用到照片。' });
+  }
+
+  function ignoreArchiveSuggestion() {
+    setIgnoredSuggestionKey(getSuggestionKey(archiveSuggestion));
+    setArchiveSuggestion(null);
+    setStatus({ type: 'idle', text: '已忽略本次归档建议，仍可手动填写归档信息。' });
   }
 
   async function selectPhotoFolder({ scanAfterSelect = false } = {}) {
@@ -530,18 +586,10 @@ export default function SortWorkspacePage({ archiveState }) {
 
   function applyScene(scene) {
     setActiveSceneTitle(scene.title);
-    updateForm({
-      watermarkCategory: scene.watermarkCategory,
-      workContent: scene.workContent,
-      itemName: scene.itemName || '',
-      location: '',
-      locationPlaceholder: scene.locationPlaceholder || '',
-      processStatus: scene.processStatusSuggestion || scene.processStatus || form.processStatus,
-      photoStage: scene.photoStageSuggestion || scene.photoStage || form.photoStage,
-      keywords: (scene.keywords || []).join('、'),
-      remark: fillTemplate(scene.remarkTemplate || '', form, scene)
-    }, { preserveKeywords: true });
-    setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。` });
+    const suggestion = buildSuggestion({ ...form, watermarkCategory: scene.watermarkCategory, workContent: scene.workContent }, { scene });
+    setArchiveSuggestion(suggestion);
+    setIgnoredSuggestionKey('');
+    setStatus({ type: 'success', text: `已生成“${scene.title}”归档建议，请确认后再应用到表单或照片。` });
   }
 
   function selectSceneFilter(item) {
@@ -977,6 +1025,13 @@ export default function SortWorkspacePage({ archiveState }) {
             </div>
           </div>
 
+          <SuggestionPanel
+            suggestion={archiveSuggestion}
+            onApply={() => applyArchiveSuggestion()}
+            onApplyEmpty={() => applyArchiveSuggestion({ onlyEmpty: true })}
+            onIgnore={ignoreArchiveSuggestion}
+          />
+
           <div className="sort-assist-section">
             <div className="sort-assist-tabs">
               {assistTabs.map(([key, label]) => (
@@ -1187,6 +1242,16 @@ function reconcileForm(current, configs) {
 
 function pick(value, options = []) {
   return options.includes(value) ? value : (options[0] || value || '');
+}
+
+function getSuggestionKey(suggestion) {
+  if (!suggestion) return '';
+  return [
+    suggestion.watermarkCategory,
+    suggestion.workContent,
+    suggestion.itemName,
+    suggestion.location || suggestion.locationPlaceholder
+  ].filter(Boolean).join('|');
 }
 
 function validateSortForm(form) {
