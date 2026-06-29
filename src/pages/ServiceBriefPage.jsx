@@ -3,28 +3,34 @@ import { PAGE_KEYS } from '../constants/app.js';
 import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
-const TEMPLATE_OPTIONS = [
-  { key: 'owner', label: '业主群简洁版' },
-  { key: 'public', label: '朋友圈 / 公众号短文版' },
-  { key: 'internal', label: '内部留痕版' }
-];
-
-const GRAPHIC_TEMPLATE_OPTIONS = [
-  { key: 'ownerGraphic', label: '业主群图文简洁版' },
-  { key: 'publicGraphic', label: '朋友圈 / 公众号图文版' },
-  { key: 'internalGraphic', label: '内部留痕图文版' }
-];
-
-const PROJECT_CONTACTS = {
-  曲靖潇湘新区二期: {
-    phone: '0874-3296029',
-    sign: '佳恒物业潇湘新区二期客服中心'
-  },
-  曲靖香辰康园: {
-    phone: '0874-3956880',
-    sign: '佳恒物业香辰康园客服中心'
-  }
+const IMAGE_TEMPLATE = {
+  key: 'serviceBriefImage',
+  label: '每日服务简报图',
+  width: 1080,
+  minHeight: 1440,
+  maxHeight: 5000,
+  maxItemsPerPage: 5,
+  maxPhotosPerItem: 2,
+  headline: '每日服务简报',
+  intro: '今日物业服务事项简要汇总如下'
 };
+
+const PROJECT_INFO = [
+  {
+    name: '曲靖潇湘新区二期',
+    phone: '0874-3296029',
+    serviceCenter: '佳恒物业潇湘新区二期客服中心',
+    shortName: '潇湘新区二期',
+    aliases: ['曲靖潇湘新区二期', '潇湘新区二期', '潇湘', '新区二期']
+  },
+  {
+    name: '曲靖香辰康园',
+    phone: '0874-3956880',
+    serviceCenter: '佳恒物业香辰康园客服中心',
+    shortName: '香辰康园',
+    aliases: ['曲靖香辰康园', '香辰康园', '香辰']
+  }
+];
 
 const defaultFilters = {
   date: formatDateInput(new Date()),
@@ -44,10 +50,9 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
   const [selectedPhotoIds, setSelectedPhotoIds] = useState(() => new Set());
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [expandedIds, setExpandedIds] = useState(() => new Set());
-  const [template, setTemplate] = useState('owner');
-  const [graphicTemplate, setGraphicTemplate] = useState('ownerGraphic');
   const [status, setStatus] = useState({ type: 'idle', text: '正在读取归档根目录设置...' });
   const [isLoading, setIsLoading] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
 
   useEffect(() => {
@@ -92,23 +97,18 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
   const serviceItems = useMemo(() => summarizeServiceItems(filteredRecords), [filteredRecords]);
   const visibleItems = showSelectedOnly ? serviceItems.filter((item) => selectedIds.has(item.id)) : serviceItems;
   const selectedItems = serviceItems.filter((item) => selectedIds.has(item.id));
-  const selectedPhotoRecords = useMemo(() => selectedItems.flatMap((item) => item.records.filter((record) => selectedPhotoIds.has(getPhotoId(record)) && record.fileExists && record.archivePath)), [selectedItems, selectedPhotoIds]);
-  const briefText = useMemo(() => {
+  const selectedPhotoRecords = useMemo(() => selectedItems.flatMap((item) => (
+    item.records.filter((record) => selectedPhotoIds.has(getPhotoId(record)) && record.fileExists && record.archivePath)
+  )), [selectedItems, selectedPhotoIds]);
+  const previewPages = useMemo(() => {
     try {
-      return buildBriefText(selectedItems, filters, template);
+      return buildImagePages(selectedItems, selectedPhotoIds, filters, IMAGE_TEMPLATE, true);
     } catch (error) {
-      recordRuntimeLog({ page: '每日服务简报', operation: '生成简报', errorType: '简报生成失败', summary: error.message, error });
-      return '简报生成失败，请检查已选择事项。';
+      recordRuntimeLog({ page: '每日服务简报', operation: '生成图片预览', errorType: '图片预览失败', summary: error.message, error });
+      return [];
     }
-  }, [selectedItems, filters, template]);
-  const graphicHtml = useMemo(() => {
-    try {
-      return buildGraphicBriefHtml(selectedItems, selectedPhotoIds, filters, graphicTemplate, false);
-    } catch (error) {
-      recordRuntimeLog({ page: '每日服务简报', operation: '生成图文预览', errorType: '图文预览失败', summary: error.message, error });
-      return '<div class="brief-empty">图文预览生成失败，请检查已选择事项和照片。</div>';
-    }
-  }, [selectedItems, selectedPhotoIds, filters, graphicTemplate]);
+  }, [selectedItems, selectedPhotoIds, filters]);
+  const captionText = useMemo(() => buildCaptionText(selectedItems, filters), [selectedItems, filters]);
 
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
@@ -148,8 +148,17 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
   function toggleSelected(itemId) {
     setSelectedIds((current) => {
       const next = new Set(current);
-      if (next.has(itemId)) next.delete(itemId);
-      else next.add(itemId);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+        setSelectedPhotoIds((photoCurrent) => {
+          const photoNext = new Set(photoCurrent);
+          const targetItem = serviceItems.find((item) => item.id === itemId);
+          targetItem?.records.forEach((record) => photoNext.delete(getPhotoId(record)));
+          return photoNext;
+        });
+      } else {
+        next.add(itemId);
+      }
       return next;
     });
   }
@@ -170,7 +179,7 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
 
   function togglePhotoSelected(record) {
     if (!record.fileExists || !record.archivePath) {
-      setStatus({ type: 'warning', text: '该照片文件缺失，无法用于图文简报导出。' });
+      setStatus({ type: 'warning', text: '该照片文件缺失，无法用于图片导出。' });
       return;
     }
     setSelectedPhotoIds((current) => {
@@ -194,6 +203,17 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
       : { type: 'warning', text: '当前已选事项中没有可用于展示的照片。' });
   }
 
+  function keepTwoPhotosPerItem() {
+    const next = new Set();
+    selectedItems.forEach((item) => {
+      item.records.filter((record) => record.fileExists && record.archivePath).slice(0, 2).forEach((record) => next.add(getPhotoId(record)));
+    });
+    setSelectedPhotoIds(next);
+    setStatus(next.size > 0
+      ? { type: 'success', text: `已按每项最多 2 张照片整理，共选择 ${next.size} 张。` }
+      : { type: 'warning', text: '当前已选事项中没有可用于展示的照片。' });
+  }
+
   function clearPhotoSelection() {
     setSelectedPhotoIds(new Set());
   }
@@ -207,57 +227,48 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
     });
   }
 
-  async function copyBrief() {
-    if (selectedItems.length === 0) {
-      setStatus({ type: 'warning', text: '请先勾选需要展示的服务事项。' });
-      return;
-    }
+  async function copyCaption() {
     try {
-      const result = await window.archiveAssistant.copyText(briefText);
+      const result = await window.archiveAssistant.copyText(captionText);
       if (result?.success === false) throw new Error(result.message || '系统剪贴板写入失败');
-      setStatus({ type: 'success', text: '简报文本已复制，可粘贴到业主群或公众号编辑器中。' });
+      setStatus({ type: 'success', text: '配图文案已复制，可粘贴到业主群、朋友圈或公众号编辑器中。' });
     } catch (error) {
-      recordRuntimeLog({ page: '每日服务简报', operation: '复制简报', errorType: '复制失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `复制简报失败：${error.message}` });
+      recordRuntimeLog({ page: '每日服务简报', operation: '复制配图文案', errorType: '复制配图文案失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `复制配图文案失败：${error.message}` });
     }
   }
 
-  async function exportGraphicBrief() {
-    if (!filters.date) {
-      setStatus({ type: 'warning', text: '请先选择日期。' });
+  async function exportImages() {
+    const validation = validateExportReady(filters, selectedItems, selectedPhotoRecords);
+    if (!validation.ok) {
+      setStatus({ type: 'warning', text: validation.message });
       return;
     }
-    if (selectedItems.length === 0) {
-      setStatus({ type: 'warning', text: '请先勾选需要展示的服务事项。' });
-      return;
-    }
-    if (selectedPhotoRecords.length === 0) {
-      setStatus({ type: 'warning', text: '请至少选择一张用于展示的照片。' });
-      return;
-    }
+
     const missingCount = selectedItems.flatMap((item) => item.records.filter((record) => selectedPhotoIds.has(getPhotoId(record)) && (!record.fileExists || !record.archivePath))).length;
     if (missingCount > 0) {
-      setStatus({ type: 'warning', text: '部分照片文件缺失，已自动跳过；请检查后再导出。' });
+      setStatus({ type: 'warning', text: '部分照片文件缺失，已自动跳过。' });
     }
+
+    setIsExporting(true);
     try {
-      const html = buildGraphicBriefHtml(selectedItems, selectedPhotoIds, filters, graphicTemplate, true);
-      const folderName = `每日服务简报_${sanitizeFileName(getProjectTitle(selectedItems, filters))}_${filters.date}`;
-      const images = selectedPhotoRecords.map((record) => ({
-        id: getPhotoId(record),
-        sourcePath: record.archivePath,
-        fileName: record.newFileName || record.originalName || ''
-      }));
-      const result = await window.archiveAssistant.exportServiceBriefPackage({ folderName, html, images });
-      if (result?.canceled) return;
-      if (!result?.success) throw new Error(result?.message || '导出图文简报失败');
-      setExportResult(result);
-      setStatus({
-        type: result.skippedCount > 0 ? 'warning' : 'success',
-        text: `图文简报导出成功：${result.packageDir}${result.skippedCount > 0 ? `；已跳过 ${result.skippedCount} 张缺失照片。` : ''}`
+      const pages = buildImagePages(selectedItems, selectedPhotoIds, filters, IMAGE_TEMPLATE, false);
+      if (pages.length === 0) throw new Error('当前没有可导出的图片内容，请检查事项和照片选择。');
+      const folderName = buildExportFolderName(selectedItems, filters);
+      const result = await window.archiveAssistant.exportServiceBriefImages({
+        folderName,
+        pages,
+        captionText
       });
+      if (result?.canceled) return;
+      if (!result?.success) throw new Error(result?.message || '图片导出失败');
+      setExportResult(result);
+      setStatus({ type: 'success', text: `图片成品导出成功：${result.packageDir}；已生成 ${result.imageCount} 张 PNG 和配图文案。` });
     } catch (error) {
-      recordRuntimeLog({ page: '每日服务简报', operation: '导出图文简报', errorType: '图文资料包导出失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `导出图文简报失败：${error.message}` });
+      recordRuntimeLog({ page: '每日服务简报', operation: '生成发布图片', errorType: '生成发布图片失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `图片导出失败：${error.message}` });
+    } finally {
+      setIsExporting(false);
     }
   }
 
@@ -282,15 +293,15 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
 
   return (
     <div className="service-brief-page">
-      <section className="module-hero service-brief-hero">
+      <section className="module-hero service-brief-hero compact">
         <div>
           <p className="eyebrow">每日服务简报</p>
-          <h1>从归档照片生成业主版服务简报</h1>
-          <p>按日期和项目读取已归档照片记录，人工勾选适合公开展示的服务事项和照片，生成可复制文字与 HTML 图文资料包。</p>
+          <h1>从归档照片生成可直接发布的图片成品</h1>
+          <p>人工勾选适合公开展示的事项和照片，统一导出每日服务简报图，并附带简短配图文案。</p>
         </div>
         <div className="service-brief-actions">
           <button type="button" className="primary" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '读取中...' : '刷新台账'}</button>
-          <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>去系统设置</button>
+          <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>设置归档目录</button>
         </div>
       </section>
 
@@ -307,23 +318,25 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
         <span>台账：<strong title={ledgerPath}>{ledgerPath || '尚未加载台账'}</strong></span>
         <span>照片记录 {filteredRecords.length}</span>
         <span>服务事项 {serviceItems.length}</span>
-        <span>已选 {selectedItems.length}</span>
+        <span>已选事项 {selectedItems.length}</span>
+        <span>已选照片 {selectedPhotoRecords.length}</span>
         <span className={status.type}>{status.text}</span>
       </section>
 
-      <main className="service-brief-workspace">
+      <main className="service-brief-workspace image-workbench">
         <section className="service-brief-list-panel">
           <header className="service-brief-panel-head">
             <div>
-              <h2>当天事项汇总</h2>
-              <p>事项默认不公开，需人工勾选后进入简报。</p>
+              <h2>服务事项与照片选择</h2>
+              <p>默认不公开任何照片，请人工勾选适合展示的事项和照片。</p>
             </div>
             <div className="service-brief-toolbar">
-              <button type="button" onClick={selectAllVisible} disabled={visibleItems.length === 0}>全选当前筛选结果</button>
+              <button type="button" onClick={selectAllVisible} disabled={visibleItems.length === 0}>全选事项</button>
               <button type="button" onClick={clearSelection} disabled={selectedItems.length === 0}>清空选择</button>
-              <button type="button" onClick={selectFirstPhotoPerItem} disabled={selectedItems.length === 0}>每项选首图</button>
+              <button type="button" onClick={selectFirstPhotoPerItem} disabled={selectedItems.length === 0}>每项首图</button>
+              <button type="button" onClick={keepTwoPhotosPerItem} disabled={selectedItems.length === 0}>每项最多 2 张</button>
               <button type="button" onClick={clearPhotoSelection} disabled={selectedPhotoIds.size === 0}>清空照片</button>
-              <button type="button" className={showSelectedOnly ? 'active' : ''} onClick={() => setShowSelectedOnly((value) => !value)}>只显示已选</button>
+              <button type="button" className={showSelectedOnly ? 'active' : ''} onClick={() => setShowSelectedOnly((value) => !value)}>只看已选</button>
             </div>
           </header>
 
@@ -337,6 +350,7 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
               {visibleItems.map((item) => {
                 const selected = selectedIds.has(item.id);
                 const expanded = expandedIds.has(item.id);
+                const itemSelectedPhotoCount = item.records.filter((record) => selectedPhotoIds.has(getPhotoId(record))).length;
                 return (
                   <article className={`service-item-card ${selected ? 'selected' : ''}`} key={item.id}>
                     <label className="service-item-main">
@@ -347,13 +361,13 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
                       </span>
                       <span className="service-item-meta">
                         <b>{item.records.length} 张</b>
-                        <em>{selected ? '已选择' : '待选择'}</em>
+                        <em>{itemSelectedPhotoCount > 0 ? `已选 ${itemSelectedPhotoCount}` : selected ? '待选照片' : '待选择'}</em>
                       </span>
                     </label>
                     <div className="service-item-tags">
                       {[item.project, item.department, item.watermarkCategory, item.workContent, item.processStatus, item.photoStage].filter(Boolean).slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}
                     </div>
-                    <button type="button" className="text-button" onClick={() => toggleExpanded(item.id)}>{expanded ? '收起照片记录' : '展开照片记录'}</button>
+                    <button type="button" className="text-button" onClick={() => toggleExpanded(item.id)}>{expanded ? '收起照片' : '展开照片'}</button>
                     {expanded ? (
                       <div className="service-item-records">
                         {item.records.map((record) => {
@@ -381,27 +395,45 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
           )}
         </section>
 
-        <aside className="service-brief-preview-panel">
+        <aside className="service-brief-preview-panel image-output-panel">
           <header className="service-brief-panel-head">
             <div>
-              <h2>简报生成区</h2>
-              <p>当前模板：{TEMPLATE_OPTIONS.find((item) => item.key === template)?.label}</p>
+              <h2>图片成品预览</h2>
+              <p>每日服务简报图：适合业主群、朋友圈、公众号配图和内部留痕共用。</p>
             </div>
           </header>
-          <div className="service-brief-template-tabs">
-            {TEMPLATE_OPTIONS.map((item) => <button type="button" className={template === item.key ? 'active' : ''} key={item.key} onClick={() => setTemplate(item.key)}>{item.label}</button>)}
+
+          <div className="service-brief-template-tip">
+            建议选择 3～10 个事项，每个事项 1～2 张照片；内容较多时会自动分页导出多张 PNG。
           </div>
-          <div className="service-brief-template-tabs graphic">
-            {GRAPHIC_TEMPLATE_OPTIONS.map((item) => <button type="button" className={graphicTemplate === item.key ? 'active' : ''} key={item.key} onClick={() => setGraphicTemplate(item.key)}>{item.label}</button>)}
+
+          <div className="service-brief-image-preview">
+            {selectedItems.length === 0 ? (
+              <div className="brief-empty">请先勾选需要展示的服务事项。</div>
+            ) : selectedPhotoRecords.length === 0 ? (
+              <div className="brief-empty">请在已选事项中选择用于图片展示的照片。</div>
+            ) : previewPages.length === 0 ? (
+              <div className="brief-empty">当前没有可导出的图片内容，请检查事项和照片选择。</div>
+            ) : (
+              <div dangerouslySetInnerHTML={{ __html: previewPages[0].previewHtml }} />
+            )}
           </div>
-          <div className="service-brief-safety">
-            发布前请人工检查：不要公开业主姓名、电话、详细门牌号、完整车牌、投诉纠纷细节、内部备注和责任认定内容。
+
+          <div className="service-caption-panel">
+            <div>
+              <h3>配图文案</h3>
+              <p>配文只作为图片发布辅助，不再生成长篇文字日报。</p>
+            </div>
+            <textarea readOnly value={captionText} />
+            <button type="button" onClick={copyCaption}>复制配图文案</button>
           </div>
-          <textarea className="service-brief-preview" readOnly value={selectedItems.length === 0 ? '请先勾选需要展示的服务事项。' : briefText} />
-          <div className="service-brief-graphic-preview" dangerouslySetInnerHTML={{ __html: selectedItems.length === 0 ? '<div class="brief-empty">请先勾选需要展示的服务事项。</div>' : selectedPhotoRecords.length === 0 ? '<div class="brief-empty">请在已选事项中选择用于图文简报展示的照片。</div>' : graphicHtml }} />
+
+          <div className="service-brief-safety compact">
+            导出前请人工检查：不要公开业主姓名、电话、详细门牌号、完整车牌、投诉纠纷细节、内部备注和责任认定内容。照片内容是否适合公开，请人工确认后再发布。
+          </div>
+
           <div className="service-brief-export-actions">
-            <button type="button" className="primary" onClick={copyBrief} disabled={selectedItems.length === 0}>复制简报</button>
-            <button type="button" className="primary" onClick={exportGraphicBrief} disabled={selectedItems.length === 0 || selectedPhotoRecords.length === 0}>导出图文简报</button>
+            <button type="button" className="primary" onClick={exportImages} disabled={isExporting || selectedItems.length === 0 || selectedPhotoRecords.length === 0}>{isExporting ? '导出中...' : '导出简报图片'}</button>
             <button type="button" onClick={openExportDir} disabled={!exportResult?.packageDir}>打开导出目录</button>
           </div>
         </aside>
@@ -470,117 +502,127 @@ function summarizeServiceItems(records) {
   }));
 }
 
-function buildBriefText(items, filters, template) {
-  if (items.length === 0) return '请先勾选需要展示的服务事项。';
-  if (template === 'internal') return buildInternalBrief(items, filters);
-  if (template === 'public') return buildPublicBrief(items, filters);
-  return buildOwnerBrief(items, filters);
-}
-
-function buildGraphicBriefHtml(items, selectedPhotoIds, filters, template, exportMode) {
-  if (items.length === 0) return '<div class="brief-empty">请先勾选需要展示的服务事项。</div>';
-  const title = template === 'internalGraphic' ? '每日服务简报 - 内部留痕版' : '每日服务简报';
-  const intro = template === 'publicGraphic'
-    ? '我们从今日物业服务记录中整理了部分服务事项，供各位业主了解。'
-    : template === 'internalGraphic'
-      ? '以下内容来源于已归档照片台账，供内部留痕和复核使用。'
-      : '今日物业服务事项简要汇总如下。';
+function buildImagePages(items, selectedPhotoIds, filters, template, previewMode) {
   const grouped = groupItemsByProject(items, filters);
-  const body = grouped.map(([project, projectItems]) => {
-    const contact = getContactByProject(project);
-    const itemBlocks = projectItems.map((item, index) => {
-      const selectedPhotos = item.records.filter((record) => selectedPhotoIds.has(getPhotoId(record)) && record.fileExists && record.archivePath);
-      const photoGrid = selectedPhotos.length > 0
-        ? `<div class="brief-photo-grid">${selectedPhotos.map((record) => {
-            const photoId = getPhotoId(record);
-            const src = exportMode ? `__IMAGE_${photoId}__` : record.previewUrl;
-            return `<figure><div class="brief-image-box"><img src="${escapeHtml(src)}" alt="${escapeHtml(record.newFileName || record.originalName || item.title)}" /></div><figcaption>${escapeHtml(record.photoStage || record.processStatus || record.newFileName || '')}</figcaption></figure>`;
-          }).join('')}</div>`
-        : '<p class="brief-photo-empty">请在该事项下选择展示照片。</p>';
-      const internalMeta = template === 'internalGraphic'
-        ? `<p class="brief-meta">部门：${escapeHtml(item.department || '未填写')}｜分类：${escapeHtml(item.watermarkCategory || '未分类')}｜工作内容：${escapeHtml(item.workContent || '未填写')}｜照片数量：${item.records.length}</p>`
-        : '';
-      return `<section class="brief-item"><h3>${toChineseNumber(index + 1)}、${escapeHtml(item.title)}</h3>${internalMeta}<p>${escapeHtml(buildItemSentence(item))}</p>${photoGrid}</section>`;
-    }).join('');
-    return `<section class="brief-project"><h2>${escapeHtml(project)}</h2><p class="brief-date">日期：${escapeHtml(filters.date || formatDateInput(new Date()))}</p>${itemBlocks}<footer><p>感谢各位业主对物业服务工作的理解与支持。</p><p>客服电话：${escapeHtml(contact.phone)}</p><p>${escapeHtml(contact.sign)}</p></footer></section>`;
+  const pages = [];
+  grouped.forEach(([project, projectItems]) => {
+    const projectInfo = resolveProjectInfo(project);
+    const projectChunks = chunkArray(projectItems, template.maxItemsPerPage);
+    projectChunks.forEach((chunk, pageIndex) => {
+      const width = previewMode ? 390 : template.width;
+      const exportHeight = getTemplateHeight(template, chunk);
+      const height = previewMode ? Math.round(exportHeight * (width / template.width)) : exportHeight;
+      const pageData = {
+        project,
+        items: chunk,
+        pageIndex,
+        totalPages: projectChunks.length,
+        width,
+        height,
+        template,
+        filters,
+        selectedPhotoIds,
+        projectInfo,
+        previewMode
+      };
+      const html = buildImagePageHtml(pageData);
+      const fileName = `每日服务简报图_${projectInfo.shortName}_${filters.date || formatDateInput(new Date())}_${String(pageIndex + 1).padStart(3, '0')}.png`;
+      pages.push({
+        templateKey: template.key,
+        project,
+        fileName,
+        width: previewMode ? template.width : width,
+        height: previewMode ? exportHeight : height,
+        html: previewMode ? buildImagePageHtml({ ...pageData, width: template.width, height: exportHeight, previewMode: false }) : html,
+        previewHtml: html
+      });
+    });
+  });
+  return pages;
+}
+
+function buildImagePageHtml({ project, projectInfo = resolveProjectInfo(project), items, pageIndex, totalPages, width, height, template, filters, selectedPhotoIds, previewMode }) {
+  const dateText = filters.date || formatDateInput(new Date());
+  const itemHtml = items.map((item, index) => buildImageItemHtml(item, index, selectedPhotoIds, template, previewMode)).join('');
+  const pageMarkup = `<main class="brief-image-page ${template.key}">
+    <header class="brief-image-cover">
+      <div><h1>${escapeHtml(template.headline)}</h1><span>${escapeHtml(template.intro)}</span></div>
+      <strong>${escapeHtml(projectInfo.shortName)}<br />${escapeHtml(dateText)}</strong>
+    </header>
+    <section class="brief-image-items">${itemHtml}</section>
+    <footer class="brief-image-footer">
+      <span>客服电话：${escapeHtml(projectInfo.phone)}</span>
+      <span>${escapeHtml(projectInfo.serviceCenter)}</span>
+      ${totalPages > 1 ? `<span>第 ${pageIndex + 1} / ${totalPages} 页</span>` : ''}
+    </footer>
+  </main>`;
+  if (previewMode) return pageMarkup;
+  return `<!doctype html><html><head><meta charset="utf-8" /><style>${buildImageCss(width, height, template, previewMode)}</style></head><body>${pageMarkup}</body></html>`;
+}
+
+function buildImageItemHtml(item, index, selectedPhotoIds, template, previewMode) {
+  const photos = item.records
+    .filter((record) => selectedPhotoIds.has(getPhotoId(record)) && record.fileExists && record.archivePath)
+    .slice(0, template.maxPhotosPerItem);
+  const photoHtml = photos.map((record) => {
+    const src = previewMode ? record.previewUrl : `local-photo://image/${encodeURIComponent(record.archivePath)}`;
+    return `<figure><div class="brief-publish-photo-box"><img src="${escapeHtml(src)}" alt="${escapeHtml(record.newFileName || record.originalName || item.title)}" /></div></figure>`;
   }).join('');
-
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(title)}</title>
-  <style>
-    body{margin:0;background:#f3f6fb;color:#17375e;font-family:"Microsoft YaHei",Arial,sans-serif;line-height:1.7}
-    .brief-page{max-width:920px;margin:0 auto;padding:28px 22px 36px}
-    .brief-cover,.brief-project,.brief-safety{background:#fff;border:1px solid #dce8f5;border-radius:18px;padding:22px;margin-bottom:18px;box-shadow:0 10px 24px rgba(21,54,92,.06)}
-    h1{margin:0 0 8px;font-size:30px;color:#0f2e52}.brief-cover p{margin:0;color:#5f7188}
-    .brief-project h2{margin:0;color:#1f67c7;font-size:22px}.brief-date,.brief-meta{color:#6b7c93;font-size:14px}
-    .brief-item{border-top:1px solid #e7eef7;padding-top:16px;margin-top:16px}.brief-item h3{margin:0 0 8px;font-size:18px;color:#17375e}.brief-item p{margin:0 0 12px}
-    .brief-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.brief-photo-grid figure{margin:0;border:1px solid #dce8f5;border-radius:14px;overflow:hidden;background:#f8fbff}.brief-image-box{min-height:160px;display:flex;align-items:center;justify-content:center;background:#f8fafc}.brief-photo-grid img{display:block;max-width:100%;max-height:320px;width:auto;height:auto;object-fit:contain}.brief-photo-grid figcaption{padding:7px 9px;color:#6b7c93;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    footer{margin-top:18px;color:#17375e}.brief-safety{color:#8a5a12;background:#fff8e8;border-color:#f0d7a9}.brief-photo-empty,.brief-empty{color:#8a5a12;background:#fff8e8;border:1px dashed #f0d7a9;border-radius:12px;padding:12px}
-    @media print{body{background:#fff}.brief-page{max-width:none;padding:0}.brief-cover,.brief-project,.brief-safety{box-shadow:none;break-inside:avoid}}
-  </style>
-</head>
-<body>
-  <main class="brief-page">
-    <section class="brief-cover"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(intro)}</p></section>
-    ${body}
-    <section class="brief-safety">导出前请人工检查：不要公开业主姓名、电话、详细门牌号、完整车牌、投诉纠纷细节、内部备注和责任认定内容。</section>
-  </main>
-</body>
-</html>`;
+  return `<article class="brief-image-item">
+    <div class="brief-image-item-copy">
+      <em>${String(index + 1).padStart(2, '0')}</em>
+      <div><h2>${escapeHtml(item.title)}</h2><p>${escapeHtml(buildItemSentence(item))}</p></div>
+    </div>
+    <div class="brief-image-photo-grid photo-count-${Math.max(photos.length, 1)}">${photoHtml || '<div class="brief-image-missing">请在该事项下选择展示照片</div>'}</div>
+  </article>`;
 }
 
-function buildOwnerBrief(items, filters) {
-  const projectTitle = getProjectTitle(items, filters);
-  const contact = getBriefContact(items, filters);
+function buildImageCss(width, height, template, previewMode) {
+  const scale = previewMode ? Math.max(0.28, width / template.width) : 1;
+  const fontScale = previewMode ? 1 / scale : 1;
+  return `
+    *{box-sizing:border-box}html,body{margin:0;padding:0;background:#eef4fb;font-family:"Microsoft YaHei",Arial,sans-serif;color:#17375e}
+    .brief-image-page{width:${width}px;height:${height}px;overflow:hidden;background:linear-gradient(180deg,#f8fbff 0%,#ffffff 45%,#f4f8fd 100%);padding:${Math.round(48 * scale)}px;display:flex;flex-direction:column;gap:${Math.round(24 * scale)}px}
+    .brief-image-cover{display:flex;align-items:flex-start;justify-content:space-between;gap:${Math.round(24 * scale)}px;padding:${Math.round(30 * scale)}px;border-radius:${Math.round(28 * scale)}px;background:linear-gradient(135deg,#123a63,#1f67c7);color:#fff}
+    .brief-image-cover h1{margin:0;font-size:${Math.round(52 * scale * fontScale)}px;line-height:1.12}.brief-image-cover span{display:block;margin-top:${Math.round(12 * scale)}px;font-size:${Math.round(25 * scale * fontScale)}px;opacity:.9}.brief-image-cover strong{text-align:right;font-size:${Math.round(26 * scale * fontScale)}px;line-height:1.5;white-space:nowrap}
+    .brief-image-items{display:grid;gap:${Math.round(18 * scale)}px;min-height:0;overflow:hidden}.brief-image-item{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(${Math.round(340 * scale)}px,.95fr);gap:${Math.round(18 * scale)}px;padding:${Math.round(20 * scale)}px;border:1px solid #dce8f5;border-radius:${Math.round(24 * scale)}px;background:#fff;box-shadow:0 ${Math.round(10 * scale)}px ${Math.round(24 * scale)}px rgba(21,54,92,.08)}
+    .brief-image-item-copy{display:flex;gap:${Math.round(14 * scale)}px;min-width:0}.brief-image-item-copy em{flex:0 0 ${Math.round(52 * scale)}px;height:${Math.round(52 * scale)}px;border-radius:${Math.round(16 * scale)}px;background:#e7f0ff;color:#1f67c7;display:flex;align-items:center;justify-content:center;font-style:normal;font-size:${Math.round(24 * scale * fontScale)}px;font-weight:800}.brief-image-item-copy h2{margin:0 0 ${Math.round(8 * scale)}px;font-size:${Math.round(34 * scale * fontScale)}px;line-height:1.2;color:#0f2e52}.brief-image-item-copy p{margin:0;color:#41556d;font-size:${Math.round(24 * scale * fontScale)}px;line-height:1.55}.brief-item-meta{margin-top:${Math.round(10 * scale)}px!important;color:#6b7c93!important;font-size:${Math.round(19 * scale * fontScale)}px!important}
+    .brief-image-photo-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(${Math.round(160 * scale)}px,1fr));gap:${Math.round(12 * scale)}px;min-width:0}.brief-publish-photo-box{width:100%;height:${Math.round(230 * scale)}px;display:flex;align-items:center;justify-content:center;border-radius:${Math.round(18 * scale)}px;background:#f8fafc;border:1px solid #dce8f5;overflow:hidden}.brief-publish-photo-box img{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain}.brief-image-missing{display:flex;align-items:center;justify-content:center;min-height:${Math.round(160 * scale)}px;border:1px dashed #f0d7a9;border-radius:${Math.round(18 * scale)}px;background:#fff8e8;color:#986017;font-size:${Math.round(22 * scale * fontScale)}px}
+    .brief-image-footer{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:${Math.round(16 * scale)}px;padding-top:${Math.round(16 * scale)}px;border-top:1px solid #dce8f5;color:#17375e;font-size:${Math.round(24 * scale * fontScale)}px}
+  `;
+}
+
+function getTemplateHeight(template, items) {
+  return Math.min(template.maxHeight, Math.max(template.minHeight, 520 + items.length * 330));
+}
+
+function validateExportReady(filters, selectedItems, selectedPhotoRecords) {
+  if (!filters.date) return { ok: false, message: '请先选择日期。' };
+  if (selectedItems.length === 0) return { ok: false, message: '请至少选择一个服务事项。' };
+  if (selectedPhotoRecords.length === 0) return { ok: false, message: '请至少选择一张用于展示的照片。' };
+  return { ok: true };
+}
+
+function buildCaptionText(items, filters) {
+  const projectInfos = getCaptionProjectInfos(items, filters);
+  const primaryInfo = projectInfos[0] || resolveProjectInfo('');
+  const contactLines = projectInfos.map((info) => `${info.shortName}：${info.phone}，${info.serviceCenter}`).join('\n');
+  const projectPhrase = projectInfos.length === 1 ? primaryInfo.shortName : '各项目';
   return [
-    '【每日服务简报】',
-    `项目：${projectTitle}`,
-    `日期：${filters.date || formatDateInput(new Date())}`,
+    '【业主群配文】',
+    '各位业主/住户：',
+    `今日${projectPhrase}物业服务中心已整理服务简报图，具体服务事项请查看图片。如有需要，请联系对应物业服务中心。`,
+    contactLines,
     '',
-    '今日物业服务事项：',
-    ...items.map((item, index) => `${index + 1}. ${item.title}\n   ${buildItemSentence(item)}`),
-    '',
-    '感谢各位业主对物业服务工作的理解与支持。如有需要，请联系物业服务中心。',
-    `客服电话：${contact.phone}`,
-    `落款：${contact.sign}`
+    '【朋友圈配文】',
+    `服务在日常，细节见用心。今日${projectPhrase}物业服务简报已整理完成，感谢各位业主对物业服务工作的理解与支持。`,
+    contactLines
   ].join('\n');
 }
 
-function buildPublicBrief(items, filters) {
-  const projectTitle = getProjectTitle(items, filters);
-  const contact = getBriefContact(items, filters);
-  return [
-    '【每日服务简报】',
-    `${filters.date || formatDateInput(new Date())}，${projectTitle}物业服务工作有序开展。我们从今日已归档照片记录中整理了以下服务事项，供各位业主了解。`,
-    '',
-    ...items.map((item, index) => `${index + 1}. ${item.title}\n   ${buildItemSentence(item)}`),
-    '',
-    '我们将持续做好公共区域维护与服务跟进，感谢各位业主的理解与支持。',
-    `客服电话：${contact.phone}`,
-    `${contact.sign}`
-  ].join('\n');
-}
-
-function buildInternalBrief(items, filters) {
-  return [
-    '【每日服务简报 - 内部留痕版】',
-    `日期：${filters.date || formatDateInput(new Date())}`,
-    `项目：${getProjectTitle(items, filters)}`,
-    `选入事项：${items.length} 项`,
-    `涉及照片：${items.reduce((sum, item) => sum + item.records.length, 0)} 张`,
-    '',
-    ...items.map((item, index) => [
-      `${index + 1}. ${item.title}`,
-      `   项目：${item.project || '未识别项目'}；部门：${item.department || '未填写'}；分类：${item.watermarkCategory || '未分类'}；工作内容：${item.workContent || '未填写'}；位置：${item.location || '未填写'}；阶段：${item.photoStage || '未填写'}；状态：${item.processStatus || '未填写'}；照片：${item.records.length} 张。`,
-      `   说明：${buildItemSentence(item)}`
-    ].join('\n')),
-    '',
-    '公开发布前仍需人工复核敏感信息。'
-  ].join('\n');
+function buildExportFolderName(items, filters) {
+  const projectInfo = resolveProjectInfo(getProjectTitle(items, filters));
+  return `每日服务简报图片_${sanitizeFileName(projectInfo.shortName)}_${filters.date || formatDateInput(new Date())}`;
 }
 
 function buildItemSentence(item) {
@@ -588,30 +630,45 @@ function buildItemSentence(item) {
   const location = item.location ? `在${item.location}` : '';
   const status = item.processStatus;
   if (status && /完成|已处理|已归档/.test(status)) {
-    return `工作人员${location}开展${title}相关服务，事项已记录并完成处理。`;
+    return `工作人员${location}开展${title}相关服务，保障园区公共环境和日常秩序。`;
   }
   if (status) {
-    return `工作人员${location}开展${title}相关服务，当前状态为${status}，后续将持续跟进。`;
+    return `工作人员${location}开展${title}相关服务，事项已记录并持续跟进。`;
   }
-  return `工作人员${location}开展${title}相关服务，事项已记录并跟进处理。`;
+  return `工作人员${location}开展${title}相关服务，做好现场记录和后续维护。`;
 }
 
-function getBriefContact(items, filters) {
-  const projects = unique(items.map((item) => item.project).filter(Boolean));
-  const targetProject = filters.project || (projects.length === 1 ? projects[0] : '');
-  if (targetProject && PROJECT_CONTACTS[targetProject]) return PROJECT_CONTACTS[targetProject];
-  if (targetProject && !PROJECT_CONTACTS[targetProject]) {
-    recordRuntimeLog({ page: '每日服务简报', operation: '匹配项目电话落款', errorType: '项目未识别', summary: `未识别项目：${targetProject}`, level: 'warn' });
+function resolveProjectInfo(projectName) {
+  const raw = String(projectName || '').trim();
+  const normalized = raw.replace(/\s+/g, '');
+  const matched = PROJECT_INFO.find((project) => (
+    project.aliases.some((alias) => normalized.includes(String(alias).replace(/\s+/g, '')))
+  ));
+  if (matched) return matched;
+  if (raw && raw !== '未识别项目' && !raw.includes('全部项目')) {
+    recordRuntimeLog({ page: '每日服务简报', operation: '匹配项目电话落款', errorType: '项目未识别', summary: `未识别项目：${raw}`, level: 'warn' });
   }
-  return { phone: '请填写物业服务中心电话', sign: '物业服务中心' };
+  return {
+    name: raw || '未识别项目',
+    shortName: raw && raw !== '未识别项目' ? raw : '物业服务中心',
+    phone: '请填写物业服务中心电话',
+    serviceCenter: '物业服务中心',
+    isFallback: true
+  };
 }
 
-function getContactByProject(project) {
-  if (project && PROJECT_CONTACTS[project]) return PROJECT_CONTACTS[project];
-  if (project && project !== '未识别项目') {
-    recordRuntimeLog({ page: '每日服务简报', operation: '匹配项目电话落款', errorType: '项目未识别', summary: `未识别项目：${project}`, level: 'warn' });
-  }
-  return { phone: '请填写物业服务中心电话', sign: '物业服务中心' };
+function getCaptionProjectInfos(items, filters) {
+  const projects = filters.project
+    ? [filters.project]
+    : unique(items.map((item) => item.project).filter(Boolean));
+  const targets = projects.length > 0 ? projects : [''];
+  const seen = new Set();
+  return targets.map(resolveProjectInfo).filter((info) => {
+    const key = `${info.shortName}|${info.phone}|${info.serviceCenter}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function groupItemsByProject(items, filters) {
@@ -628,7 +685,8 @@ function getProjectTitle(items, filters) {
   if (filters.project) return filters.project;
   const projects = unique(items.map((item) => item.project).filter(Boolean));
   if (projects.length === 1) return projects[0];
-  return '全部项目（请发布前按项目拆分核对）';
+  if (projects.length > 1) return '全部项目（按项目分别生成）';
+  return '未识别项目';
 }
 
 function getItemTitle(record) {
@@ -652,6 +710,11 @@ function normalizeDate(value) {
 function formatDateInput(date) {
   const pad = (value) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function formatLocalDateTime(date) {
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function unique(values) {
@@ -679,21 +742,12 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
-function toChineseNumber(value) {
-  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
-  if (value <= 10) return digits[value];
-  if (value < 20) return `十${digits[value - 10]}`;
-  const tens = Math.floor(value / 10);
-  const ones = value % 10;
-  return `${digits[tens]}十${ones ? digits[ones] : ''}`;
-}
-
 function sanitizeFileName(value) {
-  return String(value || '全部项目')
+  return String(value || '每日服务简报')
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 80) || '全部项目';
+    .slice(0, 80) || '每日服务简报';
 }
 
 function sanitizePublicLocation(value) {
@@ -711,4 +765,12 @@ function hashKey(value) {
     hash |= 0;
   }
   return Math.abs(hash).toString(36);
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }

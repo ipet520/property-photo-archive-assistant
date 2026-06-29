@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectArchivePackageTargetRoot: () => ipcRenderer.invoke('archivePackage:selectTargetRoot'),
   buildArchivePackagePlan: (records, targetRoot, options) => ipcRenderer.invoke('archivePackage:buildPlan', records, targetRoot, options),
   generateArchivePackage: (records, options) => ipcRenderer.invoke('archivePackage:generate', records, options),
-  exportServiceBriefPackage: (payload) => ipcRenderer.invoke('serviceBrief:exportPackage', payload),
+  exportServiceBriefImages: (payload) => ipcRenderer.invoke('serviceBrief:exportImages', payload),
   getDataMaintenanceReport: () => ipcRenderer.invoke('dataMaintenance:getReport'),
   loadTrialIssues: () => ipcRenderer.invoke('trialIssues:load'),
   saveTrialIssue: (item) => ipcRenderer.invoke('trialIssues:save', item),

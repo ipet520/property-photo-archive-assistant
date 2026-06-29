@@ -5,7 +5,7 @@ const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
-const { exportServiceBriefPackage } = require('./services/serviceBriefService.cjs');
+const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { clearHandledTrialIssues, deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
@@ -343,14 +343,14 @@ ipcMain.handle('archivePackage:generate', async (event, records, options) => gen
   onProgress: (progress) => event.sender.send('archivePackage:progress', progress)
 }));
 
-ipcMain.handle('serviceBrief:exportPackage', async (_event, payload) => {
+ipcMain.handle('serviceBrief:exportImages', async (_event, payload) => {
   const result = await dialog.showOpenDialog({
     title: '选择每日服务简报导出目录',
     defaultPath: app.getPath('documents'),
     properties: ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
-  return exportServiceBriefPackage(result.filePaths[0], payload);
+  return exportServiceBriefImages(result.filePaths[0], payload);
 });
 
 ipcMain.handle('dataMaintenance:getReport', async () => getDataMaintenanceReport({

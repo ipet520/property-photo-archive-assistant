@@ -8,7 +8,7 @@ const QUICK_ENTRIES = [
   { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
   { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
   { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },
-  { key: PAGE_KEYS.serviceBrief, title: '每日服务简报', text: '按日期汇总归档照片，勾选事项和展示照片，导出业主版图文服务简报。' },
+  { key: PAGE_KEYS.serviceBrief, title: '每日服务简报', text: '人工勾选归档事项和照片，导出业主群、朋友圈和内部留痕 PNG 图片成品。' },
   { key: PAGE_KEYS.dataMaintenance, title: '数据维护中心', text: '只读检查配置、目录、台账和本地进度。' },
   { key: PAGE_KEYS.settings, title: '系统设置', text: '维护基础数据、默认目录和资料包偏好。' }
 ];

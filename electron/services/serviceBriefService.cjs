@@ -1,70 +1,107 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { BrowserWindow } = require('electron');
 
-const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff']);
+const MAX_RENDER_WAIT_MS = 10000;
 
-function exportServiceBriefPackage(targetRoot, payload = {}) {
-  if (!targetRoot) throw new Error('请选择图文简报导出目录');
-  if (!payload.html) throw new Error('缺少图文简报 HTML 内容');
-  if (!Array.isArray(payload.images)) throw new Error('缺少展示照片清单');
-  fs.mkdirSync(targetRoot, { recursive: true });
-
-  const folderName = sanitizeFileName(payload.folderName || `每日服务简报_${formatDate(new Date())}`);
-  const packageDir = createUniqueDirectory(path.join(targetRoot, folderName));
-  const imagesDir = path.join(packageDir, 'images');
-  fs.mkdirSync(imagesDir, { recursive: true });
-
-  const copiedImages = [];
-  const skippedImages = [];
-  payload.images.forEach((image, index) => {
-    const sourcePath = String(image.sourcePath || '').trim();
-    if (!sourcePath || !fs.existsSync(sourcePath)) {
-      skippedImages.push({ sourcePath, reason: '照片文件缺失' });
-      return;
-    }
-    const stat = fs.statSync(sourcePath);
-    const ext = path.extname(sourcePath).toLowerCase();
-    if (!stat.isFile() || !IMAGE_EXTENSIONS.has(ext)) {
-      skippedImages.push({ sourcePath, reason: '不是可导出的图片文件' });
-      return;
-    }
-    const fileName = `${String(index + 1).padStart(3, '0')}${ext || '.jpg'}`;
-    const targetPath = path.join(imagesDir, fileName);
-    fs.copyFileSync(sourcePath, targetPath);
-    copiedImages.push({
-      id: image.id,
-      sourcePath,
-      fileName,
-      relativePath: `images/${fileName}`
-    });
-  });
-
-  if (copiedImages.length === 0) {
-    fs.rmSync(packageDir, { recursive: true, force: true });
-    throw new Error('没有可导出的展示照片，请至少选择一张存在的照片');
+async function exportServiceBriefImages(targetRoot, payload = {}) {
+  if (!targetRoot) throw new Error('请选择每日服务简报图片导出目录');
+  if (!Array.isArray(payload.pages) || payload.pages.length === 0) {
+    throw new Error('当前没有可导出的图片内容，请检查事项和照片选择。');
   }
 
-  const html = replaceImagePlaceholders(String(payload.html), copiedImages);
-  const htmlPath = path.join(packageDir, 'index.html');
-  fs.writeFileSync(htmlPath, html, 'utf8');
+  fs.mkdirSync(targetRoot, { recursive: true });
+  const folderName = sanitizeFileName(payload.folderName || `每日服务简报图片_${formatDate(new Date())}`);
+  const packageDir = createUniqueDirectory(path.join(targetRoot, folderName));
+  const captionText = String(payload.captionText || '').trim();
+  const captionPath = path.join(packageDir, '配图文案.txt');
+  fs.writeFileSync(captionPath, captionText || '暂无配图文案。', 'utf8');
+
+  const exportedFiles = [];
+  const renderWindow = new BrowserWindow({
+    show: false,
+    width: 1080,
+    height: 1440,
+    backgroundColor: '#ffffff',
+    webPreferences: {
+      offscreen: true,
+      sandbox: false,
+      nodeIntegration: false,
+      contextIsolation: true
+    }
+  });
+
+  try {
+    for (const [index, page] of payload.pages.entries()) {
+      const width = clampNumber(page.width, 720, 1600, 1080);
+      const height = clampNumber(page.height, 900, 5000, 1440);
+      const html = String(page.html || '').trim();
+      if (!html) throw new Error('缺少图片模板内容');
+
+      renderWindow.setContentSize(width, height);
+      await renderWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      await waitForImages(renderWindow);
+      const image = await renderWindow.webContents.capturePage({ x: 0, y: 0, width, height });
+      const fileName = sanitizeFileName(page.fileName || `每日服务简报_${String(index + 1).padStart(3, '0')}.png`);
+      const normalizedFileName = fileName.toLowerCase().endsWith('.png') ? fileName : `${fileName}.png`;
+      const filePath = path.join(packageDir, normalizedFileName);
+      fs.writeFileSync(filePath, image.toPNG());
+      exportedFiles.push({ fileName: normalizedFileName, filePath });
+    }
+  } catch (error) {
+    try {
+      fs.rmSync(packageDir, { recursive: true, force: true });
+    } catch {
+      // keep original rendering error visible
+    }
+    throw error;
+  } finally {
+    if (!renderWindow.isDestroyed()) renderWindow.destroy();
+  }
 
   return {
     success: true,
     packageDir,
-    htmlPath,
-    imageCount: copiedImages.length,
-    skippedCount: skippedImages.length,
-    skippedImages
+    captionPath,
+    imageCount: exportedFiles.length,
+    exportedFiles
   };
 }
 
-function replaceImagePlaceholders(html, images) {
-  let nextHtml = html;
-  images.forEach((image) => {
-    if (!image.id) return;
-    nextHtml = nextHtml.replaceAll(`__IMAGE_${image.id}__`, image.relativePath);
-  });
-  return nextHtml;
+async function waitForImages(renderWindow) {
+  const script = `
+    new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve({ timeout: true }), ${MAX_RENDER_WAIT_MS});
+      const finish = () => {
+        clearTimeout(timeout);
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve({ ok: true })));
+      };
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.catch(() => null).finally(() => {
+          const images = Array.from(document.images || []);
+          if (images.length === 0) {
+            finish();
+            return;
+          }
+          let remaining = images.length;
+          const done = () => {
+            remaining -= 1;
+            if (remaining <= 0) finish();
+          };
+          images.forEach((image) => {
+            if (image.complete) done();
+            else {
+              image.addEventListener('load', done, { once: true });
+              image.addEventListener('error', done, { once: true });
+            }
+          });
+        });
+      } else {
+        finish();
+      }
+    })
+  `;
+  await renderWindow.webContents.executeJavaScript(script, true);
 }
 
 function createUniqueDirectory(baseDir) {
@@ -78,12 +115,18 @@ function createUniqueDirectory(baseDir) {
   return candidate;
 }
 
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
 function sanitizeFileName(value) {
-  return String(value || '每日服务简报')
+  return String(value || '每日服务简报图片')
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 120) || '每日服务简报';
+    .slice(0, 120) || '每日服务简报图片';
 }
 
 function formatDate(date) {
@@ -92,5 +135,5 @@ function formatDate(date) {
 }
 
 module.exports = {
-  exportServiceBriefPackage
+  exportServiceBriefImages
 };
