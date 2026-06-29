@@ -42,7 +42,7 @@ const statusFilters = [
   ['ignored', '已忽略']
 ];
 
-const groupExamples = ['楼道杂物清理', '飞线充电治理', '公共设施设备维修', '消防通道违停', '环境卫生保洁', '绿化养护', '其他自定义分组'];
+const commonSceneFilters = ['楼道杂物清理', '飞线充电治理', '公共设施设备维修', '消防通道违停', '环境卫生维护', '绿化养护', '秩序巡查', '安全隐患排查'];
 
 const assistTabs = [
   ['scenes', '常见场景'],
@@ -147,7 +147,7 @@ export default function SortWorkspacePage({ archiveState }) {
       })
       .filter((photo) => {
         if (activeGroup === 'all') return true;
-        return photo.archiveInfo?.itemName === activeGroup || photo.archiveInfo?.workContent === activeGroup;
+        return matchesSceneFilter(photo, activeGroup);
       })
       .filter((photo) => {
         if (!keyword) return true;
@@ -162,6 +162,29 @@ export default function SortWorkspacePage({ archiveState }) {
         return String(a.modifiedAt || '').localeCompare(String(b.modifiedAt || ''));
       });
   }, [photos, filter, activeGroup, searchText, selectedIds, sortMode]);
+
+  const sceneFilters = useMemo(() => {
+    const configuredScenes = (configs?.sceneExamples || [])
+      .filter((scene) => String(scene?.title || '').trim())
+      .map((scene) => ({
+        key: scene.title,
+        title: scene.title,
+        scene
+      }));
+    const configuredTitles = new Set(configuredScenes.map((item) => item.title));
+    const fallbackScenes = commonSceneFilters
+      .filter((title) => !configuredTitles.has(title))
+      .map((title) => ({ key: title, title, scene: null }));
+    return [{ key: 'all', title: '全部场景', scene: null }, ...configuredScenes, ...fallbackScenes];
+  }, [configs]);
+
+  useEffect(() => {
+    if (activeGroup === 'all') return;
+    if (!sceneFilters.some((item) => item.key === activeGroup)) {
+      setActiveGroup('all');
+      setPage(1);
+    }
+  }, [activeGroup, sceneFilters]);
 
   const totalPages = Math.max(1, Math.ceil(visiblePhotos.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -521,6 +544,25 @@ export default function SortWorkspacePage({ archiveState }) {
     setStatus({ type: 'success', text: `已套用常见场景：${scene.title}。` });
   }
 
+  function selectSceneFilter(item) {
+    setActiveGroup(item.key);
+    setPage(1);
+    if (item.key === 'all') {
+      setStatus({ type: 'idle', text: '已显示全部场景照片。' });
+      return;
+    }
+    const matchedCount = photos.filter((photo) => matchesSceneFilter(photo, item.key)).length;
+    if (item.scene) {
+      applyScene(item.scene);
+    }
+    setStatus({
+      type: matchedCount > 0 ? 'idle' : 'warning',
+      text: matchedCount > 0
+        ? `已切换到“${item.title}”，可继续选择照片并点击“应用”确认归档信息。`
+        : '当前场景暂无匹配照片，可切换场景或导入照片后查看。'
+    });
+  }
+
   function applyRecentRecord(record) {
     setForm(reconcileForm({
       ...defaultForm,
@@ -801,26 +843,14 @@ export default function SortWorkspacePage({ archiveState }) {
             ))}
           </SortSection>
           <SortSection
-            title="分组列表"
-            action={(
-              <button
-                type="button"
-                title="新增分组（后续版本开放）"
-                onClick={() => setStatus({ type: 'idle', text: '自定义分组管理将在后续版本开放，当前可先按常见场景分组查看。' })}
-              >
-                + 分组
-              </button>
-            )}
+            title="常用场景"
+            description="点击场景可快速筛选照片，并辅助填充分类、工作内容和关键词。"
             scrollable
           >
-            <button type="button" className={activeGroup === 'all' ? 'active' : ''} onClick={() => { setActiveGroup('all'); setPage(1); }}>
-              <span><i style={{ background: '#2f80ed' }} />全部分组</span>
-              <strong>{photos.length}</strong>
-            </button>
-            {groupExamples.map((group, index) => (
-              <button type="button" key={group} className={activeGroup === group ? 'active' : ''} onClick={() => { setActiveGroup(group); setPage(1); }}>
-                <span><i style={{ background: groupColor(index) }} />{group}</span>
-                <strong>{photos.filter((photo) => photo.archiveInfo?.itemName === group || photo.archiveInfo?.workContent === group).length}</strong>
+            {sceneFilters.map((item, index) => (
+              <button type="button" key={item.key} className={activeGroup === item.key ? 'active' : ''} onClick={() => selectSceneFilter(item)}>
+                <span><i style={{ background: item.key === 'all' ? '#2f80ed' : groupColor(index - 1) }} />{item.title}</span>
+                <strong>{item.key === 'all' ? photos.length : photos.filter((photo) => matchesSceneFilter(photo, item.key)).length}</strong>
               </button>
             ))}
           </SortSection>
@@ -876,7 +906,11 @@ export default function SortWorkspacePage({ archiveState }) {
             {pagePhotos.length === 0 ? (
               <div className="sort-empty-state">
                 <strong>{effectivePhotoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
-                <span>{visiblePhotos.length === 0 && photos.length > 0 ? '当前筛选条件下没有照片，可调整左侧筛选。' : '原始照片只读取，不移动、不删除、不压缩。'}</span>
+                <span>{visiblePhotos.length === 0 && photos.length > 0
+                  ? activeGroup !== 'all'
+                    ? '当前场景暂无匹配照片，可切换场景或导入照片后查看。'
+                    : '当前筛选条件下没有照片，可调整左侧筛选。'
+                  : '原始照片只读取，不移动、不删除、不压缩。'}</span>
                 {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
               </div>
             ) : viewMode === 'grid' ? pagePhotos.map((photo) => (
@@ -1019,10 +1053,11 @@ export default function SortWorkspacePage({ archiveState }) {
   );
 }
 
-function SortSection({ title, action, children, scrollable = false }) {
+function SortSection({ title, action, description = '', children, scrollable = false }) {
   return (
     <section className={`sort-filter-section ${scrollable ? 'scrollable' : ''}`}>
       <header><h3>{title}</h3>{action}</header>
+      {description && <p className="sort-section-hint">{description}</p>}
       <div>{children}</div>
     </section>
   );
@@ -1352,6 +1387,24 @@ function fillTemplate(template, form, scene = {}) {
     .replaceAll('位置/区域', form.location || '位置/区域')
     .replaceAll('工作事项', scene.itemName || form.itemName || form.workContent || '事项名称')
     .replaceAll('事项名称', scene.itemName || form.itemName || form.workContent || '事项名称');
+}
+
+function matchesSceneFilter(photo, sceneTitle) {
+  const target = normalizeCompareText(sceneTitle);
+  if (!target || target === 'all') return true;
+  const fields = [
+    photo.archiveInfo?.itemName,
+    photo.archiveInfo?.workItem,
+    photo.archiveInfo?.workContent,
+    photo.archiveInfo?.watermarkCategory,
+    photo.archiveInfo?.keywords,
+    photo.archiveInfo?.remark
+  ].map(normalizeCompareText).filter(Boolean);
+  return fields.some((field) => field.includes(target) || target.includes(field));
+}
+
+function normalizeCompareText(value) {
+  return String(value || '').trim().replace(/\s+/g, '').toLowerCase();
 }
 
 function unique(values) {

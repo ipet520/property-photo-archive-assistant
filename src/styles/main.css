@@ -4569,6 +4569,14 @@ body,
   white-space: nowrap;
 }
 
+.sort-section-hint {
+  flex: 0 0 auto;
+  margin: -2px 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .sort-filter-section header > button {
   flex: 0 0 auto;
   width: auto;

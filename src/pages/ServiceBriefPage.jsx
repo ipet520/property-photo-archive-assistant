@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PAGE_KEYS } from '../constants/app.js';
+import { resolveProjectInfo } from '../utils/projectResolver.js';
 import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
@@ -14,23 +15,6 @@ const IMAGE_TEMPLATE = {
   headline: '每日服务简报',
   intro: '今日物业服务事项简要汇总如下'
 };
-
-const PROJECT_INFO = [
-  {
-    name: '曲靖潇湘新区二期',
-    phone: '0874-3296029',
-    serviceCenter: '佳恒物业潇湘新区二期客服中心',
-    shortName: '潇湘新区二期',
-    aliases: ['曲靖潇湘新区二期', '潇湘新区二期', '潇湘', '新区二期']
-  },
-  {
-    name: '曲靖香辰康园',
-    phone: '0874-3956880',
-    serviceCenter: '佳恒物业香辰康园客服中心',
-    shortName: '香辰康园',
-    aliases: ['曲靖香辰康园', '香辰康园', '香辰']
-  }
-];
 
 const defaultFilters = {
   date: formatDateInput(new Date()),
@@ -506,7 +490,7 @@ function buildImagePages(items, selectedPhotoIds, filters, template, previewMode
   const grouped = groupItemsByProject(items, filters);
   const pages = [];
   grouped.forEach(([project, projectItems]) => {
-    const projectInfo = resolveProjectInfo(project);
+    const projectInfo = resolveServiceBriefProjectInfo(project);
     const projectChunks = chunkArray(projectItems, template.maxItemsPerPage);
     projectChunks.forEach((chunk, pageIndex) => {
       const width = previewMode ? 390 : template.width;
@@ -541,7 +525,7 @@ function buildImagePages(items, selectedPhotoIds, filters, template, previewMode
   return pages;
 }
 
-function buildImagePageHtml({ project, projectInfo = resolveProjectInfo(project), items, pageIndex, totalPages, width, height, template, filters, selectedPhotoIds, previewMode }) {
+function buildImagePageHtml({ project, projectInfo = resolveServiceBriefProjectInfo(project), items, pageIndex, totalPages, width, height, template, filters, selectedPhotoIds, previewMode }) {
   const dateText = filters.date || formatDateInput(new Date());
   const itemHtml = items.map((item, index) => buildImageItemHtml(item, index, selectedPhotoIds, template, previewMode)).join('');
   const pageMarkup = `<main class="brief-image-page ${template.key}">
@@ -605,7 +589,7 @@ function validateExportReady(filters, selectedItems, selectedPhotoRecords) {
 
 function buildCaptionText(items, filters) {
   const projectInfos = getCaptionProjectInfos(items, filters);
-  const primaryInfo = projectInfos[0] || resolveProjectInfo('');
+  const primaryInfo = projectInfos[0] || resolveServiceBriefProjectInfo('');
   const contactLines = projectInfos.map((info) => `${info.shortName}：${info.phone}，${info.serviceCenter}`).join('\n');
   const projectPhrase = projectInfos.length === 1 ? primaryInfo.shortName : '各项目';
   return [
@@ -621,7 +605,7 @@ function buildCaptionText(items, filters) {
 }
 
 function buildExportFolderName(items, filters) {
-  const projectInfo = resolveProjectInfo(getProjectTitle(items, filters));
+  const projectInfo = resolveServiceBriefProjectInfo(getProjectTitle(items, filters));
   return `每日服务简报图片_${sanitizeFileName(projectInfo.shortName)}_${filters.date || formatDateInput(new Date())}`;
 }
 
@@ -638,23 +622,14 @@ function buildItemSentence(item) {
   return `工作人员${location}开展${title}相关服务，做好现场记录和后续维护。`;
 }
 
-function resolveProjectInfo(projectName) {
+function resolveServiceBriefProjectInfo(projectName) {
+  const info = resolveProjectInfo(projectName);
   const raw = String(projectName || '').trim();
-  const normalized = raw.replace(/\s+/g, '');
-  const matched = PROJECT_INFO.find((project) => (
-    project.aliases.some((alias) => normalized.includes(String(alias).replace(/\s+/g, '')))
-  ));
-  if (matched) return matched;
+  if (!info.isFallback) return info;
   if (raw && raw !== '未识别项目' && !raw.includes('全部项目')) {
     recordRuntimeLog({ page: '每日服务简报', operation: '匹配项目电话落款', errorType: '项目未识别', summary: `未识别项目：${raw}`, level: 'warn' });
   }
-  return {
-    name: raw || '未识别项目',
-    shortName: raw && raw !== '未识别项目' ? raw : '物业服务中心',
-    phone: '请填写物业服务中心电话',
-    serviceCenter: '物业服务中心',
-    isFallback: true
-  };
+  return info;
 }
 
 function getCaptionProjectInfos(items, filters) {
@@ -663,7 +638,7 @@ function getCaptionProjectInfos(items, filters) {
     : unique(items.map((item) => item.project).filter(Boolean));
   const targets = projects.length > 0 ? projects : [''];
   const seen = new Set();
-  return targets.map(resolveProjectInfo).filter((info) => {
+  return targets.map(resolveServiceBriefProjectInfo).filter((info) => {
     const key = `${info.shortName}|${info.phone}|${info.serviceCenter}`;
     if (seen.has(key)) return false;
     seen.add(key);
