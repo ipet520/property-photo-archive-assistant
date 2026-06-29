@@ -5,6 +5,7 @@ import DataMaintenancePage from './DataMaintenancePage.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
 import RectificationCenterPage from './RectificationCenterPage.jsx';
 import SettingsPage from './SettingsPage.jsx';
+import ServiceBriefPage from './ServiceBriefPage.jsx';
 import SortWorkspacePage from './SortWorkspacePage.jsx';
 import SummaryCenterPage from './SummaryCenterPage.jsx';
 
@@ -26,6 +27,9 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
   }
   if (currentPage === PAGE_KEYS.reportCenter) {
       return <SummaryCenterPage archiveState={archiveState} navigationRequest={navigationRequest} />;
+  }
+  if (currentPage === PAGE_KEYS.serviceBrief) {
+      return <ServiceBriefPage archiveState={archiveState} onNavigate={onNavigate} />;
   }
   if (currentPage === PAGE_KEYS.dataMaintenance) {
     return <DataMaintenancePage onNavigate={onNavigate} />;
