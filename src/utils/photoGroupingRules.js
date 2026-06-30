@@ -2,6 +2,7 @@ import { buildArchiveSuggestion } from './archiveSuggestionRules.js';
 
 const TIME_STRONG_MINUTES = 10;
 const TIME_MEDIUM_MINUTES = 30;
+const MAX_REASONABLE_GROUP_SIZE = 50;
 
 export function buildPhotoGroups(photos = [], context = {}) {
   const candidates = photos.filter((photo) => !['archived', 'ignored'].includes(photo.sortStatus));
@@ -27,10 +28,14 @@ export function buildPhotoGroups(photos = [], context = {}) {
   });
   if (current.length > 0) groups.push(current);
 
-  const mapped = groups.map((items, index) => buildGroup(items, index, context, keywordSet));
-  const confident = mapped.filter((group) => group.confidence !== 'ungrouped');
-  const ungroupedPhotos = mapped.filter((group) => group.confidence === 'ungrouped').flatMap((group) => group.photos);
+  const mapped = groups.map((items, index) => buildGroup(items, index, context, keywordSet, candidates.length));
+  const validGroups = mapped.filter((group) => isValidGroup(group, candidates.length));
+  const confident = validGroups.filter((group) => group.confidence !== 'ungrouped');
+  const invalidPhotoIds = new Set(validGroups.flatMap((group) => group.photoIds));
+  const ungroupedPhotos = candidates.filter((photo) => !invalidPhotoIds.has(photo.id));
   const result = confident;
+
+  if (result.length === 0) return [];
 
   if (ungroupedPhotos.length > 0) {
     result.push(buildUngroupedGroup(ungroupedPhotos, result.length, context));
@@ -77,7 +82,7 @@ export function buildUngroupedGroup(photos = [], index = 0, context = {}) {
   };
 }
 
-function buildGroup(photos, index, context, keywordSet) {
+function buildGroup(photos, index, context, keywordSet, totalCount) {
   const first = photos[0];
   const last = photos[photos.length - 1] || first;
   const timeGap = Math.max(0, (getPhotoTime(last) - getPhotoTime(first)) / 60000);
@@ -85,7 +90,7 @@ function buildGroup(photos, index, context, keywordSet) {
   const pathSimilar = hasSimilarPath(photos);
   const nameSimilar = hasSimilarName(photos);
   const reasons = buildReasons({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, context });
-  const confidence = getConfidence({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, context });
+  const confidence = getConfidence({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, context, totalCount });
   const confidenceLabel = confidence === 'high' ? '高匹配' : confidence === 'medium' ? '中匹配' : confidence === 'low' ? '低匹配' : '待人工确认';
   const scene = context.scene || null;
   const form = context.form || {};
@@ -118,18 +123,21 @@ function buildGroup(photos, index, context, keywordSet) {
 
 function shouldJoinGroup(previous, current, keywordSet) {
   const diffMinutes = Math.abs(getPhotoTime(current) - getPhotoTime(previous)) / 60000;
-  if (diffMinutes <= TIME_STRONG_MINUTES) return true;
-  if (diffMinutes <= TIME_MEDIUM_MINUTES && sameDirectory(previous, current)) return true;
+  const keywordMatched = matchesKeywords(current, keywordSet) && matchesKeywords(previous, keywordSet);
+  if (diffMinutes <= TIME_STRONG_MINUTES && (keywordMatched || sameNamePrefix(previous, current))) return true;
+  if (diffMinutes <= TIME_MEDIUM_MINUTES && keywordMatched) return true;
   if (diffMinutes <= TIME_MEDIUM_MINUTES && sameNamePrefix(previous, current)) return true;
-  if (diffMinutes <= TIME_MEDIUM_MINUTES && matchesKeywords(current, keywordSet) && matchesKeywords(previous, keywordSet)) return true;
   return false;
 }
 
-function getConfidence({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, context }) {
+function getConfidence({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, context, totalCount }) {
   const hasScene = Boolean(context.scene?.title || context.activeSceneTitle);
-  if (photos.length >= 2 && timeGap <= TIME_STRONG_MINUTES && (sceneHits > 0 || hasScene || pathSimilar || nameSimilar)) return 'high';
-  if (photos.length >= 2 && (timeGap <= TIME_MEDIUM_MINUTES || pathSimilar || nameSimilar || sceneHits > 0)) return 'medium';
-  if (photos.length >= 2) return 'low';
+  const tooLarge = photos.length > Math.max(MAX_REASONABLE_GROUP_SIZE, Math.floor(totalCount * 0.5));
+  const hasStrongKeyword = sceneHits > 0 || hasScene || nameSimilar;
+  if (tooLarge && !hasStrongKeyword) return 'ungrouped';
+  if (photos.length >= 2 && timeGap <= TIME_STRONG_MINUTES && sceneHits > 0 && (hasScene || nameSimilar)) return 'high';
+  if (photos.length >= 2 && ((timeGap <= TIME_MEDIUM_MINUTES && sceneHits > 0) || (nameSimilar && (sceneHits > 0 || timeGap <= TIME_STRONG_MINUTES)))) return 'medium';
+  if (photos.length >= 2 && (sceneHits > 0 || nameSimilar)) return 'low';
   return 'ungrouped';
 }
 
@@ -139,9 +147,17 @@ function buildReasons({ photos, timeGap, sceneHits, pathSimilar, nameSimilar, co
     photos.length > 1 && timeGap > TIME_STRONG_MINUTES && timeGap <= TIME_MEDIUM_MINUTES && `时间间隔 ${Math.ceil(timeGap)} 分钟内`,
     context.scene?.title && `当前场景：${context.scene.title}`,
     sceneHits > 0 && `${sceneHits} 张照片命中文件名/路径关键词`,
-    pathSimilar && '同一目录',
+    pathSimilar && '同一目录参考',
     nameSimilar && '文件名前缀相近'
   ].filter(Boolean);
+}
+
+function isValidGroup(group, totalCount) {
+  if (group.confidence === 'ungrouped') return false;
+  if (group.photos.length > Math.floor(totalCount * 0.5)) return false;
+  if (group.photos.length > MAX_REASONABLE_GROUP_SIZE && !group.reasons.some((reason) => /关键词|场景|前缀/.test(reason))) return false;
+  if (group.reasons.length === 1 && group.reasons[0] === '同一目录参考') return false;
+  return true;
 }
 
 function buildKeywordSet(context = {}) {

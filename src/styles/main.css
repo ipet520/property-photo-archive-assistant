@@ -12657,6 +12657,32 @@ table tbody tr.selected td {
   font-weight: 700;
 }
 
+.suggestion-brief {
+  display: grid;
+  gap: 6px;
+}
+
+.suggestion-brief div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.suggestion-brief span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.suggestion-brief strong {
+  min-width: 0;
+  color: #0f172a;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .suggestion-confidence {
   margin: 0;
   color: #475569;
@@ -12711,13 +12737,14 @@ table tbody tr.selected td {
 }
 
 .archive-suggestion-panel footer {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .archive-suggestion-panel footer button {
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 86px;
   height: 34px;
   padding: 0 10px;
   border-radius: 10px;
@@ -12735,8 +12762,8 @@ table tbody tr.selected td {
 .photo-group-panel {
   display: grid;
   gap: 10px;
-  margin: 8px 0 12px;
-  padding: 12px;
+  margin: 6px 0 10px;
+  padding: 10px 12px;
   border: 1px solid #dbeafe;
   border-radius: 16px;
   background: #f8fbff;
@@ -12779,6 +12806,13 @@ table tbody tr.selected td {
   background: #ffffff;
   color: #475569;
   text-align: center;
+}
+
+.photo-group-empty.compact {
+  min-height: 42px;
+  display: block;
+  padding: 10px;
+  font-size: 13px;
 }
 
 .photo-group-empty strong {
@@ -12945,4 +12979,46 @@ table tbody tr.selected td {
   border-radius: 9px;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.sort-more-operations {
+  align-items: stretch;
+}
+
+.sort-more-operations section {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.sort-more-operations section strong {
+  flex: 0 0 auto;
+  color: #0f2f57;
+  font-size: 13px;
+  margin-right: 2px;
+}
+
+.sort-assist-toggle {
+  width: 100%;
+  justify-content: center;
+  height: 34px;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  color: #0f2f57;
+  font-weight: 700;
+}
+
+.sort-batch-toolbar {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.sort-batch-toolbar .sort-selected-count {
+  color: #475569;
 }

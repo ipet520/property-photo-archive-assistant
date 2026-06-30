@@ -5,7 +5,9 @@ export default function PhotoGroupPanel({
   groups = [],
   selectedIds = [],
   hasGenerated = false,
+  isOpen = false,
   onGenerate,
+  onClose,
   onClear,
   onSelectGroup,
   onApplySuggestion,
@@ -18,32 +20,27 @@ export default function PhotoGroupPanel({
       <header className="photo-group-panel-header">
         <div>
           <p className="eyebrow">智能分组</p>
-          <h3>按疑似事项组处理照片</h3>
+          <h3>{hasGenerated && isOpen ? '分组建议结果' : '按事项组辅助选择'}</h3>
         </div>
         <div className="photo-group-actions">
           <button type="button" className="primary" disabled={photos.length === 0} onClick={onGenerate}>
-            {hasGenerated ? '重新分组' : '生成智能分组'}
+            {hasGenerated ? '重新分组' : '生成分组建议'}
           </button>
-          <button type="button" disabled={!hasGenerated} onClick={onClear}>清除分组</button>
+          {hasGenerated && isOpen && <button type="button" onClick={onClose}>关闭分组结果</button>}
+          {hasGenerated && !isOpen && <button type="button" onClick={onClose}>查看分组结果</button>}
+          {hasGenerated && <button type="button" onClick={onClear}>清除分组</button>}
         </div>
       </header>
 
-      {photos.length === 0 ? (
-        <div className="photo-group-empty">
-          <strong>当前暂无待分拣照片。</strong>
-          <span>请先选择照片目录并扫描照片。</span>
+      {hasGenerated && isOpen && photos.length === 0 ? (
+        <div className="photo-group-empty compact">
+          当前暂无待分拣照片。请先选择照片目录并扫描照片。
         </div>
-      ) : !hasGenerated ? (
-        <div className="photo-group-empty">
-          <strong>尚未生成智能分组。</strong>
-          <span>您可以点击“生成智能分组”，系统会根据时间、场景和关键词进行辅助分组。</span>
-        </div>
-      ) : groups.length === 0 ? (
+      ) : hasGenerated && isOpen && groups.length === 0 ? (
         <div className="photo-group-empty warning">
-          <strong>当前照片缺少足够信息，暂未形成明确分组。</strong>
-          <span>您仍可手动选择照片进行归档。</span>
+          当前照片缺少足够识别信息，暂未形成有效分组，您仍可手动选择照片进行归档。
         </div>
-      ) : (
+      ) : hasGenerated && isOpen ? (
         <div className="photo-group-list">
           {groups.map((group) => (
             <PhotoGroupCard
@@ -58,7 +55,7 @@ export default function PhotoGroupPanel({
             />
           ))}
         </div>
-      )}
+      ) : null}
     </section>
   );
 }
