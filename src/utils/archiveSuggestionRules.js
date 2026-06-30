@@ -84,6 +84,7 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
     sources,
     confidenceText: buildConfidenceText({ scene, category, workContent, history, sources }),
     matchedHistoryCount: history.count,
+    recognitionWarnings: recognitionHints.warnings,
     requiresHumanConfirmation: true,
     isEmpty: false,
     policy: FIELD_AUTOMATION_POLICY
@@ -91,31 +92,40 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
 }
 
 function buildRecognitionHints(input = {}) {
-  const recognitionFields = [
-    ...(Array.isArray(input.recognitionResults) ? input.recognitionResults.map((result) => result?.fields || {}) : []),
-    input.recognitionFields || {}
+  const recognitionResults = [
+    ...(Array.isArray(input.recognitionResults) ? input.recognitionResults : []),
+    input.recognitionResult
   ].filter(Boolean);
+  const usableResults = recognitionResults.filter(isUsableRecognitionResult);
+  const recognitionFields = [
+    ...usableResults.map((result) => result?.parsedFields || result?.fields || {}),
+    input.recognitionFields || {}
+  ].filter((fields) => fields && Object.keys(fields).length > 0);
   const merged = recognitionFields.reduce((acc, fields) => ({
-    project: acc.project || clean(fields.project),
+    project: acc.project || clean(fields.projectName || fields.project),
     workContent: acc.workContent || clean(fields.workContent),
-    categoryHint: acc.categoryHint || clean(fields.categoryHint),
+    categoryHint: acc.categoryHint || clean(fields.watermarkCategory || fields.categoryHint),
     itemName: acc.itemName || clean(fields.workContent),
     location: acc.location || clean(fields.location),
-    processStatus: acc.processStatus || clean(fields.possibleStatus),
-    photoStage: acc.photoStage || clean(fields.possibleStage),
+    processStatus: acc.processStatus || clean(fields.processStatus || fields.possibleStatus),
+    photoStage: acc.photoStage || clean(fields.stage || fields.possibleStage),
     remark: acc.remark || clean(fields.remark),
     keywords: unique([...(acc.keywords || []), ...splitKeywords(fields.keywords)])
   }), { keywords: [] });
 
   const sources = recognitionFields.length > 0
     ? unique([
-      ...(input.recognitionResults || []).map((result) => recognitionSourceLabel(result?.source))
+      ...usableResults.map((result) => recognitionSourceLabel(result?.source))
     ])
     : [];
 
   return {
     ...merged,
-    sources
+    sources,
+    warnings: unique(recognitionResults.flatMap((result) => [
+      ...(Array.isArray(result?.warnings) ? result.warnings : []),
+      !isUsableRecognitionResult(result) && result ? '识别结果置信度较低，仅保留为提示，不自动生成归档字段。' : ''
+    ]))
   };
 }
 
@@ -136,6 +146,7 @@ export function createEmptyArchiveSuggestion() {
     sources: [],
     confidenceText: '',
     matchedHistoryCount: 0,
+    recognitionWarnings: [],
     requiresHumanConfirmation: true,
     isEmpty: true,
     policy: FIELD_AUTOMATION_POLICY
@@ -261,6 +272,16 @@ function recognitionSourceLabel(source) {
     system: '水印识别'
   };
   return sourceMap[source] || '';
+}
+
+function isUsableRecognitionResult(result = {}) {
+  if (!result) return false;
+  const status = clean(result.status);
+  if (!['recognized', 'corrected'].includes(status)) return false;
+  const confidence = Number(result.confidence);
+  if (Number.isFinite(confidence) && confidence < 0.6) return false;
+  const fields = result.parsedFields || result.fields || {};
+  return Object.values(fields).some((value) => Array.isArray(value) ? value.length > 0 : Boolean(clean(value)));
 }
 
 function pickConfigName(items = [], preferred) {

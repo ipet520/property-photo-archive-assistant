@@ -2,9 +2,22 @@ export const RECOGNITION_PROVIDER_TYPES = ['local_ocr', 'cloud_ocr', 'cloud_ai',
 
 export const RECOGNITION_MODES = ['local', 'cloud', 'hybrid', 'manual', 'disabled'];
 
-export const RECOGNITION_PROVIDER_STATUSES = ['available', 'unavailable', 'not_configured', 'disabled', 'error'];
+export const RECOGNITION_PROVIDER_STATUSES = [
+  'available',
+  'unavailable',
+  'not_configured',
+  'disabled',
+  'error'
+];
 
-export const RECOGNITION_RESULT_SOURCES = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual', 'system'];
+export const RECOGNITION_RESULT_SOURCES = [
+  'local_ocr',
+  'cloud_ocr',
+  'cloud_ai',
+  'manual',
+  'watermark_parser',
+  'system'
+];
 
 export const RECOGNITION_RESULT_STATUSES = [
   'pending',
@@ -13,7 +26,9 @@ export const RECOGNITION_RESULT_STATUSES = [
   'failed',
   'corrected',
   'provider_unavailable',
-  'not_configured'
+  'not_configured',
+  'disabled',
+  'error'
 ];
 
 export const RECOGNITION_PRIVACY_POLICY = {
@@ -21,6 +36,20 @@ export const RECOGNITION_PRIVACY_POLICY = {
   callsRemoteService: false,
   logsRawText: false,
   requiresConsentForCloud: true
+};
+
+export const EMPTY_RECOGNITION_FIELDS = {
+  watermarkCategory: null,
+  workContent: null,
+  projectName: null,
+  location: null,
+  date: null,
+  time: null,
+  weekday: null,
+  keywords: [],
+  remark: null,
+  stage: null,
+  processStatus: null
 };
 
 export const RECOGNITION_STATUS_COPY = {

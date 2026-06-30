@@ -113,6 +113,59 @@ function getWritableDocumentsPath() {
   }
 }
 
+async function safeRecognitionCall(action, fallback) {
+  try {
+    return await action();
+  } catch (error) {
+    return fallback(error);
+  }
+}
+
+function createRecognitionErrorStatus(error = {}) {
+  return {
+    success: false,
+    serviceStatus: 'unavailable',
+    engineStatus: 'error',
+    currentMode: 'disabled',
+    status: 'error',
+    reason: error.message || '识别服务调用失败。',
+    message: '识别服务调用失败。',
+    providers: [],
+    errors: [{ code: 'recognition_ipc_error', message: error.message || '识别服务调用失败。' }],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function createRecognitionErrorResult(error = {}, options = {}) {
+  const photo = options.photo || {};
+  return {
+    photoId: photo.id || options.photoId || '',
+    filePath: photo.originalPath || photo.path || options.filePath || '',
+    source: 'system',
+    providerId: options.providerId || '',
+    providerType: options.providerType || '',
+    status: 'failed',
+    confidence: null,
+    rawText: '',
+    parsedFields: {
+      watermarkCategory: null,
+      workContent: null,
+      projectName: null,
+      location: null,
+      date: null,
+      time: null,
+      weekday: null,
+      keywords: [],
+      remark: null,
+      stage: null,
+      processStatus: null
+    },
+    warnings: ['识别服务调用失败，未修改照片或台账。'],
+    errors: [{ code: 'recognition_ipc_error', message: error.message || '识别服务调用失败。' }],
+    createdAt: new Date().toISOString()
+  };
+}
+
 function createChineseMenu() {
   const template = [
     {
@@ -228,11 +281,17 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
-ipcMain.handle('recognition:getStatus', async () => getRecognitionStatus());
-ipcMain.handle('recognition:getProviders', async () => getRecognitionProviders());
-ipcMain.handle('recognition:getConfig', async () => getRecognitionConfig());
-ipcMain.handle('recognition:parseText', async (_event, rawText, options) => parseRecognitionText(rawText, options));
-ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => recognizePhotos(photos, options));
+ipcMain.handle('recognition:getStatus', async () => safeRecognitionCall(() => getRecognitionStatus(), createRecognitionErrorStatus));
+ipcMain.handle('recognition:getProviders', async () => safeRecognitionCall(() => getRecognitionProviders(), () => []));
+ipcMain.handle('recognition:getConfig', async () => safeRecognitionCall(() => getRecognitionConfig(), () => ({ defaultMode: 'disabled', providerTypes: [] })));
+ipcMain.handle('recognition:parseText', async (_event, rawText, options) => safeRecognitionCall(
+  () => parseRecognitionText(rawText, options),
+  (error) => createRecognitionErrorResult(error, options)
+));
+ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => safeRecognitionCall(
+  () => recognizePhotos(photos, options),
+  (error) => (Array.isArray(photos) ? photos : []).map((photo) => createRecognitionErrorResult(error, { ...options, photo }))
+));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => saveUserConfig(getWritableDocumentsPath(), configName, data));

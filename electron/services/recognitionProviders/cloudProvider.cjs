@@ -1,87 +1,59 @@
-const CLOUD_PROVIDERS = [
-  {
-    id: 'cloud_ocr',
-    name: '联网 OCR',
-    type: 'cloud_ocr',
+const { createProviderStatus, createUnavailableResult } = require('./providerUtils.cjs');
+
+function createCloudProvider({ id, name, type }) {
+  return {
+    id,
+    name,
+    type,
     mode: 'cloud',
+    enabled: false,
+    available: false,
+    status: 'disabled',
+    reason: '联网识别能力尚未配置，当前版本不会上传照片或调用远程服务。',
+    capabilities: ['status_diagnose', 'placeholder_recognize'],
     config: {
       endpoint: '',
       providerName: '',
       authType: '',
       enabled: false,
       requiresUserConsent: true
-    }
-  },
-  {
-    id: 'cloud_ai',
-    name: '云端 AI 识图',
-    type: 'cloud_ai',
-    mode: 'cloud',
-    config: {
-      endpoint: '',
-      providerName: '',
-      authType: '',
-      enabled: false,
-      requiresUserConsent: true
-    }
-  }
-].map((provider) => ({
-  ...provider,
-  getStatus() {
-    return {
-      providerId: this.id,
-      status: 'disabled',
-      message: '联网识别能力尚未配置，当前版本不会上传照片或调用远程服务。',
-      enabled: false,
-      requiresUserConsent: true,
-      config: this.config
-    };
-  },
-  async recognizePhoto(photo = {}, options = {}) {
-    return createUnavailableResult(photo, options, this);
-  },
-  async recognizePhotos(photos = [], options = {}) {
-    return photos.map((photo) => createUnavailableResult(photo, options, this));
-  }
-}));
-
-function createUnavailableResult(photo = {}, options = {}, provider) {
-  const now = new Date().toISOString();
-  return {
-    photoId: photo.id || photo.photoId || '',
-    filePath: photo.originalPath || photo.filePath || photo.path || '',
-    source: provider.type,
-    providerId: provider.id,
-    mode: provider.mode,
-    rawText: '',
-    cleanedText: '',
-    fields: createEmptyFields(),
-    confidence: null,
-    status: 'provider_unavailable',
-    errorCode: 'provider_unavailable',
-    errorMessage: '联网识别 provider 尚未配置。',
-    warnings: ['当前版本不上传照片、不调用远程识别服务。'],
-    updatedAt: now,
-    options: {
-      requestedMode: options.mode || ''
+    },
+    diagnose() {
+      return createProviderStatus(this, {
+        enabled: false,
+        available: false,
+        status: 'disabled',
+        reason: this.reason,
+        message: this.reason,
+        capabilities: this.capabilities,
+        requiresUserConsent: true,
+        config: this.config
+      });
+    },
+    checkAvailability() {
+      return this.diagnose();
+    },
+    getStatus() {
+      return this.diagnose();
+    },
+    async recognize(photo = {}) {
+      return createUnavailableResult(photo, this, {
+        status: 'disabled',
+        code: `${id}_disabled`,
+        reason: '联网识别 provider 尚未配置，未发起任何网络请求。',
+        warnings: ['当前版本不上传照片、不调用远程识别服务。']
+      });
+    },
+    async recognizePhoto(photo = {}) {
+      return this.recognize(photo);
+    },
+    async recognizePhotos(photos = []) {
+      return (Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo));
     }
   };
 }
 
-function createEmptyFields() {
-  return {
-    dateTime: '',
-    date: '',
-    time: '',
-    location: '',
-    project: '',
-    workContent: '',
-    categoryHint: '',
-    keywords: [],
-    remark: '',
-    possibleStage: '',
-    possibleStatus: ''
-  };
-}
-
-module.exports = CLOUD_PROVIDERS;
+module.exports = [
+  createCloudProvider({ id: 'cloud_ocr', name: '联网 OCR', type: 'cloud_ocr' }),
+  createCloudProvider({ id: 'cloud_ai', name: '云端 AI 识图', type: 'cloud_ai' })
+];

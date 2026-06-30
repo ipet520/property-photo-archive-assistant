@@ -124,8 +124,9 @@ export default function SortWorkspacePage({ archiveState }) {
     const keyword = searchText.trim().toLowerCase();
     return photos
       .filter((photo) => {
-        if (filter === 'all') return true;
-        if (filter === 'selected') return selectedIds.includes(photo.id);
+        if (filter === 'all') return !isIgnoredPhoto(photo);
+        if (filter === 'selected') return selectedIds.includes(photo.id) && !isIgnoredPhoto(photo);
+        if (filter === 'ignored') return isIgnoredPhoto(photo);
         return photo.sortStatus === filter;
       })
       .filter((photo) => {
@@ -173,8 +174,9 @@ export default function SortWorkspacePage({ archiveState }) {
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
   const effectivePhotoFolder = resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
   const selectedStateText = getSelectedStateText(selectedPhotos);
-  const selectedAssignedCount = selectedPhotos.filter((photo) => photo.archiveInfo && photo.sortStatus !== 'archived' && photo.sortStatus !== 'ignored').length;
-  const selectedPreviewCount = selectedPhotos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo).length;
+  const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
+  const selectedAssignedCount = selectedPhotos.filter((photo) => photo.archiveInfo && !isArchivedPhoto(photo) && !isIgnoredPhoto(photo)).length;
+  const selectedPreviewCount = selectedPhotos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo && !isIgnoredPhoto(photo)).length;
   const toolbarSelectedText = selectedIds.length
     ? `已选 ${selectedIds.length} 张，${selectedStateText}`
     : '已选 0 张，尚未选择照片';
@@ -239,8 +241,18 @@ export default function SortWorkspacePage({ archiveState }) {
     return photo.sortStatus === 'archived';
   }
 
+  function isIgnoredPhoto(photo) {
+    return photo?.sortStatus === 'ignored';
+  }
+
+  function blockIgnoredSelectionAction() {
+    if (!selectedPhotos.some(isIgnoredPhoto)) return false;
+    setStatus({ type: 'warning', text: '当前选择包含已忽略照片，请先还原后再处理。' });
+    return true;
+  }
+
   function getEditableSelectedPhotos() {
-    return selectedPhotos.filter((photo) => !isArchivedPhoto(photo));
+    return selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo));
   }
 
   function updateForm(patch, options = {}) {
@@ -393,23 +405,39 @@ export default function SortWorkspacePage({ archiveState }) {
       setStatus({ type: 'error', text: '请先选择需要标记忽略的照片。' });
       return;
     }
+    const targetPhotos = selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo));
+    if (targetPhotos.length === 0) {
+      setStatus({ type: 'warning', text: '当前没有可标记忽略的照片。' });
+      return;
+    }
+    const targetIdSet = new Set(targetPhotos.map((photo) => photo.id));
     const invalidTip = invalidatePreviewMessage();
     setPhotos((current) => current.map((photo) => {
-      if (selectedIds.includes(photo.id)) return { ...photo, sortStatus: 'ignored', previewInfo: null, archiveResult: null };
+      if (targetIdSet.has(photo.id)) return { ...photo, sortStatus: 'ignored', previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
+    setSelectedIds((current) => current.filter((id) => !targetIdSet.has(id)));
+    setEditingPhotoId((current) => targetIdSet.has(current) ? '' : current);
     markChanged();
-    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已标记忽略 ${selectedIds.length} 张照片，原图未受影响。${invalidTip}` });
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已标记忽略 ${targetPhotos.length} 张照片，原图未受影响。${invalidTip}` });
   }
 
   function cancelIgnored() {
+    const targetPhotos = selectedPhotos.filter(isIgnoredPhoto);
+    if (targetPhotos.length === 0) {
+      setStatus({ type: 'warning', text: '请先在已忽略列表中选择需要还原的照片。' });
+      return;
+    }
+    const targetIdSet = new Set(targetPhotos.map((photo) => photo.id));
     const invalidTip = invalidatePreviewMessage();
     setPhotos((current) => current.map((photo) => {
-      if (selectedIds.includes(photo.id) && photo.sortStatus === 'ignored') return { ...photo, sortStatus: 'unassigned' };
+      if (targetIdSet.has(photo.id)) return { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
+    setSelectedIds((current) => current.filter((id) => !targetIdSet.has(id)));
+    setEditingPhotoId((current) => targetIdSet.has(current) ? '' : current);
     markChanged();
-    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已取消选中照片的忽略状态。${invalidTip}` });
+    setStatus({ type: invalidTip ? 'warning' : 'success', text: `已还原 ${targetPhotos.length} 张已忽略照片，状态恢复为未归档。${invalidTip}` });
   }
 
   function applyInfoToSelected() {
@@ -417,6 +445,7 @@ export default function SortWorkspacePage({ archiveState }) {
       setStatus({ type: 'error', text: '请先选择需要分拣的照片。' });
       return;
     }
+    if (blockIgnoredSelectionAction()) return;
     const editableSelectedPhotos = getEditableSelectedPhotos();
     const archivedSelectedCount = selectedPhotos.length - editableSelectedPhotos.length;
     if (editableSelectedPhotos.length === 0) {
@@ -657,6 +686,7 @@ export default function SortWorkspacePage({ archiveState }) {
   }
 
   async function buildSortPreview() {
+    if (blockIgnoredSelectionAction()) return;
     if (photos.length === 0) {
       setStatus({ type: 'error', text: '当前没有照片，无法生成归档预览。' });
       return;
@@ -718,6 +748,7 @@ export default function SortWorkspacePage({ archiveState }) {
   }
 
   function requestArchive() {
+    if (blockIgnoredSelectionAction()) return;
     if (previewPhotos.length === 0) {
       setStatus({ type: 'error', text: '请先生成分拣归档预览。' });
       return;
@@ -871,7 +902,7 @@ export default function SortWorkspacePage({ archiveState }) {
                   {pagePhotos.map((photo) => (
                     <tr key={photo.id} className={selectedIds.includes(photo.id) ? 'selected' : ''} onClick={(event) => handlePhotoClick(photo, event)}>
                       <td><StatusBadge status={photo.sortStatus} missing={photo.originalMissing} /></td>
-                      <td title={photo.originalName}>{photo.originalName}</td>
+                      <td aria-label={photo.originalName}>{photo.originalName}</td>
                       <td>{formatDateTime(photo.modifiedAt)}</td>
                       <td>{formatFileSize(photo.size)}</td>
                       <td>{photo.archiveInfo ? `${photo.archiveInfo.watermarkCategory} / ${photo.archiveInfo.workContent}` : '-'}</td>
@@ -934,9 +965,9 @@ export default function SortWorkspacePage({ archiveState }) {
             </div>
           </div>
           <div className="sort-right-actions">
-            <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用</button>
-            <button type="button" title="生成分拣归档预览" onClick={buildSortPreview} disabled={isBusy || selectedIds.length === 0 || selectedAssignedCount === 0 || assignedCount === 0}>预览</button>
-            <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
+            <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0 || selectedHasIgnored}>应用</button>
+            <button type="button" title="生成分拣归档预览" onClick={buildSortPreview} disabled={isBusy || selectedIds.length === 0 || selectedHasIgnored || selectedAssignedCount === 0 || assignedCount === 0}>预览</button>
+            <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedHasIgnored || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
             <button type="button" className="danger" title={`清除选中照片归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除</button>
           </div>
         </aside>
@@ -986,7 +1017,7 @@ function PhotoCard({ photo, selected, onClick }) {
   const gridSummary = buildGridPhotoSummary(photo);
   const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
   return (
-    <button type="button" className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''}`} onClick={onClick} title={photo.originalPath}>
+    <button type="button" className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''}`} onClick={onClick} aria-label={photo.originalName || '照片卡片'}>
       <div className="sort-thumb-wrap">
         {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <ThumbnailHoverPreview src={photo.previewUrl} alt={photo.originalName} />}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
@@ -995,12 +1026,12 @@ function PhotoCard({ photo, selected, onClick }) {
       <strong>{photo.originalName}</strong>
       <span>{formatDateTime(photo.modifiedAt)}</span>
       {gridSummary && (
-        <p className="sort-grid-summary" title={gridSummary.full}>
+        <p className="sort-grid-summary" aria-label={gridSummary.full}>
           <b>{gridSummary.main}</b>
           {gridSummary.sub && <small>{gridSummary.sub}</small>}
         </p>
       )}
-      {newName && <p className="sort-grid-new-name" title={newName}>新名：{newName}</p>}
+      {newName && <p className="sort-grid-new-name" aria-label={newName}>新名：{newName}</p>}
       <footer>
         <StatusBadge status={photo.sortStatus} missing={photo.originalMissing} />
         <small>{formatFileSize(photo.size)}</small>
@@ -1152,9 +1183,13 @@ function toArchiveForm(value) {
   };
 }
 
+function isIgnoredPhoto(photo) {
+  return photo?.sortStatus === 'ignored';
+}
+
 function getFilterCount(key, photos, selectedIds) {
-  if (key === 'all') return photos.length;
-  if (key === 'selected') return selectedIds.length;
+  if (key === 'all') return photos.filter((photo) => !isIgnoredPhoto(photo)).length;
+  if (key === 'selected') return photos.filter((photo) => selectedIds.includes(photo.id) && !isIgnoredPhoto(photo)).length;
   return photos.filter((photo) => photo.sortStatus === key).length;
 }
 

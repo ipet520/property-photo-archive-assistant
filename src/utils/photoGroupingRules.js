@@ -187,7 +187,8 @@ function buildKeywordSet(context = {}) {
 
 function getRecognitionFields(context = {}) {
   return [
-    ...(Array.isArray(context.recognitionResults) ? context.recognitionResults.map((result) => result?.fields || {}) : []),
+    ...(Array.isArray(context.recognitionResults) ? context.recognitionResults.map((result) => result?.parsedFields || result?.fields || {}) : []),
+    context.recognitionResult?.parsedFields || context.recognitionResult?.fields || {},
     context.recognitionFields || {}
   ].filter((fields) => fields && Object.keys(fields).length > 0);
 }

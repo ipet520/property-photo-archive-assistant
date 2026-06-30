@@ -1,5 +1,15 @@
 # 更新记录
 
+## V2.8.1 识别服务底座完善版
+
+- 完善识别服务状态诊断，未配置 provider、provider 不可用或 provider 初始化失败时返回明确状态与原因，不影响主程序启动。
+- 统一本地 OCR、联网 OCR、云端 AI 识图和人工校正 provider 接口结构，统一包含 id、name、type、enabled、available、status、reason、capabilities、diagnose / checkAvailability 和 recognize 占位能力。
+- 完善 RecognitionResult 标准结构，统一 source、providerId、providerType、status、confidence、rawText、parsedFields、warnings、errors 和 createdAt，并保留旧字段兼容。
+- 增强马克水印文字规则解析，支持日期、时间、星期、地点 / 地址 / 位置、项目名称、工作内容、备注说明、关键词和水印分类关键词的安全提取。
+- 归档建议和照片分组规则支持接收识别结果字段；无识别结果时继续沿用现有手动规则，低置信度识别只作为提示，不自动应用。
+- 完善识别 IPC 与前端识别 client 容错，识别服务不可用或异常时返回标准错误对象，不导致页面崩溃。
+- 当前版本不接真实云 API、不写 API Key、不上传照片、不返回假 OCR / 假 AI 结果、不自动归档、不修改 Excel 台账结构。
+
 ## V2.8.0 识别服务底座版
 - 新增 `recognitionService` 识别服务架构，统一管理识别 provider、识别状态、识别配置、文本解析和识别结果规范化。
 - 新增 provider 机制，预留本地 OCR、联网 OCR、云端 AI 识图和人工校正来源，当前 provider 仅返回明确的未配置 / 不可用状态，不执行真实识别。
