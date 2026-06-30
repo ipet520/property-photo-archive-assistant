@@ -92,7 +92,7 @@ export default function DashboardPage({ onNavigate }) {
             <MetricCard label="水印分类" value={archiveMetrics.categoryCount} />
             <MetricCard label="最近归档日期" value={archiveMetrics.latestDate || '-'} compact />
           </div>
-          {!isLoading && archiveMetrics.total === 0 ? <EmptyState text="当前暂无归档数据。完成一次快速归档或照片分拣归档后，首页将显示统计信息。" /> : null}
+          {!isLoading && archiveMetrics.total === 0 ? <EmptyState text="当前暂无归档数据。完成一次照片分拣归档后，首页将显示统计信息。" /> : null}
         </section>
 
         <section className="dashboard-section dashboard-rectification-panel">

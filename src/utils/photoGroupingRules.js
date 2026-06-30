@@ -163,6 +163,15 @@ function isValidGroup(group, totalCount) {
 function buildKeywordSet(context = {}) {
   const scene = context.scene || {};
   const form = context.form || {};
+  const recognitionKeywords = getRecognitionFields(context).flatMap((fields) => [
+    fields.project,
+    fields.location,
+    fields.workContent,
+    fields.categoryHint,
+    fields.possibleStage,
+    fields.possibleStatus,
+    ...(Array.isArray(fields.keywords) ? fields.keywords : [])
+  ]);
   return unique([
     scene.title,
     scene.watermarkCategory,
@@ -171,8 +180,16 @@ function buildKeywordSet(context = {}) {
     form.watermarkCategory,
     form.workContent,
     form.itemName,
-    form.keywords
+    form.keywords,
+    ...recognitionKeywords
   ].flatMap(splitKeywords));
+}
+
+function getRecognitionFields(context = {}) {
+  return [
+    ...(Array.isArray(context.recognitionResults) ? context.recognitionResults.map((result) => result?.fields || {}) : []),
+    context.recognitionFields || {}
+  ].filter((fields) => fields && Object.keys(fields).length > 0);
 }
 
 function matchesKeywords(photo, keywords) {

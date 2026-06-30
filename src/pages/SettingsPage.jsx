@@ -168,7 +168,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
 
       {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
       <div className="settings-impact-note">
-        基础数据会影响快速归档和照片分拣的下拉选项；关键词库和常见场景会影响分拣工作台辅助填写；默认目录会影响快速归档、分拣工作台、归档记录和资料包导出；资料包设置会影响后续资料包默认选项。历史台账和已归档照片不会因为设置修改而改变。
+        基础数据会影响照片分拣工作台的下拉选项；关键词库和常见场景会影响分拣工作台辅助填写；默认目录会影响分拣工作台、归档记录和资料包导出；资料包设置会影响后续资料包默认选项。历史台账和已归档照片不会因为设置修改而改变。
       </div>
 
       <section className="settings-center-layout">

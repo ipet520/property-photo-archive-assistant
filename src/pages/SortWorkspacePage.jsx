@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import PhotoGroupPanel from '../components/PhotoGroupPanel.jsx';
-import SuggestionPanel from '../components/SuggestionPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
-import QuickArchivePage from './QuickArchivePage.jsx';
-import { buildArchiveSuggestion, filterEmptyPatch, suggestionToFormPatch } from '../utils/archiveSuggestionRules.js';
-import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
-import { buildPhotoGroups, buildUngroupedGroup, createManualGroup } from '../utils/photoGroupingRules.js';
-import { loadRecentRecords } from '../utils/recentRecords.js';
+import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 
@@ -46,8 +40,6 @@ const statusFilters = [
   ['ignored', '已忽略']
 ];
 
-const commonSceneFilters = ['楼道杂物清理', '飞线充电治理', '公共设施设备维修', '消防通道违停', '环境卫生维护', '绿化养护', '秩序巡查', '安全隐患排查'];
-
 const viewModes = [
   { key: 'grid', label: '网格', title: '网格视图' },
   { key: 'list', label: '列表', title: '列表视图' }
@@ -65,8 +57,8 @@ function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
 
 export default function SortWorkspacePage({ archiveState }) {
   const rightPanelRef = useRef(null);
+  const photoBrowserRef = useRef(null);
   const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
-  const [manualQuickOpen, setManualQuickOpen] = useState(false);
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
@@ -80,7 +72,6 @@ export default function SortWorkspacePage({ archiveState }) {
   const [sortMode, setSortMode] = useState('timeAsc');
   const [selectedIds, setSelectedIds] = useState([]);
   const [lastClickedId, setLastClickedId] = useState(null);
-  const [activeSceneTitle, setActiveSceneTitle] = useState('');
   const [editingPhotoId, setEditingPhotoId] = useState('');
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
   const [hasSavedDraft, setHasSavedDraft] = useState(() => window.localStorage.getItem(sortDraftAvailableKey) === 'true');
@@ -91,11 +82,6 @@ export default function SortWorkspacePage({ archiveState }) {
   const [isBusy, setIsBusy] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [archiveSuggestion, setArchiveSuggestion] = useState(null);
-  const [ignoredSuggestionKey, setIgnoredSuggestionKey] = useState('');
-  const [photoGroups, setPhotoGroups] = useState([]);
-  const [hasGeneratedGroups, setHasGeneratedGroups] = useState(false);
-  const [groupResultsOpen, setGroupResultsOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -143,10 +129,6 @@ export default function SortWorkspacePage({ archiveState }) {
         return photo.sortStatus === filter;
       })
       .filter((photo) => {
-        if (activeGroup === 'all') return true;
-        return matchesSceneFilter(photo, activeGroup);
-      })
-      .filter((photo) => {
         if (!keyword) return true;
         return [photo.originalName, photo.archiveInfo?.remark, photo.archiveInfo?.workContent, photo.archiveInfo?.itemName]
           .filter(Boolean)
@@ -161,18 +143,13 @@ export default function SortWorkspacePage({ archiveState }) {
   }, [photos, filter, activeGroup, searchText, selectedIds, sortMode]);
 
   const sceneFilters = useMemo(() => {
-    const configuredScenes = (configs?.sceneExamples || [])
+    return (configs?.sceneExamples || [])
       .filter((scene) => String(scene?.title || '').trim())
       .map((scene) => ({
         key: scene.title,
         title: scene.title,
         scene
       }));
-    const configuredTitles = new Set(configuredScenes.map((item) => item.title));
-    const fallbackScenes = commonSceneFilters
-      .filter((title) => !configuredTitles.has(title))
-      .map((title) => ({ key: title, title, scene: null }));
-    return [{ key: 'all', title: '全部场景', scene: null }, ...configuredScenes, ...fallbackScenes];
   }, [configs]);
 
   useEffect(() => {
@@ -188,9 +165,6 @@ export default function SortWorkspacePage({ archiveState }) {
   const pagePhotos = visiblePhotos.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedPhotos = photos.filter((photo) => selectedIds.includes(photo.id));
   const primaryPhoto = selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
-  const suggestedKeywords = splitKeywords(getSuggestedKeywords({ ...toArchiveForm(form), workItem: form.itemName }, configs));
-  const activeKeywords = splitKeywords(form.keywords);
-  const recentRecords = useMemo(() => loadRecentRecords(), [hasUnsavedChanges]);
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
@@ -198,6 +172,12 @@ export default function SortWorkspacePage({ archiveState }) {
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
   const effectivePhotoFolder = resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
+  const selectedStateText = getSelectedStateText(selectedPhotos);
+  const selectedAssignedCount = selectedPhotos.filter((photo) => photo.archiveInfo && photo.sortStatus !== 'archived' && photo.sortStatus !== 'ignored').length;
+  const selectedPreviewCount = selectedPhotos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo).length;
+  const toolbarSelectedText = selectedIds.length
+    ? `已选 ${selectedIds.length} 张，${selectedStateText}`
+    : '已选 0 张，尚未选择照片';
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -206,29 +186,6 @@ export default function SortWorkspacePage({ archiveState }) {
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
   }, []);
-
-  useEffect(() => {
-    if (!configs) return;
-    const suggestion = buildSuggestion(form);
-    const suggestionKey = getSuggestionKey(suggestion);
-    if (!suggestionKey || suggestionKey === ignoredSuggestionKey || suggestion.isEmpty) {
-      setArchiveSuggestion(null);
-      return;
-    }
-    setArchiveSuggestion(suggestion);
-  }, [
-    configs,
-    form.department,
-    form.watermarkCategory,
-    form.workContent,
-    form.itemName,
-    form.location,
-    form.processStatus,
-    form.photoStage,
-    recentRecords,
-    photos.length,
-    ignoredSuggestionKey
-  ]);
 
   function markChanged() {
     setHasUnsavedChanges(true);
@@ -291,54 +248,13 @@ export default function SortWorkspacePage({ archiveState }) {
       const next = { ...current, ...patch };
       if (patch.watermarkCategory) {
         const items = configs?.watermarkCategories?.[patch.watermarkCategory]?.items || [];
-        if (!items.includes(next.workContent)) next.workContent = items[0] || '';
+        if (!items.includes(next.workContent)) next.workContent = '';
       }
       if (!options.preserveKeywords && (patch.watermarkCategory || patch.workContent || patch.itemName || patch.location || patch.processStatus)) {
         next.keywords = getSuggestedKeywords({ ...toArchiveForm(next), workItem: next.itemName }, configs);
       }
       return next;
     });
-  }
-
-  function buildSuggestion(nextForm = form, extra = {}) {
-    return buildArchiveSuggestion({
-      ...nextForm,
-      workItem: nextForm.itemName,
-      historyRecords: recentRecords,
-      photoCount: photos.length,
-      mode: 'sort',
-      ...extra
-    }, configs || {});
-  }
-
-  function getGroupingContext(extra = {}) {
-    const sceneItem = sceneFilters.find((item) => item.key === activeGroup && item.scene);
-    return {
-      form,
-      configs,
-      scene: extra.scene || sceneItem?.scene || null,
-      activeSceneTitle,
-      historyRecords: recentRecords,
-      selectedIds
-    };
-  }
-
-  function applyArchiveSuggestion(options = {}) {
-    if (!archiveSuggestion || archiveSuggestion.isEmpty) return;
-    const patch = suggestionToFormPatch(archiveSuggestion, 'sort');
-    const nextPatch = options.onlyEmpty ? filterEmptyPatch(patch, form) : patch;
-    if (Object.keys(nextPatch).length === 0) {
-      setStatus({ type: 'idle', text: '当前表单没有需要自动填充的空字段。' });
-      return;
-    }
-    updateForm(nextPatch, { preserveKeywords: true });
-    setStatus({ type: 'success', text: options.onlyEmpty ? '已将建议填入空字段，请核对后再应用到照片。' : '已应用归档建议，请核对后再应用到照片。' });
-  }
-
-  function ignoreArchiveSuggestion() {
-    setIgnoredSuggestionKey(getSuggestionKey(archiveSuggestion));
-    setArchiveSuggestion(null);
-    setStatus({ type: 'idle', text: '已忽略本次归档建议，仍可手动填写归档信息。' });
   }
 
   async function selectPhotoFolder({ scanAfterSelect = false } = {}) {
@@ -404,9 +320,6 @@ export default function SortWorkspacePage({ archiveState }) {
       setPage(1);
       setFilter('all');
       setActiveGroup('all');
-      setPhotoGroups([]);
-      setHasGeneratedGroups(false);
-      setGroupResultsOpen(false);
       setEditingPhotoId('');
       markChanged();
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张照片。` });
@@ -433,9 +346,6 @@ export default function SortWorkspacePage({ archiveState }) {
     setSelectedIds([]);
     setPage(1);
     setActiveGroup('all');
-    setPhotoGroups([]);
-    setHasGeneratedGroups(false);
-    setGroupResultsOpen(false);
     setEditingPhotoId('');
     clearSessionPhotoFolder();
     markChanged();
@@ -460,104 +370,6 @@ export default function SortWorkspacePage({ archiveState }) {
 
   function selectCurrentPage() {
     setSelectedIds((current) => Array.from(new Set([...current, ...pagePhotos.map((photo) => photo.id)])));
-  }
-
-  function generateSmartGroups() {
-    try {
-      if (photos.length === 0) {
-        setStatus({ type: 'idle', text: '当前暂无待分拣照片。请先选择照片目录并扫描照片。' });
-        return;
-      }
-      const groups = buildPhotoGroups(visiblePhotos.length ? visiblePhotos : photos, getGroupingContext());
-      setPhotoGroups(groups);
-      setHasGeneratedGroups(true);
-      setGroupResultsOpen(true);
-      setStatus({
-        type: groups.length ? 'success' : 'warning',
-        text: groups.length
-          ? `已生成 ${groups.length} 个分组建议。分组仅用于辅助确认，不会自动归档或写入台账。`
-          : '当前照片缺少足够信息，暂未形成明确分组。您仍可手动选择照片进行归档。'
-      });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '生成分组建议', errorType: '生成分组建议失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `生成分组建议失败：${error.message}` });
-    }
-  }
-
-  function clearSmartGroups() {
-    try {
-      setPhotoGroups([]);
-      setHasGeneratedGroups(false);
-      setGroupResultsOpen(false);
-      setStatus({ type: 'success', text: '已清除当前页面分组建议，照片和归档信息未被修改。' });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '清除分组', errorType: '清除分组失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `清除分组失败：${error.message}` });
-    }
-  }
-
-  function selectPhotoGroup(group) {
-    setSelectedIds(group.photoIds);
-    setArchiveSuggestion(group.suggestion);
-    setIgnoredSuggestionKey('');
-      setStatus({ type: 'success', text: `已选择“${group.name}”中的 ${group.photoIds.length} 张照片，尚未归档。请核对右侧建议后再应用归档信息。` });
-  }
-
-  function applyGroupSuggestion(group) {
-    try {
-      setArchiveSuggestion(group.suggestion);
-      setIgnoredSuggestionKey('');
-      setStatus({ type: 'success', text: `已载入“${group.name}”的归档建议，请点击“应用建议”或“只填空字段”确认。` });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '应用分组建议', errorType: '应用分组建议失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `应用分组建议失败：${error.message}` });
-    }
-  }
-
-  function removeSelectedFromGroup(group) {
-    try {
-      const selectedSet = new Set(selectedIds);
-      const moving = group.photos.filter((photo) => selectedSet.has(photo.id));
-      if (moving.length === 0) return;
-      const remaining = group.photos.filter((photo) => !selectedSet.has(photo.id));
-      setPhotoGroups((current) => rebuildGroupsAfterMove(current, group.id, remaining, moving, getGroupingContext()));
-      setSelectedIds([]);
-      setStatus({ type: 'success', text: `已将 ${moving.length} 张照片移入未分组照片。原图未受影响。` });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '移除分组照片', errorType: '移除分组照片失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `移除分组照片失败：${error.message}` });
-    }
-  }
-
-  function splitSelectedToNewGroup(group) {
-    try {
-      const selectedSet = new Set(selectedIds);
-      const moving = group.photos.filter((photo) => selectedSet.has(photo.id));
-      if (moving.length === 0) return;
-      const remaining = group.photos.filter((photo) => !selectedSet.has(photo.id));
-      setPhotoGroups((current) => {
-        const next = current
-          .filter((item) => item.id !== group.id)
-          .concat(remaining.length ? [createManualGroup(remaining, current.length, getGroupingContext(), group.name)] : []);
-        next.push(createManualGroup(moving, next.length, getGroupingContext(), `拆分组 ${next.length + 1}`));
-        return next;
-      });
-      setSelectedIds(moving.map((photo) => photo.id));
-      setStatus({ type: 'success', text: `已将 ${moving.length} 张照片拆分为新组，请人工确认。` });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '拆分分组', errorType: '拆分分组失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `拆分分组失败：${error.message}` });
-    }
-  }
-
-  function ignorePhotoGroup(group) {
-    try {
-      setPhotoGroups((current) => rebuildGroupsAfterMove(current, group.id, [], group.photos, getGroupingContext()));
-      setStatus({ type: 'success', text: `已忽略“${group.name}”，相关照片已归入未分组照片，原图未受影响。` });
-    } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '忽略分组', errorType: '清除分组失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `忽略分组失败：${error.message}` });
-    }
   }
 
   function invertCurrentPage() {
@@ -688,32 +500,29 @@ export default function SortWorkspacePage({ archiveState }) {
   }
 
   function applyScene(scene) {
-    setActiveSceneTitle(scene.title);
-    const suggestion = buildSuggestion({ ...form, watermarkCategory: scene.watermarkCategory, workContent: scene.workContent }, { scene });
-    setArchiveSuggestion(suggestion);
-    setIgnoredSuggestionKey('');
-    setStatus({ type: 'success', text: `已生成“${scene.title}”归档建议，请确认后再应用到表单或照片。` });
+    const patch = {
+      watermarkCategory: scene.watermarkCategory || '',
+      workContent: scene.workContent || '',
+      itemName: scene.itemName || scene.workItemSuggestion || '',
+      locationPlaceholder: scene.locationPlaceholder || '',
+      photoStage: scene.photoStage || scene.photoStageSuggestion || '',
+      processStatus: scene.processStatus || scene.processStatusSuggestion || '',
+      keywords: Array.isArray(scene.keywords) ? scene.keywords.join('、') : String(scene.keywords || ''),
+      remark: scene.remarkTemplate || ''
+    };
+    setForm((current) => reconcileForm({ ...current, ...patch }, configs));
+    setStatus({ type: 'success', text: `已按“${scene.title}”填充右侧归档信息，请核对后再应用到选中照片。` });
   }
 
   function selectSceneFilter(item) {
     setActiveGroup(item.key);
-    setPage(1);
-    if (item.key === 'all') {
-      setStatus({ type: 'idle', text: '已显示全部场景照片。' });
-      return;
-    }
-    const matchedCount = photos.filter((photo) => matchesSceneFilter(photo, item.key)).length;
     if (item.scene) {
       applyScene(item.scene);
-    }
-    if (hasGeneratedGroups) {
-      setPhotoGroups(buildPhotoGroups(photos.filter((photo) => item.key === 'all' || matchesSceneFilter(photo, item.key)), getGroupingContext({ scene: item.scene })));
+      return;
     }
     setStatus({
-      type: matchedCount > 0 ? 'idle' : 'warning',
-      text: matchedCount > 0
-        ? `已切换到“${item.title}”，可继续选择照片并点击“应用归档信息”确认。`
-        : '当前场景暂无匹配照片，可切换场景或导入照片后查看。'
+      type: 'idle',
+      text: `已选择“${item.title}”，当前无配置填表规则，可继续手动填写归档信息。`
     });
   }
 
@@ -887,11 +696,19 @@ export default function SortWorkspacePage({ archiveState }) {
         }))
       });
       const previewMap = new Map(preview.map((item) => [item.id, item]));
+      if (preview.length === 0) {
+        setStatus({ type: 'warning', text: '当前没有可预览的照片，请先选择照片并应用归档信息。' });
+        return;
+      }
       setPhotos((current) => current.map((photo) => previewMap.has(photo.id)
         ? { ...photo, sortStatus: 'previewed', previewInfo: previewMap.get(photo.id), archiveResult: null }
         : photo));
       setHasUnsavedChanges(true);
-      setStatus({ type: (unassignedCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${preview.length} 张照片的归档预览。未分拣 ${unassignedCount} 张，已忽略 ${ignoredCount} 张未纳入预览。` });
+      setFilter('previewed');
+      setActiveGroup('all');
+      setPage(1);
+      window.requestAnimationFrame(() => photoBrowserRef.current?.scrollTo({ top: 0, left: 0 }));
+      setStatus({ type: (unassignedCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${preview.length} 张照片的归档预览，请检查无误后点击归档。未分拣 ${unassignedCount} 张，已忽略 ${ignoredCount} 张未纳入预览。` });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '生成分拣归档预览', errorType: '生成预览失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成分拣归档预览失败：${error.message}` });
@@ -951,56 +768,18 @@ export default function SortWorkspacePage({ archiveState }) {
     }
   }
 
-  function handleQuickArchiveComplete(resultItems = []) {
-    const quickPhotos = archiveState?.photos || [];
-    const normalizedResults = resultItems.filter(Boolean);
-    if (normalizedResults.length === 0) return;
-    const archivedAt = new Date().toISOString();
-    setPhotos((current) => mergeQuickArchiveResults(current, quickPhotos, normalizedResults, archivedAt));
-    setSelectedIds([]);
-    setFilter('archived');
-    setPage(1);
-    setHasUnsavedChanges(true);
-    const successCount = normalizedResults.filter((item) => item.status === '归档成功').length;
-    const failedCount = normalizedResults.filter((item) => item.status === '归档失败').length;
-    setStatus({
-      type: failedCount ? 'warning' : 'success',
-      text: failedCount
-        ? `快速归档已回写状态：已归档 ${successCount} 张，归档失败 ${failedCount} 张。`
-        : `快速归档已完成，${successCount} 张照片已标记为“已归档”。`
-    });
-  }
-
   if (!configs) {
     return <section className="panel">正在加载照片分拣工作台...</section>;
   }
 
   return (
-    <div className={`sort-workbench unified-sort-workbench ${manualQuickOpen ? 'mode-quick' : ''}`}>
+    <div className="sort-workbench unified-sort-workbench">
       <section className="sort-unified-header panel">
         <div>
           <p className="eyebrow">照片分拣工作台</p>
           <h1>选照片 → 填归档信息 → 预览 → 归档</h1>
-          <span>识别服务待接入，当前可通过手动填写归档信息完成照片归档。</span>
-        </div>
-        <div className="sort-recognition-strip" aria-label="智能识别状态">
-          <span>智能识别：待接入</span>
-          <span>当前处理方式：手动填写归档信息</span>
         </div>
       </section>
-      {manualQuickOpen ? (
-        <>
-          <section className="manual-quick-header panel">
-            <div>
-              <p className="eyebrow">同类照片快速归档</p>
-              <h2>同类照片快速归档</h2>
-              <span>适合同一事项、同一分类、同一位置的一批照片统一套用归档信息。日常杂图请返回手动分拣逐组确认。</span>
-            </div>
-            <button type="button" onClick={() => setManualQuickOpen(false)}>返回照片分拣</button>
-          </section>
-          <QuickArchivePage archiveState={archiveState} embedded onArchiveComplete={handleQuickArchiveComplete} />
-        </>
-      ) : (
       <>
       <div className="sort-main-grid">
         <aside className="sort-left-panel panel">
@@ -1013,14 +792,13 @@ export default function SortWorkspacePage({ archiveState }) {
             ))}
           </SortSection>
           <SortSection
-            title="常用场景"
-            description="点击场景可快速筛选照片，并辅助填充分类、工作内容和关键词。"
+            title="常见场景快速填表"
+            description="点击场景可快速填充归档信息。"
             scrollable
           >
-            {sceneFilters.map((item, index) => (
+            {sceneFilters.map((item) => (
               <button type="button" key={item.key} className={activeGroup === item.key ? 'active' : ''} onClick={() => selectSceneFilter(item)}>
-                <span><i style={{ background: item.key === 'all' ? '#2f80ed' : groupColor(index - 1) }} />{item.title}</span>
-                <strong>{item.key === 'all' ? photos.length : photos.filter((photo) => matchesSceneFilter(photo, item.key)).length}</strong>
+                <span>{item.title}</span>
               </button>
             ))}
           </SortSection>
@@ -1028,13 +806,17 @@ export default function SortWorkspacePage({ archiveState }) {
 
         <main className="sort-center-panel panel">
           <div className="sort-workspace-toolbar">
-            <div className="sort-toolbar-group sort-import-tools">
+            <div className="sort-toolbar-row sort-toolbar-row-actions">
               <button type="button" className="primary orange" title={effectivePhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0}>清空</button>
-              <button type="button" title="进入同类照片快速归档" onClick={() => setManualQuickOpen(true)}>同类快归</button>
+              <button type="button" className="icon-action" title="全选当前照片" aria-label="全选当前照片" onClick={selectCurrentPage}>全选</button>
+              <button type="button" className="icon-action" title="反选当前照片" aria-label="反选当前照片" onClick={invertCurrentPage}>反选</button>
+              <button type="button" className="icon-action" title="取消选择" aria-label="取消选择" onClick={() => setSelectedIds([])}>取消</button>
+              <button type="button" className="icon-action" title="忽略选中照片" aria-label="忽略选中照片" onClick={markIgnored}>忽略</button>
+              <button type="button" className="icon-action" title="还原选中照片" aria-label="还原选中照片" onClick={cancelIgnored}>还原</button>
               <button type="button" title="更换照片目录或归档目录" className={moreOperationsOpen ? 'active' : ''} onClick={() => setMoreOperationsOpen((current) => !current)}>更多</button>
             </div>
-            <div className="sort-toolbar-group sort-view-tools">
+            <div className="sort-toolbar-row sort-view-tools">
               <div className="sort-view-tabs">
               {viewModes.map((mode) => (
                 <button type="button" key={mode.key} title={mode.title} className={viewMode === mode.key ? 'active' : ''} onClick={() => setViewMode(mode.key)}>
@@ -1062,58 +844,19 @@ export default function SortWorkspacePage({ archiveState }) {
                 <button type="button" onClick={selectArchiveRoot}>更换归档目录</button>
               </section>
               <section>
-                <strong>批量操作</strong>
-                <button type="button" title="全选当前页" onClick={selectCurrentPage}>全选</button>
-                <button type="button" title="反选当前页" onClick={invertCurrentPage}>反选</button>
-                <button type="button" title="选择所有未分拣照片" onClick={selectUnassigned}>未分拣</button>
-                <button type="button" title="取消当前选择" onClick={() => setSelectedIds([])}>取消选择</button>
-                <button type="button" title="标记选中照片为忽略" onClick={markIgnored}>忽略</button>
-                <button type="button" title="取消选中照片的忽略状态" onClick={cancelIgnored}>还原</button>
-              </section>
-              <section>
                 <strong>进度</strong>
                 <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || isBusy}>保存</button>
                 <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || isBusy}>恢复</button>
               </section>
-              <section>
-                <strong>辅助</strong>
-                <button type="button" title="根据当前照片生成分组建议" onClick={generateSmartGroups} disabled={photos.length === 0}>生成分组建议</button>
-                {hasGeneratedGroups && <button type="button" onClick={() => setGroupResultsOpen(true)}>查看分组结果</button>}
-                {hasGeneratedGroups && <button type="button" onClick={clearSmartGroups}>清除分组</button>}
-              </section>
             </div>
           )}
 
-          <div className="sort-batch-toolbar">
-            <span className="sort-selected-count">已选 <strong>{selectedIds.length}</strong> 张，尚未归档</span>
-          </div>
-
-          {hasGeneratedGroups && groupResultsOpen && (
-            <PhotoGroupPanel
-              photos={visiblePhotos.length ? visiblePhotos : photos}
-              groups={photoGroups}
-              selectedIds={selectedIds}
-              hasGenerated={hasGeneratedGroups}
-              isOpen={groupResultsOpen}
-              onGenerate={generateSmartGroups}
-              onClose={() => setGroupResultsOpen(false)}
-              onClear={clearSmartGroups}
-              onSelectGroup={selectPhotoGroup}
-              onApplySuggestion={applyGroupSuggestion}
-              onRemoveSelected={removeSelectedFromGroup}
-              onSplitSelected={splitSelectedToNewGroup}
-              onIgnoreGroup={ignorePhotoGroup}
-            />
-          )}
-
-          <div className={`sort-photo-browser ${viewMode} thumb-standard`}>
+          <div ref={photoBrowserRef} className={`sort-photo-browser ${viewMode} thumb-standard`}>
             {pagePhotos.length === 0 ? (
               <div className="sort-empty-state">
                 <strong>{effectivePhotoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
                 <span>{visiblePhotos.length === 0 && photos.length > 0
-                  ? activeGroup !== 'all'
-                    ? '当前场景暂无匹配照片，可切换场景或导入照片后查看。'
-                    : '当前筛选条件下没有照片，可调整左侧筛选。'
+                  ? '当前筛选条件下没有照片，可调整左侧筛选。'
                   : '原始照片只读取，不移动、不删除、不压缩。'}</span>
                 {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
               </div>
@@ -1159,9 +902,15 @@ export default function SortWorkspacePage({ archiveState }) {
         </main>
 
         <aside className="sort-right-panel panel" ref={rightPanelRef}>
-          <div className="sort-selected-summary">
-            <strong>已选择 {selectedIds.length} 张</strong>
-            <small>{selectedIds.length ? '可应用右侧归档信息' : '请先在照片区选择照片'}</small>
+          <div className="sort-selected-summary sort-right-fixed-top">
+            <div>
+              <strong>已选择 {selectedIds.length} 张</strong>
+              <small>{selectedStateText}</small>
+            </div>
+            <div className="sort-edit-actions">
+              <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo || selectedIds.length === 0 || Boolean(editingPhoto)}>编辑</button>
+              <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
+            </div>
           </div>
           <div className="sort-form-section">
             <h2>归档信息</h2>
@@ -1169,8 +918,8 @@ export default function SortWorkspacePage({ archiveState }) {
               <SelectField label="照片来源" value={form.photoSource} options={configs.photoSources} onChange={(photoSource) => updateForm({ photoSource })} required />
               <SelectField label="项目" value={form.project} options={configs.projects} onChange={(project) => updateForm({ project })} required />
               <SelectField label="部门" value={form.department} options={configs.departments} onChange={(department) => updateForm({ department })} required />
-              <SelectField label="水印分类" value={form.watermarkCategory} options={Object.keys(configs.watermarkCategories)} onChange={(watermarkCategory) => updateForm({ watermarkCategory })} required />
-              <SelectField label="工作内容" value={form.workContent} options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []} onChange={(workContent) => updateForm({ workContent })} required />
+              <SelectField label="水印分类" value={form.watermarkCategory} options={Object.keys(configs.watermarkCategories)} onChange={(watermarkCategory) => updateForm({ watermarkCategory, workContent: '' })} required />
+              <SelectField label="工作内容" value={form.workContent} options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []} onChange={(workContent) => updateForm({ workContent })} required disabled={!form.watermarkCategory} />
               <InputField label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} required />
               <InputField label="位置/区域" value={form.location} placeholder={form.locationPlaceholder || '不填则默认“现场”'} onChange={(location) => updateForm({ location })} />
               <InputField label="事项名称" value={form.itemName} placeholder="不填则默认使用工作内容" onChange={(itemName) => updateForm({ itemName })} />
@@ -1179,56 +928,30 @@ export default function SortWorkspacePage({ archiveState }) {
               <InputField label="关键词" value={form.keywords} onChange={(keywords) => updateForm({ keywords }, { preserveKeywords: true })} wide />
               <TextAreaField label="备注" value={form.remark} onChange={(remark) => updateForm({ remark })} />
             </div>
-            {suggestedKeywords.length > 0 && (
-              <div className="sort-inline-keywords">
-                <span>关键词建议</span>
-                {suggestedKeywords.slice(0, 8).map((keyword) => (
-                  <button
-                    type="button"
-                    key={keyword}
-                    className={activeKeywords.includes(keyword) ? 'active' : ''}
-                    onClick={() => updateForm({ keywords: toggleKeyword(form.keywords, keyword) }, { preserveKeywords: true })}
-                  >
-                    {keyword}
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="sort-recognition-note">
+              <strong>识别底座</strong>
+              <span>待配置，当前手动填写归档信息。</span>
+            </div>
           </div>
-
-          <div className="sort-recognition-note">
-            <strong>识别服务：待接入</strong>
-            <span>当前通过手动填写归档信息完成归档，后续将基于水印识别自动生成归档草稿。</span>
+          <div className="sort-right-actions">
+            <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用</button>
+            <button type="button" title="生成分拣归档预览" onClick={buildSortPreview} disabled={isBusy || selectedIds.length === 0 || selectedAssignedCount === 0 || assignedCount === 0}>预览</button>
+            <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
+            <button type="button" className="danger" title={`清除选中照片归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除</button>
           </div>
-
-          <SuggestionPanel
-            compact
-            suggestion={archiveSuggestion}
-            onApply={() => applyArchiveSuggestion()}
-            onApplyEmpty={() => applyArchiveSuggestion({ onlyEmpty: true })}
-            onIgnore={ignoreArchiveSuggestion}
-          />
         </aside>
       </div>
 
       <footer className="sort-bottom-bar">
         <div className="sort-bottom-status">
           <span>显示 {visiblePhotos.length ? (safePage - 1) * pageSize + 1 : 0}-{Math.min(safePage * pageSize, visiblePhotos.length)} / {visiblePhotos.length}</span>
-          <span>第 {safePage}/{totalPages} 页</span>
+          <span>第 {safePage} / {totalPages} 页</span>
           <span>已选 {selectedIds.length}</span>
         </div>
         <strong className={`sort-bottom-message ${status.type}`} title={status.text}>{status.text}</strong>
-        <div className="sort-bottom-actions">
-          <div className="sort-bottom-action-group single">
-            <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo}>编辑</button>
-            <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
-          </div>
-          <div className="sort-bottom-action-group batch">
-            <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0}>应用归档信息</button>
-            <button type="button" title="生成分拣归档预览" onClick={buildSortPreview} disabled={isBusy || assignedCount === 0}>预览</button>
-            <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || previewPhotos.length === 0}>归档</button>
-            <button type="button" className="danger" title={`清除选中照片归档信息（${selectedIds.length}）`} onClick={clearSelectedInfo} disabled={selectedIds.length === 0}>清除</button>
-          </div>
+        <div className="sort-bottom-meta">
+          <span>识别服务：底座已接入</span>
+          <span>当前处理：手动填写归档信息</span>
         </div>
       </footer>
 
@@ -1245,7 +968,6 @@ export default function SortWorkspacePage({ archiveState }) {
         />
       )}
       </>
-      )}
     </div>
   );
 }
@@ -1334,11 +1056,17 @@ function SortArchiveConfirm({ count, unassignedCount, ignoredCount, archiveRoot,
   );
 }
 
-function SelectField({ label, value, options, onChange, required = false }) {
+function SelectField({ label, value, options, onChange, required = false, disabled = false }) {
+  const placeholder = label === '水印分类'
+    ? '请选择水印分类'
+    : label === '工作内容'
+      ? '请选择工作内容'
+      : '';
   return (
     <label className="field">
       <span>{label}{required && <b>*</b>}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
+        {placeholder && <option value="">{placeholder}</option>}
         {options.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
@@ -1369,14 +1097,14 @@ function StatusBadge({ status, missing }) {
 
 function reconcileForm(current, configs) {
   const categories = Object.keys(configs.watermarkCategories || {});
-  const watermarkCategory = pick(current.watermarkCategory, categories);
+  const watermarkCategory = categories.includes(current.watermarkCategory) ? current.watermarkCategory : '';
   return {
     ...current,
     photoSource: pick(current.photoSource, configs.photoSources),
     project: pick(current.project, configs.projects),
     department: pick(current.department, configs.departments),
     watermarkCategory,
-    workContent: pick(current.workContent, configs.watermarkCategories?.[watermarkCategory]?.items || []),
+    workContent: (configs.watermarkCategories?.[watermarkCategory]?.items || []).includes(current.workContent) ? current.workContent : '',
     photoStage: pick(current.photoStage, configs.photoStages),
     processStatus: pick(current.processStatus, configs.processStatuses)
   };
@@ -1384,30 +1112,6 @@ function reconcileForm(current, configs) {
 
 function pick(value, options = []) {
   return options.includes(value) ? value : (options[0] || value || '');
-}
-
-function getSuggestionKey(suggestion) {
-  if (!suggestion) return '';
-  return [
-    suggestion.watermarkCategory,
-    suggestion.workContent,
-    suggestion.itemName,
-    suggestion.location || suggestion.locationPlaceholder
-  ].filter(Boolean).join('|');
-}
-
-function rebuildGroupsAfterMove(currentGroups, targetGroupId, remainingPhotos, movingPhotos, context) {
-  const next = currentGroups
-    .filter((group) => group.id !== targetGroupId && group.confidence !== 'ungrouped')
-    .concat(remainingPhotos.length ? [createManualGroup(remainingPhotos, currentGroups.length, context)] : []);
-  const existingUngrouped = currentGroups
-    .filter((group) => group.id !== targetGroupId && group.confidence === 'ungrouped')
-    .flatMap((group) => group.photos);
-  const ungroupedPhotos = [...existingUngrouped, ...movingPhotos];
-  if (ungroupedPhotos.length > 0) {
-    next.push(buildUngroupedGroup(ungroupedPhotos, next.length, context));
-  }
-  return next;
 }
 
 function validateSortForm(form) {
@@ -1454,6 +1158,14 @@ function getFilterCount(key, photos, selectedIds) {
   return photos.filter((photo) => photo.sortStatus === key).length;
 }
 
+function getSelectedStateText(selectedPhotos) {
+  if (!selectedPhotos.length) return '请先在照片区选择照片';
+  if (selectedPhotos.every((photo) => photo.sortStatus === 'archived')) return '已归档';
+  if (selectedPhotos.some((photo) => photo.sortStatus === 'previewed')) return '已生成归档预览';
+  if (selectedPhotos.some((photo) => photo.archiveInfo || photo.sortStatus === 'assigned')) return '已应用归档信息';
+  return '尚未应用归档信息';
+}
+
 function buildGridPhotoSummary(photo) {
   if (photo.originalMissing) {
     return { main: '原图缺失', sub: '请重新定位照片文件夹', full: '原图缺失，请重新定位照片文件夹后再预览或归档。' };
@@ -1461,8 +1173,8 @@ function buildGridPhotoSummary(photo) {
   if (photo.sortStatus === 'archived') {
     return {
       main: '已归档',
-      sub: [photo.archiveMethod || '快速归档', formatDateTime(photo.archivedAt)].filter(Boolean).join(' · '),
-      full: [photo.archiveMethod || '快速归档', photo.archiveResult?.targetPath].filter(Boolean).join(' / ')
+      sub: [photo.archiveMethod || '照片分拣', formatDateTime(photo.archivedAt)].filter(Boolean).join(' · '),
+      full: [photo.archiveMethod || '照片分拣', photo.archiveResult?.targetPath].filter(Boolean).join(' / ')
     };
   }
   if (photo.sortStatus === 'failed') {
@@ -1483,92 +1195,6 @@ function buildGridPhotoSummary(photo) {
     sub,
     full: [workContent, location, stage, info.processStatus].filter(Boolean).join(' / ')
   };
-}
-
-function mergeQuickArchiveResults(currentPhotos, quickPhotos, resultItems, archivedAt) {
-  const resultById = new Map(resultItems.map((item) => [String(item.id || ''), item]));
-  const nextPhotos = [...currentPhotos];
-
-  resultItems.forEach((item) => {
-    const quickPhoto = quickPhotos.find((photo) => isSameArchiveSource(photo, item)) || null;
-    const existingIndex = nextPhotos.findIndex((photo) => isSameArchiveSource(photo, item) || (quickPhoto && isSameSortPhoto(photo, quickPhoto)));
-    const success = item.status === '归档成功';
-    const patch = {
-      sortStatus: success ? 'archived' : 'failed',
-      archiveResult: item,
-      previewInfo: item,
-      archiveMethod: '快速归档',
-      archivedAt: success ? archivedAt : '',
-      originalMissing: false
-    };
-
-    if (existingIndex >= 0) {
-      nextPhotos[existingIndex] = { ...nextPhotos[existingIndex], ...patch };
-      return;
-    }
-
-    const sourcePhoto = quickPhoto || quickPhotos.find((photo) => String(photo.id || '') === String(item.id || ''));
-    if (sourcePhoto) {
-      nextPhotos.push(buildSortPhotoFromQuickPhoto(sourcePhoto, patch));
-    }
-  });
-
-  quickPhotos.forEach((photo) => {
-    if (nextPhotos.some((item) => isSameSortPhoto(item, photo))) return;
-    const result = resultById.get(String(photo.id || ''));
-    if (result) return;
-    nextPhotos.push(buildSortPhotoFromQuickPhoto(photo, {
-      sortStatus: 'unassigned',
-      archiveResult: null,
-      previewInfo: null,
-      archiveMethod: '',
-      archivedAt: ''
-    }));
-  });
-
-  return nextPhotos;
-}
-
-function buildSortPhotoFromQuickPhoto(photo, patch) {
-  return {
-    id: photo.id,
-    originalPath: photo.path || photo.originalPath || photo.sourcePath || '',
-    originalName: photo.name || photo.originalName || getBaseName(photo.path || photo.sourcePath),
-    extension: photo.extension,
-    size: photo.size,
-    modifiedAt: photo.modifiedAt,
-    thumbnailPath: photo.previewUrl || photo.thumbnailPath,
-    previewUrl: photo.previewUrl || photo.thumbnailPath,
-    selected: false,
-    archiveInfo: null,
-    originalMissing: false,
-    ...patch
-  };
-}
-
-function isSameArchiveSource(photo, item) {
-  if (!photo || !item) return false;
-  const photoPath = normalizePath(photo.originalPath || photo.path || photo.sourcePath);
-  const itemPath = normalizePath(item.sourcePath || item.originalPath || item.path);
-  if (photoPath && itemPath && photoPath === itemPath) return true;
-  const photoId = String(photo.id || '');
-  const itemId = String(item.id || '');
-  if (photoId && itemId && photoId === itemId) return true;
-  const photoName = getBaseName(photo.originalName || photo.name || photoPath);
-  const itemName = getBaseName(item.originalName || item.name || itemPath);
-  return Boolean(photoName && itemName && photoName === itemName && Number(photo.size || 0) === Number(item.size || 0));
-}
-
-function isSameSortPhoto(sortPhoto, quickPhoto) {
-  if (!sortPhoto || !quickPhoto) return false;
-  const sortPath = normalizePath(sortPhoto.originalPath);
-  const quickPath = normalizePath(quickPhoto.path || quickPhoto.originalPath || quickPhoto.sourcePath);
-  if (sortPath && quickPath && sortPath === quickPath) return true;
-  return String(sortPhoto.id || '') === String(quickPhoto.id || '');
-}
-
-function normalizePath(value) {
-  return String(value || '').trim().replaceAll('\\', '/').toLowerCase();
 }
 
 function findBestPhotoMatch(photo, candidates) {
@@ -1608,20 +1234,6 @@ function fillTemplate(template, form, scene = {}) {
     .replaceAll('位置/区域', form.location || '位置/区域')
     .replaceAll('工作事项', scene.itemName || form.itemName || form.workContent || '事项名称')
     .replaceAll('事项名称', scene.itemName || form.itemName || form.workContent || '事项名称');
-}
-
-function matchesSceneFilter(photo, sceneTitle) {
-  const target = normalizeCompareText(sceneTitle);
-  if (!target || target === 'all') return true;
-  const fields = [
-    photo.archiveInfo?.itemName,
-    photo.archiveInfo?.workItem,
-    photo.archiveInfo?.workContent,
-    photo.archiveInfo?.watermarkCategory,
-    photo.archiveInfo?.keywords,
-    photo.archiveInfo?.remark
-  ].map(normalizeCompareText).filter(Boolean);
-  return fields.some((field) => field.includes(target) || target.includes(field));
 }
 
 function normalizeCompareText(value) {

@@ -2,7 +2,6 @@ import { PAGE_KEYS } from '../constants/app.js';
 import ArchiveRecordsPage from './ArchiveRecordsPage.jsx';
 import DashboardPage from './DashboardPage.jsx';
 import DataMaintenancePage from './DataMaintenancePage.jsx';
-import QuickArchivePage from './QuickArchivePage.jsx';
 import RectificationCenterPage from './RectificationCenterPage.jsx';
 import SettingsPage from './SettingsPage.jsx';
 import ServiceBriefPage from './ServiceBriefPage.jsx';
@@ -14,7 +13,8 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
     return <DashboardPage archiveState={archiveState} onNavigate={onNavigate} />;
   }
   if (currentPage === PAGE_KEYS.quickArchive) {
-    return <QuickArchivePage archiveState={archiveState} />;
+    // 旧的独立快归入口已取消；历史导航请求统一回到照片分拣工作台。
+    return <SortWorkspacePage archiveState={archiveState} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
     return <SortWorkspacePage archiveState={archiveState} />;

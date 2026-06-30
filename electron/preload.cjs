@@ -4,6 +4,13 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectPhotoFolder: () => ipcRenderer.invoke('dialog:selectPhotoFolder'),
   selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
+  recognition: {
+    getStatus: () => ipcRenderer.invoke('recognition:getStatus'),
+    getProviders: () => ipcRenderer.invoke('recognition:getProviders'),
+    getConfig: () => ipcRenderer.invoke('recognition:getConfig'),
+    parseText: (rawText, options) => ipcRenderer.invoke('recognition:parseText', rawText, options),
+    recognizePhotos: (photos, options) => ipcRenderer.invoke('recognition:recognizePhotos', photos, options)
+  },
   loadConfigs: () => ipcRenderer.invoke('configs:load'),
   loadUserConfigs: () => ipcRenderer.invoke('configs:loadUserConfigs'),
   saveUserConfig: (configName, data) => ipcRenderer.invoke('configs:saveUserConfig', configName, data),

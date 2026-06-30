@@ -4,6 +4,9 @@ import SuggestionPanel from '../components/SuggestionPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
 
+// 旧的独立快归页面已不再从正常导航、路由或照片分拣工作台入口挂载。
+// 文件暂时保留，便于后续确认无历史兼容需求后再统一清理。
+
 const TAB_KEYS = {
   photos: 'photos',
   preview: 'preview',
@@ -150,7 +153,7 @@ export default function QuickArchivePage({ archiveState, onArchiveComplete, embe
     <div className={`quick-archive-workbench ${embedded ? 'embedded-quick-mode' : ''}`}>
       {embedded && (
         <p className="quick-mode-note">
-          同类照片快速归档适合同一事项、同一分类、同一位置的一批照片统一套用归档信息。每天导出的杂图请优先使用手动分拣。
+          该旧归档视图已从正常入口下线，当前请使用照片分拣工作台统一主流程。
         </p>
       )}
       <section className={`quick-final-workspace ${photoAreaMode === 'maximized' ? 'photo-maximized' : ''}`} ref={workAreaRef}>

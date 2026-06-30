@@ -7,6 +7,7 @@ export function createEmptySmartPhotoGroup(overrides = {}) {
     groupId: '',
     groupName: '',
     photos: [],
+    recognitionResults: [],
     recognitionBasis: [],
     project: '',
     location: '',
@@ -34,6 +35,12 @@ export function createEmptySmartPhotoGroup(overrides = {}) {
     riskWarnings: [],
     confidence: 'unknown',
     status: 'pending_review',
+    dataSources: {
+      fileTime: true,
+      fileName: true,
+      recognition: false,
+      manualCorrection: false
+    },
     ...overrides
   };
 }

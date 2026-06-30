@@ -19,5 +19,11 @@ export const SMART_SORTING_CAPABILITY = {
     autoArchives: false,
     writesLedgerAutomatically: false,
     modifiesOriginalPhotos: false
+  },
+  recognitionInput: {
+    acceptsRecognitionResults: true,
+    acceptsRecognitionFields: true,
+    currentProviderStatus: 'not_configured',
+    currentBehavior: '规则建议继续可用，但不会冒充识别驱动分组。'
   }
 };

@@ -6,13 +6,15 @@ export const FIELD_AUTOMATION_POLICY = {
 
 export function buildArchiveSuggestion(input = {}, configs = {}) {
   const scene = input.scene || null;
-  const category = clean(input.watermarkCategory || input.category || scene?.watermarkCategory);
-  const workContent = clean(input.workContent || input.workItem || scene?.workContent);
+  const recognitionHints = buildRecognitionHints(input);
+  const category = clean(input.watermarkCategory || input.category || scene?.watermarkCategory || recognitionHints.categoryHint);
+  const workContent = clean(input.workContent || input.workItem || scene?.workContent || recognitionHints.workContent);
   const history = buildHistoryHint(input.historyRecords || [], { ...input, watermarkCategory: category, workContent });
   const currentSources = [];
   const extraSources = Array.isArray(input.extraSources) ? input.extraSources : [];
   if (scene?.title) currentSources.push('常用场景');
   if (input.watermarkCategory || input.workContent || input.workItem) currentSources.push('用户当前输入');
+  if (recognitionHints.sources.length > 0) currentSources.push(...recognitionHints.sources);
 
   if (!category && !workContent && !history.hasValue) {
     return createEmptyArchiveSuggestion();
@@ -30,20 +32,24 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
   ]);
 
   const itemName = clean(scene?.itemName)
+    || recognitionHints.itemName
     || history.itemName
     || (isParkingOccupation
       ? '车辆占用车位处理'
       : buildItemName(workContent, direction.itemStem));
   const locationSuggestion = clean(scene?.location)
+    || recognitionHints.location
     || history.location
     || '';
   const locationPlaceholder = clean(scene?.locationPlaceholder)
     || history.location
     || (isParkingOccupation ? '填写车位号、楼栋单元、地下车库区域等' : direction.location);
   const processStatus = clean(scene?.processStatusSuggestion || scene?.processStatus)
+    || recognitionHints.processStatus
     || history.processStatus
     || pickConfigName(configs.processStatuses, '待处理');
   const photoStage = clean(scene?.photoStageSuggestion || scene?.photoStage)
+    || recognitionHints.photoStage
     || history.photoStage
     || pickConfigName(configs.photoStages, '远景定位');
   const department = clean(input.department || scene?.department)
@@ -51,10 +57,12 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
     || pickDepartment(configs.departments, category, workContent);
   const keywords = unique([
     ...splitKeywords(scene?.keywords),
+    ...recognitionHints.keywords,
     ...history.keywords,
     ...buildRecommendedKeywords(category, workContent, direction.keywords)
   ]);
   const remarkTemplate = clean(scene?.remarkTemplate)
+    || recognitionHints.remark
     || history.remark
     || (isParkingOccupation
       ? '现场发现车辆占用他人车位，已记录并按流程联系处理，后续持续跟进。'
@@ -79,6 +87,35 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
     requiresHumanConfirmation: true,
     isEmpty: false,
     policy: FIELD_AUTOMATION_POLICY
+  };
+}
+
+function buildRecognitionHints(input = {}) {
+  const recognitionFields = [
+    ...(Array.isArray(input.recognitionResults) ? input.recognitionResults.map((result) => result?.fields || {}) : []),
+    input.recognitionFields || {}
+  ].filter(Boolean);
+  const merged = recognitionFields.reduce((acc, fields) => ({
+    project: acc.project || clean(fields.project),
+    workContent: acc.workContent || clean(fields.workContent),
+    categoryHint: acc.categoryHint || clean(fields.categoryHint),
+    itemName: acc.itemName || clean(fields.workContent),
+    location: acc.location || clean(fields.location),
+    processStatus: acc.processStatus || clean(fields.possibleStatus),
+    photoStage: acc.photoStage || clean(fields.possibleStage),
+    remark: acc.remark || clean(fields.remark),
+    keywords: unique([...(acc.keywords || []), ...splitKeywords(fields.keywords)])
+  }), { keywords: [] });
+
+  const sources = recognitionFields.length > 0
+    ? unique([
+      ...(input.recognitionResults || []).map((result) => recognitionSourceLabel(result?.source))
+    ])
+    : [];
+
+  return {
+    ...merged,
+    sources
   };
 }
 
@@ -213,6 +250,17 @@ function buildConfidenceText({ scene, category, workContent, history, sources })
   if (category && workContent) return '根据分类与工作内容规则生成，归档前请人工确认。';
   if (sources.includes('默认兜底')) return '当前字段不足，仅提供兜底建议，请补充分类和工作内容后再确认。';
   return '建议仅用于辅助填写，归档前请人工确认。';
+}
+
+function recognitionSourceLabel(source) {
+  const sourceMap = {
+    local_ocr: '本地 OCR',
+    cloud_ocr: '联网识别',
+    cloud_ai: '联网识别',
+    manual: '人工校正',
+    system: '水印识别'
+  };
+  return sourceMap[source] || '';
 }
 
 function pickConfigName(items = [], preferred) {

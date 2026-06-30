@@ -10,6 +10,13 @@ const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.
 const { clearHandledTrialIssues, deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
 const { deleteLedgerRecords, exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
+const {
+  getRecognitionConfig,
+  getRecognitionProviders,
+  getRecognitionStatus,
+  parseRecognitionText,
+  recognizePhotos
+} = require('./services/recognitionService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
 const {
   exportRectificationItems,
@@ -221,6 +228,11 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
+ipcMain.handle('recognition:getStatus', async () => getRecognitionStatus());
+ipcMain.handle('recognition:getProviders', async () => getRecognitionProviders());
+ipcMain.handle('recognition:getConfig', async () => getRecognitionConfig());
+ipcMain.handle('recognition:parseText', async (_event, rawText, options) => parseRecognitionText(rawText, options));
+ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => recognizePhotos(photos, options));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => saveUserConfig(getWritableDocumentsPath(), configName, data));
