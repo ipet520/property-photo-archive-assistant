@@ -62,7 +62,7 @@ export function buildUngroupedGroup(photos = [], index = 0, context = {}) {
     ...context.form,
     scene: context.scene,
     historyRecords: context.historyRecords,
-    extraSources: ['智能分组']
+    extraSources: ['分组建议']
   }, context.configs || {});
   return {
     id: `ungrouped-${index}`,
@@ -75,7 +75,7 @@ export function buildUngroupedGroup(photos = [], index = 0, context = {}) {
     basis: '以下照片暂未匹配到明确事项，请人工确认后处理。',
     suggestion: {
       ...suggestion,
-      sources: unique(['智能分组', ...(suggestion.sources || [])]),
+      sources: unique(['分组建议', ...(suggestion.sources || [])]),
       confidenceText: '当前照片缺少足够信息，暂未形成明确分组。您仍可手动选择照片进行归档。'
     },
     requiresHumanConfirmation: true
@@ -101,7 +101,7 @@ function buildGroup(photos, index, context, keywordSet, totalCount) {
     workContent: form.workContent || scene?.workContent || fallbackTitle,
     scene,
     historyRecords: context.historyRecords,
-    extraSources: ['智能分组']
+    extraSources: ['分组建议']
   }, context.configs || {});
 
   return {
@@ -115,7 +115,7 @@ function buildGroup(photos, index, context, keywordSet, totalCount) {
     basis: reasons.join('；') || '规则分组结果，请人工确认。',
     suggestion: {
       ...suggestion,
-      sources: unique(['智能分组', ...(suggestion.sources || [])])
+      sources: unique(['分组建议', ...(suggestion.sources || [])])
     },
     requiresHumanConfirmation: true
   };

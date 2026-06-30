@@ -150,7 +150,7 @@ export default function QuickArchivePage({ archiveState, onArchiveComplete, embe
     <div className={`quick-archive-workbench ${embedded ? 'embedded-quick-mode' : ''}`}>
       {embedded && (
         <p className="quick-mode-note">
-          快速归档适合同一事项、同一分类、同一位置的一批照片，会统一套用同一套归档信息。每天导出的杂图请优先使用标准分拣模式。
+          同类照片快速归档适合同一事项、同一分类、同一位置的一批照片统一套用归档信息。每天导出的杂图请优先使用手动分拣。
         </p>
       )}
       <section className={`quick-final-workspace ${photoAreaMode === 'maximized' ? 'photo-maximized' : ''}`} ref={workAreaRef}>

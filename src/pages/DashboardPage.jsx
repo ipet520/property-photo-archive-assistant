@@ -4,7 +4,7 @@ import { APP_NAME, APP_VERSION, NAV_GROUPS, PAGE_KEYS } from '../constants/app.j
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const QUICK_ENTRIES = [
-  { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '适合物业日常杂图整理，支持逐张分拣、批量套用和快速归档模式。' },
+  { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '导入物业工作照片，支持智能分拣架构和手动归档流程，后续可基于水印识别自动生成事项组和归档建议。' },
   { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
   { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
   { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },

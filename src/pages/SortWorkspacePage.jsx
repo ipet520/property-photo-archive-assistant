@@ -48,19 +48,9 @@ const statusFilters = [
 
 const commonSceneFilters = ['楼道杂物清理', '飞线充电治理', '公共设施设备维修', '消防通道违停', '环境卫生维护', '绿化养护', '秩序巡查', '安全隐患排查'];
 
-const assistTabs = [
-  ['keywords', '关键词'],
-  ['recent', '最近记录']
-];
-
 const viewModes = [
   { key: 'grid', label: '网格', title: '网格视图' },
   { key: 'list', label: '列表', title: '列表视图' }
-];
-
-const workspaceModes = [
-  ['standard', '标准分拣模式'],
-  ['quick', '快速归档模式']
 ];
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
@@ -76,7 +66,7 @@ function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
 export default function SortWorkspacePage({ archiveState }) {
   const rightPanelRef = useRef(null);
   const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
-  const [workspaceMode, setWorkspaceMode] = useState('standard');
+  const [manualQuickOpen, setManualQuickOpen] = useState(false);
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
@@ -90,7 +80,6 @@ export default function SortWorkspacePage({ archiveState }) {
   const [sortMode, setSortMode] = useState('timeAsc');
   const [selectedIds, setSelectedIds] = useState([]);
   const [lastClickedId, setLastClickedId] = useState(null);
-  const [activeRightTab, setActiveRightTab] = useState('keywords');
   const [activeSceneTitle, setActiveSceneTitle] = useState('');
   const [editingPhotoId, setEditingPhotoId] = useState('');
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
@@ -98,7 +87,6 @@ export default function SortWorkspacePage({ archiveState }) {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [moreOperationsOpen, setMoreOperationsOpen] = useState(false);
-  const [assistOpen, setAssistOpen] = useState(false);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹并扫描照片。' });
   const [isBusy, setIsBusy] = useState(false);
   const [page, setPage] = useState(1);
@@ -218,12 +206,6 @@ export default function SortWorkspacePage({ archiveState }) {
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
   }, []);
-
-  useEffect(() => {
-    if (!assistTabs.some(([key]) => key === activeRightTab)) {
-      setActiveRightTab('scenes');
-    }
-  }, [activeRightTab]);
 
   useEffect(() => {
     if (!configs) return;
@@ -493,12 +475,12 @@ export default function SortWorkspacePage({ archiveState }) {
       setStatus({
         type: groups.length ? 'success' : 'warning',
         text: groups.length
-          ? `已生成 ${groups.length} 个智能分组。分组仅用于辅助确认，不会自动归档或写入台账。`
+          ? `已生成 ${groups.length} 个分组建议。分组仅用于辅助确认，不会自动归档或写入台账。`
           : '当前照片缺少足够信息，暂未形成明确分组。您仍可手动选择照片进行归档。'
       });
     } catch (error) {
-      recordRuntimeLog({ page: '照片分拣工作台', operation: '生成智能分组', errorType: '生成智能分组失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `生成智能分组失败：${error.message}` });
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '生成分组建议', errorType: '生成分组建议失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `生成分组建议失败：${error.message}` });
     }
   }
 
@@ -507,7 +489,7 @@ export default function SortWorkspacePage({ archiveState }) {
       setPhotoGroups([]);
       setHasGeneratedGroups(false);
       setGroupResultsOpen(false);
-      setStatus({ type: 'success', text: '已清除当前页面智能分组，照片和归档信息未被修改。' });
+      setStatus({ type: 'success', text: '已清除当前页面分组建议，照片和归档信息未被修改。' });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '清除分组', errorType: '清除分组失败', summary: error.message, error });
       setStatus({ type: 'error', text: `清除分组失败：${error.message}` });
@@ -941,7 +923,7 @@ export default function SortWorkspacePage({ archiveState }) {
         const item = resultMap.get(photo.id);
         if (!item) return photo;
         const success = item.status === '归档成功';
-        return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item, archiveMethod: '标准分拣', archivedAt: success ? archivedAt : '' };
+        return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item, archiveMethod: '手动分拣', archivedAt: success ? archivedAt : '' };
       }));
       setShowConfirm(false);
       setFilter('archived');
@@ -994,14 +976,30 @@ export default function SortWorkspacePage({ archiveState }) {
   }
 
   return (
-    <div className={`sort-workbench mode-${workspaceMode}`}>
-      <div className="sort-mode-switch">
-        {workspaceModes.map(([key, label]) => (
-          <button type="button" key={key} className={workspaceMode === key ? 'active' : ''} onClick={() => setWorkspaceMode(key)}>{label}</button>
-        ))}
-      </div>
-      {workspaceMode === 'quick' ? (
-        <QuickArchivePage archiveState={archiveState} embedded onArchiveComplete={handleQuickArchiveComplete} />
+    <div className={`sort-workbench unified-sort-workbench ${manualQuickOpen ? 'mode-quick' : ''}`}>
+      <section className="sort-unified-header panel">
+        <div>
+          <p className="eyebrow">照片分拣工作台</p>
+          <h1>选照片 → 填归档信息 → 预览 → 归档</h1>
+          <span>识别服务待接入，当前可通过手动填写归档信息完成照片归档。</span>
+        </div>
+        <div className="sort-recognition-strip" aria-label="智能识别状态">
+          <span>智能识别：待接入</span>
+          <span>当前处理方式：手动填写归档信息</span>
+        </div>
+      </section>
+      {manualQuickOpen ? (
+        <>
+          <section className="manual-quick-header panel">
+            <div>
+              <p className="eyebrow">同类照片快速归档</p>
+              <h2>同类照片快速归档</h2>
+              <span>适合同一事项、同一分类、同一位置的一批照片统一套用归档信息。日常杂图请返回手动分拣逐组确认。</span>
+            </div>
+            <button type="button" onClick={() => setManualQuickOpen(false)}>返回照片分拣</button>
+          </section>
+          <QuickArchivePage archiveState={archiveState} embedded onArchiveComplete={handleQuickArchiveComplete} />
+        </>
       ) : (
       <>
       <div className="sort-main-grid">
@@ -1033,6 +1031,7 @@ export default function SortWorkspacePage({ archiveState }) {
             <div className="sort-toolbar-group sort-import-tools">
               <button type="button" className="primary orange" title={effectivePhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0}>清空</button>
+              <button type="button" title="进入同类照片快速归档" onClick={() => setManualQuickOpen(true)}>同类快归</button>
               <button type="button" title="更换照片目录或归档目录" className={moreOperationsOpen ? 'active' : ''} onClick={() => setMoreOperationsOpen((current) => !current)}>更多</button>
             </div>
             <div className="sort-toolbar-group sort-view-tools">
@@ -1076,6 +1075,12 @@ export default function SortWorkspacePage({ archiveState }) {
                 <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || isBusy}>保存</button>
                 <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || isBusy}>恢复</button>
               </section>
+              <section>
+                <strong>辅助</strong>
+                <button type="button" title="根据当前照片生成分组建议" onClick={generateSmartGroups} disabled={photos.length === 0}>生成分组建议</button>
+                {hasGeneratedGroups && <button type="button" onClick={() => setGroupResultsOpen(true)}>查看分组结果</button>}
+                {hasGeneratedGroups && <button type="button" onClick={clearSmartGroups}>清除分组</button>}
+              </section>
             </div>
           )}
 
@@ -1083,21 +1088,23 @@ export default function SortWorkspacePage({ archiveState }) {
             <span className="sort-selected-count">已选 <strong>{selectedIds.length}</strong> 张，尚未归档</span>
           </div>
 
-          <PhotoGroupPanel
-            photos={visiblePhotos.length ? visiblePhotos : photos}
-            groups={photoGroups}
-            selectedIds={selectedIds}
-            hasGenerated={hasGeneratedGroups}
-            isOpen={groupResultsOpen}
-            onGenerate={generateSmartGroups}
-            onClose={() => setGroupResultsOpen((value) => !value)}
-            onClear={clearSmartGroups}
-            onSelectGroup={selectPhotoGroup}
-            onApplySuggestion={applyGroupSuggestion}
-            onRemoveSelected={removeSelectedFromGroup}
-            onSplitSelected={splitSelectedToNewGroup}
-            onIgnoreGroup={ignorePhotoGroup}
-          />
+          {hasGeneratedGroups && groupResultsOpen && (
+            <PhotoGroupPanel
+              photos={visiblePhotos.length ? visiblePhotos : photos}
+              groups={photoGroups}
+              selectedIds={selectedIds}
+              hasGenerated={hasGeneratedGroups}
+              isOpen={groupResultsOpen}
+              onGenerate={generateSmartGroups}
+              onClose={() => setGroupResultsOpen(false)}
+              onClear={clearSmartGroups}
+              onSelectGroup={selectPhotoGroup}
+              onApplySuggestion={applyGroupSuggestion}
+              onRemoveSelected={removeSelectedFromGroup}
+              onSplitSelected={splitSelectedToNewGroup}
+              onIgnoreGroup={ignorePhotoGroup}
+            />
+          )}
 
           <div className={`sort-photo-browser ${viewMode} thumb-standard`}>
             {pagePhotos.length === 0 ? (
@@ -1172,6 +1179,26 @@ export default function SortWorkspacePage({ archiveState }) {
               <InputField label="关键词" value={form.keywords} onChange={(keywords) => updateForm({ keywords }, { preserveKeywords: true })} wide />
               <TextAreaField label="备注" value={form.remark} onChange={(remark) => updateForm({ remark })} />
             </div>
+            {suggestedKeywords.length > 0 && (
+              <div className="sort-inline-keywords">
+                <span>关键词建议</span>
+                {suggestedKeywords.slice(0, 8).map((keyword) => (
+                  <button
+                    type="button"
+                    key={keyword}
+                    className={activeKeywords.includes(keyword) ? 'active' : ''}
+                    onClick={() => updateForm({ keywords: toggleKeyword(form.keywords, keyword) }, { preserveKeywords: true })}
+                  >
+                    {keyword}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="sort-recognition-note">
+            <strong>识别服务：待接入</strong>
+            <span>当前通过手动填写归档信息完成归档，后续将基于水印识别自动生成归档草稿。</span>
           </div>
 
           <SuggestionPanel
@@ -1181,42 +1208,6 @@ export default function SortWorkspacePage({ archiveState }) {
             onApplyEmpty={() => applyArchiveSuggestion({ onlyEmpty: true })}
             onIgnore={ignoreArchiveSuggestion}
           />
-
-          <div className="sort-assist-section">
-            <button type="button" className="sort-assist-toggle" onClick={() => setAssistOpen((value) => !value)}>
-              {assistOpen ? '收起辅助资料' : '展开辅助资料'}
-            </button>
-            {assistOpen && (
-              <>
-                <div className="sort-assist-tabs">
-                  {assistTabs.map(([key, label]) => (
-                    <button type="button" key={key} className={activeRightTab === key ? 'active' : ''} onClick={() => setActiveRightTab(key)}>{label}</button>
-                  ))}
-                </div>
-                <div className="sort-assist-content">
-                  {activeRightTab === 'keywords' && (
-                    <div className="sort-keyword-cloud">
-                      {suggestedKeywords.map((keyword) => (
-                        <button type="button" key={keyword} className={activeKeywords.includes(keyword) ? 'active' : ''} onClick={() => updateForm({ keywords: toggleKeyword(form.keywords, keyword) }, { preserveKeywords: true })}>{keyword}</button>
-                      ))}
-                      {suggestedKeywords.length === 0 && <span className="muted">填写位置/事项后会出现更多推荐关键词。</span>}
-                    </div>
-                  )}
-                  {activeRightTab === 'recent' && (
-                    <div className="sort-template-list">
-                      {recentRecords.map((record) => (
-                        <button type="button" className="sort-template-card" key={record.id} onClick={() => applyRecentRecord(record)}>
-                          <strong>{record.workContent || '最近归档记录'}</strong>
-                          <span>{record.project || '-'} / {record.location || '现场'}</span>
-                        </button>
-                      ))}
-                      {recentRecords.length === 0 && <span className="muted">暂无最近使用记录。</span>}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
         </aside>
       </div>
 

@@ -19,7 +19,7 @@ export default function PhotoGroupPanel({
     <section className="photo-group-panel">
       <header className="photo-group-panel-header">
         <div>
-          <p className="eyebrow">智能分组</p>
+          <p className="eyebrow">分组建议</p>
           <h3>{hasGenerated && isOpen ? '分组建议结果' : '按事项组辅助选择'}</h3>
         </div>
         <div className="photo-group-actions">
