@@ -27,9 +27,46 @@ export async function getRecognitionProviders() {
 export async function getRecognitionConfig() {
   try {
     const api = getRecognitionApi();
-    return api?.getConfig ? await api.getConfig() : { defaultMode: 'disabled', providerTypes: [] };
+    return api?.getConfig ? await api.getConfig() : createUnavailableConfig();
   } catch {
-    return { defaultMode: 'disabled', providerTypes: [] };
+    return createUnavailableConfig();
+  }
+}
+
+export async function getSafeRecognitionConfig() {
+  try {
+    const api = getRecognitionApi();
+    return api?.getSafeConfig ? await api.getSafeConfig() : createUnavailableConfig();
+  } catch {
+    return createUnavailableConfig();
+  }
+}
+
+export async function updateRecognitionConfig(patch = {}) {
+  try {
+    const api = getRecognitionApi();
+    if (!api?.updateConfig) return createUnavailableConfig(new Error('识别配置更新接口不可用。'));
+    return await api.updateConfig(patch);
+  } catch (error) {
+    return createUnavailableConfig(error);
+  }
+}
+
+export async function diagnoseRecognitionConfig() {
+  try {
+    const api = getRecognitionApi();
+    if (!api?.diagnoseConfig) {
+      return {
+        ...createUnavailableConfig(new Error('识别配置诊断接口不可用。')),
+        providers: {}
+      };
+    }
+    return await api.diagnoseConfig();
+  } catch (error) {
+    return {
+      ...createUnavailableConfig(error),
+      providers: {}
+    };
   }
 }
 
@@ -78,6 +115,19 @@ function createUnavailableStatus(error = null) {
     currentProcessing: '手动填写归档信息',
     providers: [],
     errors: error ? [{ code: 'recognition_client_error', message: error.message || '识别服务调用失败。' }] : []
+  };
+}
+
+function createUnavailableConfig(error = null) {
+  return {
+    success: false,
+    config: {
+      recognitionMode: 'disabled',
+      activeProviderId: '',
+      providers: {}
+    },
+    warnings: ['识别配置不可用，已使用安全默认配置。'],
+    errors: error ? [{ code: 'recognition_config_client_error', message: error.message || '识别配置调用失败。' }] : []
   };
 }
 

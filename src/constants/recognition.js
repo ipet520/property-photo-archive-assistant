@@ -2,12 +2,30 @@ export const RECOGNITION_PROVIDER_TYPES = ['local_ocr', 'cloud_ocr', 'cloud_ai',
 
 export const RECOGNITION_MODES = ['local', 'cloud', 'hybrid', 'manual', 'disabled'];
 
+export const RECOGNITION_CONFIG_SENSITIVE_FIELDS = [
+  'apiKey',
+  'secretKey',
+  'accessToken',
+  'refreshToken',
+  'authorization',
+  'password',
+  'token'
+];
+
 export const RECOGNITION_PROVIDER_STATUSES = [
   'available',
   'unavailable',
   'not_configured',
   'disabled',
+  'provider_unavailable',
   'error'
+];
+
+export const RECOGNITION_CONFIG_STATUSES = [
+  'configured',
+  'not_configured',
+  'disabled',
+  'invalid'
 ];
 
 export const RECOGNITION_RESULT_SOURCES = [

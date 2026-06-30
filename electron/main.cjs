@@ -14,6 +14,9 @@ const {
   getRecognitionConfig,
   getRecognitionProviders,
   getRecognitionStatus,
+  getSafeRecognitionConfig,
+  updateRecognitionConfig,
+  diagnoseRecognitionConfig,
   parseRecognitionText,
   recognizePhotos
 } = require('./services/recognitionService.cjs');
@@ -133,6 +136,21 @@ function createRecognitionErrorStatus(error = {}) {
     providers: [],
     errors: [{ code: 'recognition_ipc_error', message: error.message || '识别服务调用失败。' }],
     updatedAt: new Date().toISOString()
+  };
+}
+
+function createRecognitionConfigError(error = {}) {
+  return {
+    success: false,
+    config: {
+      recognitionMode: 'disabled',
+      activeProviderId: '',
+      providers: {}
+    },
+    providers: {},
+    warnings: ['识别配置服务调用失败，已返回安全兜底。'],
+    errors: [{ code: 'recognition_config_ipc_error', message: error.message || '识别配置服务调用失败。' }],
+    checkedAt: new Date().toISOString()
   };
 }
 
@@ -281,15 +299,24 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
-ipcMain.handle('recognition:getStatus', async () => safeRecognitionCall(() => getRecognitionStatus(), createRecognitionErrorStatus));
-ipcMain.handle('recognition:getProviders', async () => safeRecognitionCall(() => getRecognitionProviders(), () => []));
-ipcMain.handle('recognition:getConfig', async () => safeRecognitionCall(() => getRecognitionConfig(), () => ({ defaultMode: 'disabled', providerTypes: [] })));
+ipcMain.handle('recognition:getStatus', async () => safeRecognitionCall(() => getRecognitionStatus(app.getPath('userData')), createRecognitionErrorStatus));
+ipcMain.handle('recognition:getProviders', async () => safeRecognitionCall(() => getRecognitionProviders(app.getPath('userData')), () => []));
+ipcMain.handle('recognition:getConfig', async () => safeRecognitionCall(() => getRecognitionConfig(app.getPath('userData')), createRecognitionConfigError));
+ipcMain.handle('recognition:getSafeConfig', async () => safeRecognitionCall(() => getSafeRecognitionConfig(app.getPath('userData')), createRecognitionConfigError));
+ipcMain.handle('recognition:updateConfig', async (_event, patch) => safeRecognitionCall(
+  () => updateRecognitionConfig(app.getPath('userData'), patch),
+  createRecognitionConfigError
+));
+ipcMain.handle('recognition:diagnoseConfig', async () => safeRecognitionCall(
+  () => diagnoseRecognitionConfig(app.getPath('userData')),
+  createRecognitionConfigError
+));
 ipcMain.handle('recognition:parseText', async (_event, rawText, options) => safeRecognitionCall(
   () => parseRecognitionText(rawText, options),
   (error) => createRecognitionErrorResult(error, options)
 ));
 ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => safeRecognitionCall(
-  () => recognizePhotos(photos, options),
+  () => recognizePhotos(photos, { ...options, userDataDir: app.getPath('userData') }),
   (error) => (Array.isArray(photos) ? photos : []).map((photo) => createRecognitionErrorResult(error, { ...options, photo }))
 ));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));

@@ -27,7 +27,9 @@ function createProviderStatus(provider = {}, patch = {}) {
     message: patch.message || patch.reason || '',
     capabilities: Array.isArray(patch.capabilities) ? patch.capabilities : [],
     requiresUserConsent: Boolean(patch.requiresUserConsent),
-    config: patch.config || undefined
+    configStatus: patch.configStatus || undefined,
+    safeConfig: patch.safeConfig || undefined,
+    checkedAt: patch.checkedAt || new Date().toISOString()
   };
 }
 

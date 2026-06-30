@@ -1,4 +1,5 @@
 const { createProviderStatus, createUnavailableResult } = require('./providerUtils.cjs');
+const { getProviderConfigStatus, maskSensitiveConfig } = require('../recognitionConfigService.cjs');
 
 const LOCAL_PROVIDER = {
   id: 'local_ocr',
@@ -10,15 +11,22 @@ const LOCAL_PROVIDER = {
   status: 'not_configured',
   reason: '本地 OCR 引擎尚未接入。',
   capabilities: ['status_diagnose', 'placeholder_recognize'],
-  diagnose() {
+  diagnose(config = {}) {
+    const providerConfig = resolveProviderConfig(this, config);
+    const enabled = providerConfig.enabled === true;
+    const reason = enabled
+      ? '本地 OCR provider 已启用，但真实 OCR 引擎尚未接入。'
+      : '本地 OCR provider 未启用。';
     return createProviderStatus(this, {
-      enabled: false,
+      enabled,
       available: false,
-      status: 'not_configured',
-      reason: this.reason,
-      message: this.reason,
+      status: enabled ? 'provider_unavailable' : 'disabled',
+      reason,
+      message: reason,
       capabilities: this.capabilities,
-      requiresUserConsent: false
+      requiresUserConsent: false,
+      configStatus: getProviderConfigStatus(providerConfig),
+      safeConfig: maskSensitiveConfig(providerConfig)
     });
   },
   checkAvailability() {
@@ -39,8 +47,12 @@ const LOCAL_PROVIDER = {
     return this.recognize(photo);
   },
   async recognizePhotos(photos = []) {
-    return (Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo));
+    return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo)));
   }
 };
+
+function resolveProviderConfig(provider, config = {}) {
+  return config.providers?.[provider.id] || config[provider.id] || config || {};
+}
 
 module.exports = LOCAL_PROVIDER;

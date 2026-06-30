@@ -6,6 +6,12 @@ const {
   normalizeParsedFields,
   normalizeRecognitionResult
 } = require('./recognitionProviders/providerUtils.cjs');
+const {
+  diagnoseRecognitionConfig,
+  getSafeRecognitionConfig,
+  loadRecognitionConfig,
+  updateRecognitionConfig
+} = require('./recognitionConfigService.cjs');
 
 const providers = [localProvider, ...cloudProviders, manualProvider];
 
@@ -28,21 +34,37 @@ const RECOGNITION_CONFIG = {
   }
 };
 
-function getRecognitionStatus() {
+async function getRecognitionStatus(userDataDir) {
   try {
-    const providerStatuses = getRecognitionProviders();
+    const loaded = await loadRecognitionConfig(userDataDir);
+    const config = loaded.config;
+    const providerStatuses = await getRecognitionProviders(userDataDir, config);
+    const mode = config.recognitionMode || 'disabled';
+    const targetProvider = resolveStatusProvider(providerStatuses, config);
     const realEngineAvailable = providerStatuses.some((provider) => provider.available && provider.type !== 'manual');
-    const hasConfiguredProvider = providerStatuses.some((provider) => ['available', 'disabled', 'not_configured'].includes(provider.status));
+    const effectiveAvailable = mode === 'manual'
+      ? Boolean(targetProvider?.available)
+      : Boolean(targetProvider?.available && targetProvider.type !== 'manual');
+    const status = mode === 'disabled'
+      ? 'disabled'
+      : (targetProvider?.status || (realEngineAvailable ? 'available' : 'not_configured'));
+    const reason = mode === 'disabled'
+      ? '识别服务已禁用，当前保持手动填写归档信息流程。'
+      : (targetProvider?.reason || '识别 provider 尚未配置，当前保持手动填写归档信息流程。');
     return {
       success: true,
-      serviceStatus: hasConfiguredProvider ? 'available' : 'unavailable',
-      engineStatus: realEngineAvailable ? 'available' : 'not_configured',
-      currentMode: 'disabled',
-      status: realEngineAvailable ? 'available' : 'not_configured',
-      reason: realEngineAvailable ? '' : '识别引擎待配置，当前仅保留手动填写归档信息流程。',
-      message: '识别服务底座已接入，识别引擎待配置。',
+      serviceStatus: 'available',
+      engineStatus: effectiveAvailable ? 'available' : status,
+      currentMode: mode,
+      activeProviderId: config.activeProviderId || '',
+      status,
+      available: effectiveAvailable,
+      reason,
+      message: effectiveAvailable ? '识别 provider 可用。' : reason,
       currentProcessing: '手动填写归档信息',
       providers: providerStatuses,
+      warnings: loaded.warnings,
+      errors: loaded.errors,
       privacy: RECOGNITION_CONFIG.privacy,
       updatedAt: new Date().toISOString()
     };
@@ -51,12 +73,17 @@ function getRecognitionStatus() {
   }
 }
 
-function getRecognitionProviders() {
-  return providers.map((provider) => safeDiagnoseProvider(provider));
+async function getRecognitionProviders(userDataDir, loadedConfig = null) {
+  const config = loadedConfig || (await loadRecognitionConfig(userDataDir)).config;
+  return providers.map((provider) => safeDiagnoseProvider(provider, config));
 }
 
-function getRecognitionConfig() {
-  return { ...RECOGNITION_CONFIG };
+async function getRecognitionConfig(userDataDir) {
+  const safeConfig = await getSafeRecognitionConfig(userDataDir);
+  return {
+    ...safeConfig,
+    defaults: { ...RECOGNITION_CONFIG }
+  };
 }
 
 async function recognizePhoto(photo = {}, options = {}) {
@@ -67,11 +94,12 @@ async function recognizePhotos(photos = [], options = {}) {
   try {
     const safePhotos = Array.isArray(photos) ? photos : [];
     if (safePhotos.length === 0) return [];
-    const provider = resolveProvider(options);
+    const loaded = options.userDataDir ? await loadRecognitionConfig(options.userDataDir) : null;
+    const provider = resolveProvider(options, loaded?.config);
     if (!provider || provider.id === 'manual') {
       return safePhotos.map((photo) => createProviderUnavailableResult(photo, options));
     }
-    const status = safeDiagnoseProvider(provider);
+    const status = safeDiagnoseProvider(provider, loaded?.config || {});
     if (!status.available) {
       return safePhotos.map((photo) => createProviderUnavailableResult(photo, {
         ...options,
@@ -136,17 +164,33 @@ function parseRecognitionText(rawText = '', options = {}) {
   }
 }
 
-function resolveProvider(options = {}) {
+function resolveProvider(options = {}, config = {}) {
   const providerId = options.providerId || '';
   const mode = options.mode || '';
-  return providers.find((provider) => provider.id === providerId)
-    || providers.find((provider) => provider.type === providerId)
-    || providers.find((provider) => provider.mode === mode && provider.mode !== 'manual')
-    || providers.find((provider) => provider.type === mode && provider.type !== 'manual')
+  const activeProviderId = providerId || config.activeProviderId || '';
+  const activeMode = mode || config.recognitionMode || '';
+  return providers.find((provider) => provider.id === activeProviderId)
+    || providers.find((provider) => provider.type === activeProviderId)
+    || providers.find((provider) => provider.mode === activeMode && provider.mode !== 'manual')
+    || providers.find((provider) => provider.type === activeMode && provider.type !== 'manual')
     || null;
 }
 
-function safeDiagnoseProvider(provider) {
+function resolveStatusProvider(providerStatuses = [], config = {}) {
+  const mode = config.recognitionMode || 'disabled';
+  if (mode === 'disabled') return null;
+  if (config.activeProviderId) {
+    return providerStatuses.find((provider) => provider.providerId === config.activeProviderId || provider.id === config.activeProviderId) || null;
+  }
+  if (mode === 'hybrid') {
+    return providerStatuses.find((provider) => provider.type !== 'manual' && provider.available)
+      || providerStatuses.find((provider) => provider.type !== 'manual')
+      || null;
+  }
+  return providerStatuses.find((provider) => provider.mode === mode || provider.type === mode || provider.providerId === mode) || null;
+}
+
+function safeDiagnoseProvider(provider, config = {}) {
   try {
     const diagnose = provider.diagnose || provider.checkAvailability || provider.getStatus;
     if (typeof diagnose !== 'function') throw new Error('Provider 未实现 diagnose/checkAvailability。');
@@ -161,7 +205,7 @@ function safeDiagnoseProvider(provider) {
       status: provider.status || 'unavailable',
       reason: provider.reason || '',
       capabilities: Array.isArray(provider.capabilities) ? provider.capabilities : [],
-      ...diagnose.call(provider)
+      ...diagnose.call(provider, config)
     };
   } catch (error) {
     return {
@@ -175,6 +219,7 @@ function safeDiagnoseProvider(provider) {
       reason: error.message || '识别 provider 状态读取失败。',
       message: '识别 provider 状态读取失败。',
       capabilities: [],
+      checkedAt: new Date().toISOString(),
       errors: [{ code: 'provider_status_error', message: error.message || 'provider 状态异常。' }]
     };
   }
@@ -291,6 +336,9 @@ module.exports = {
   getRecognitionStatus,
   getRecognitionProviders,
   getRecognitionConfig,
+  getSafeRecognitionConfig,
+  updateRecognitionConfig,
+  diagnoseRecognitionConfig,
   recognizePhoto,
   recognizePhotos,
   parseRecognitionText,

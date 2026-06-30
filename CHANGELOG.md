@@ -1,5 +1,15 @@
 # 更新记录
 
+## V2.8.2 识别服务配置底座版
+
+- 新增识别服务配置底座，配置文件保存到 Electron `userData` 目录，不写入源码目录。
+- 新增识别配置读取、更新、脱敏读取和诊断能力，支持 disabled / manual / local / cloud / hybrid 模式和 provider 配置。
+- provider 诊断结果补充配置状态，明确 endpoint、apiKey、model、启用状态和缺失字段。
+- 统一本地 OCR、联网 OCR、云端 AI 和人工校正 provider 的配置诊断接口；未配置或不可用时返回明确状态，不影响主程序启动。
+- API Key、token、password 等敏感字段只返回脱敏值，不在前端暴露明文。
+- 新增识别配置 IPC 与前端 client 容错，识别配置不可用时返回安全默认值。
+- 当前版本仍不接真实云 API、不上传照片、不返回假 OCR / 假 AI 结果、不自动归档、不修改 Excel 台账结构。
+
 ## V2.8.1 识别服务底座完善版
 
 - 完善识别服务状态诊断，未配置 provider、provider 不可用或 provider 初始化失败时返回明确状态与原因，不影响主程序启动。

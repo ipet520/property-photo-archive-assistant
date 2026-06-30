@@ -1,4 +1,5 @@
 const { createProviderStatus, createUnavailableResult } = require('./providerUtils.cjs');
+const { getProviderConfigStatus, maskSensitiveConfig } = require('../recognitionConfigService.cjs');
 
 function createCloudProvider({ id, name, type }) {
   return {
@@ -18,16 +19,28 @@ function createCloudProvider({ id, name, type }) {
       enabled: false,
       requiresUserConsent: true
     },
-    diagnose() {
+    diagnose(config = {}) {
+      const providerConfig = resolveProviderConfig(this, config);
+      const configStatus = getProviderConfigStatus(providerConfig);
+      const enabled = providerConfig.enabled === true;
+      const missingFields = configStatus.missingFields || [];
+      const isConfigured = missingFields.length === 0 && configStatus.hasEndpoint && configStatus.hasApiKey;
+      const status = !enabled ? 'disabled' : (isConfigured ? 'provider_unavailable' : 'not_configured');
+      const reason = !enabled
+        ? '联网识别 provider 未启用，当前不会上传照片或调用远程服务。'
+        : (isConfigured
+          ? '联网识别 provider 已配置但当前版本仅做配置诊断，不发起真实远程请求。'
+          : `联网识别 provider 缺少配置项：${missingFields.join('、') || 'endpoint、apiKey'}。`);
       return createProviderStatus(this, {
-        enabled: false,
+        enabled,
         available: false,
-        status: 'disabled',
-        reason: this.reason,
-        message: this.reason,
+        status,
+        reason,
+        message: reason,
         capabilities: this.capabilities,
         requiresUserConsent: true,
-        config: this.config
+        configStatus,
+        safeConfig: maskSensitiveConfig(providerConfig)
       });
     },
     checkAvailability() {
@@ -48,9 +61,13 @@ function createCloudProvider({ id, name, type }) {
       return this.recognize(photo);
     },
     async recognizePhotos(photos = []) {
-      return (Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo));
+      return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo)));
     }
   };
+}
+
+function resolveProviderConfig(provider, config = {}) {
+  return config.providers?.[provider.id] || config[provider.id] || config || {};
 }
 
 module.exports = [

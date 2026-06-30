@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     getStatus: () => ipcRenderer.invoke('recognition:getStatus'),
     getProviders: () => ipcRenderer.invoke('recognition:getProviders'),
     getConfig: () => ipcRenderer.invoke('recognition:getConfig'),
+    getSafeConfig: () => ipcRenderer.invoke('recognition:getSafeConfig'),
+    updateConfig: (patch) => ipcRenderer.invoke('recognition:updateConfig', patch),
+    diagnoseConfig: () => ipcRenderer.invoke('recognition:diagnoseConfig'),
     parseText: (rawText, options) => ipcRenderer.invoke('recognition:parseText', rawText, options),
     recognizePhotos: (photos, options) => ipcRenderer.invoke('recognition:recognizePhotos', photos, options)
   },
