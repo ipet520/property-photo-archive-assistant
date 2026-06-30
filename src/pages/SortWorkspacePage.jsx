@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import PhotoGroupPanel from '../components/PhotoGroupPanel.jsx';
 import SuggestionPanel from '../components/SuggestionPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import QuickArchivePage from './QuickArchivePage.jsx';
 import { buildArchiveSuggestion, filterEmptyPatch, suggestionToFormPatch } from '../utils/archiveSuggestionRules.js';
 import { formatFileSize, getSuggestedKeywords, splitKeywords, toggleKeyword } from '../utils/formatters.js';
+import { buildPhotoGroups, buildUngroupedGroup, createManualGroup } from '../utils/photoGroupingRules.js';
 import { loadRecentRecords } from '../utils/recentRecords.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
@@ -103,6 +105,8 @@ export default function SortWorkspacePage({ archiveState }) {
   const [pageSize, setPageSize] = useState(50);
   const [archiveSuggestion, setArchiveSuggestion] = useState(null);
   const [ignoredSuggestionKey, setIgnoredSuggestionKey] = useState('');
+  const [photoGroups, setPhotoGroups] = useState([]);
+  const [hasGeneratedGroups, setHasGeneratedGroups] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -324,6 +328,18 @@ export default function SortWorkspacePage({ archiveState }) {
     }, configs || {});
   }
 
+  function getGroupingContext(extra = {}) {
+    const sceneItem = sceneFilters.find((item) => item.key === activeGroup && item.scene);
+    return {
+      form,
+      configs,
+      scene: extra.scene || sceneItem?.scene || null,
+      activeSceneTitle,
+      historyRecords: recentRecords,
+      selectedIds
+    };
+  }
+
   function applyArchiveSuggestion(options = {}) {
     if (!archiveSuggestion || archiveSuggestion.isEmpty) return;
     const patch = suggestionToFormPatch(archiveSuggestion, 'sort');
@@ -405,6 +421,8 @@ export default function SortWorkspacePage({ archiveState }) {
       setPage(1);
       setFilter('all');
       setActiveGroup('all');
+      setPhotoGroups([]);
+      setHasGeneratedGroups(false);
       setEditingPhotoId('');
       markChanged();
       setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张照片。` });
@@ -431,6 +449,8 @@ export default function SortWorkspacePage({ archiveState }) {
     setSelectedIds([]);
     setPage(1);
     setActiveGroup('all');
+    setPhotoGroups([]);
+    setHasGeneratedGroups(false);
     setEditingPhotoId('');
     clearSessionPhotoFolder();
     markChanged();
@@ -455,6 +475,102 @@ export default function SortWorkspacePage({ archiveState }) {
 
   function selectCurrentPage() {
     setSelectedIds((current) => Array.from(new Set([...current, ...pagePhotos.map((photo) => photo.id)])));
+  }
+
+  function generateSmartGroups() {
+    try {
+      if (photos.length === 0) {
+        setStatus({ type: 'idle', text: '当前暂无待分拣照片。请先选择照片目录并扫描照片。' });
+        return;
+      }
+      const groups = buildPhotoGroups(visiblePhotos.length ? visiblePhotos : photos, getGroupingContext());
+      setPhotoGroups(groups);
+      setHasGeneratedGroups(true);
+      setStatus({
+        type: groups.length ? 'success' : 'warning',
+        text: groups.length
+          ? `已生成 ${groups.length} 个智能分组。分组仅用于辅助确认，不会自动归档或写入台账。`
+          : '当前照片缺少足够信息，暂未形成明确分组。您仍可手动选择照片进行归档。'
+      });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '生成智能分组', errorType: '生成智能分组失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `生成智能分组失败：${error.message}` });
+    }
+  }
+
+  function clearSmartGroups() {
+    try {
+      setPhotoGroups([]);
+      setHasGeneratedGroups(false);
+      setStatus({ type: 'success', text: '已清除当前页面智能分组，照片和归档信息未被修改。' });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '清除分组', errorType: '清除分组失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `清除分组失败：${error.message}` });
+    }
+  }
+
+  function selectPhotoGroup(group) {
+    setSelectedIds(group.photoIds);
+    setArchiveSuggestion(group.suggestion);
+    setIgnoredSuggestionKey('');
+    setStatus({ type: 'success', text: `已选择“${group.name}”中的 ${group.photoIds.length} 张照片，请核对右侧建议后再应用。` });
+  }
+
+  function applyGroupSuggestion(group) {
+    try {
+      setArchiveSuggestion(group.suggestion);
+      setIgnoredSuggestionKey('');
+      setStatus({ type: 'success', text: `已载入“${group.name}”的归档建议，请点击“应用建议”或“只填空字段”确认。` });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '应用分组建议', errorType: '应用分组建议失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `应用分组建议失败：${error.message}` });
+    }
+  }
+
+  function removeSelectedFromGroup(group) {
+    try {
+      const selectedSet = new Set(selectedIds);
+      const moving = group.photos.filter((photo) => selectedSet.has(photo.id));
+      if (moving.length === 0) return;
+      const remaining = group.photos.filter((photo) => !selectedSet.has(photo.id));
+      setPhotoGroups((current) => rebuildGroupsAfterMove(current, group.id, remaining, moving, getGroupingContext()));
+      setSelectedIds([]);
+      setStatus({ type: 'success', text: `已将 ${moving.length} 张照片移入未分组照片。原图未受影响。` });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '移除分组照片', errorType: '移除分组照片失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `移除分组照片失败：${error.message}` });
+    }
+  }
+
+  function splitSelectedToNewGroup(group) {
+    try {
+      const selectedSet = new Set(selectedIds);
+      const moving = group.photos.filter((photo) => selectedSet.has(photo.id));
+      if (moving.length === 0) return;
+      const remaining = group.photos.filter((photo) => !selectedSet.has(photo.id));
+      setPhotoGroups((current) => {
+        const next = current
+          .filter((item) => item.id !== group.id)
+          .concat(remaining.length ? [createManualGroup(remaining, current.length, getGroupingContext(), group.name)] : []);
+        next.push(createManualGroup(moving, next.length, getGroupingContext(), `拆分组 ${next.length + 1}`));
+        return next;
+      });
+      setSelectedIds(moving.map((photo) => photo.id));
+      setStatus({ type: 'success', text: `已将 ${moving.length} 张照片拆分为新组，请人工确认。` });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '拆分分组', errorType: '拆分分组失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `拆分分组失败：${error.message}` });
+    }
+  }
+
+  function ignorePhotoGroup(group) {
+    try {
+      setPhotoGroups((current) => rebuildGroupsAfterMove(current, group.id, [], group.photos, getGroupingContext()));
+      setStatus({ type: 'success', text: `已忽略“${group.name}”，相关照片已归入未分组照片，原图未受影响。` });
+    } catch (error) {
+      recordRuntimeLog({ page: '照片分拣工作台', operation: '忽略分组', errorType: '清除分组失败', summary: error.message, error });
+      setStatus({ type: 'error', text: `忽略分组失败：${error.message}` });
+    }
   }
 
   function invertCurrentPage() {
@@ -602,6 +718,9 @@ export default function SortWorkspacePage({ archiveState }) {
     const matchedCount = photos.filter((photo) => matchesSceneFilter(photo, item.key)).length;
     if (item.scene) {
       applyScene(item.scene);
+    }
+    if (hasGeneratedGroups) {
+      setPhotoGroups(buildPhotoGroups(photos.filter((photo) => item.key === 'all' || matchesSceneFilter(photo, item.key)), getGroupingContext({ scene: item.scene })));
     }
     setStatus({
       type: matchedCount > 0 ? 'idle' : 'warning',
@@ -950,6 +1069,20 @@ export default function SortWorkspacePage({ archiveState }) {
             <span className="sort-selected-count">已选 <strong>{selectedIds.length}</strong> 张</span>
           </div>
 
+          <PhotoGroupPanel
+            photos={visiblePhotos.length ? visiblePhotos : photos}
+            groups={photoGroups}
+            selectedIds={selectedIds}
+            hasGenerated={hasGeneratedGroups}
+            onGenerate={generateSmartGroups}
+            onClear={clearSmartGroups}
+            onSelectGroup={selectPhotoGroup}
+            onApplySuggestion={applyGroupSuggestion}
+            onRemoveSelected={removeSelectedFromGroup}
+            onSplitSelected={splitSelectedToNewGroup}
+            onIgnoreGroup={ignorePhotoGroup}
+          />
+
           <div className={`sort-photo-browser ${viewMode} thumb-standard`}>
             {pagePhotos.length === 0 ? (
               <div className="sort-empty-state">
@@ -1252,6 +1385,20 @@ function getSuggestionKey(suggestion) {
     suggestion.itemName,
     suggestion.location || suggestion.locationPlaceholder
   ].filter(Boolean).join('|');
+}
+
+function rebuildGroupsAfterMove(currentGroups, targetGroupId, remainingPhotos, movingPhotos, context) {
+  const next = currentGroups
+    .filter((group) => group.id !== targetGroupId && group.confidence !== 'ungrouped')
+    .concat(remainingPhotos.length ? [createManualGroup(remainingPhotos, currentGroups.length, context)] : []);
+  const existingUngrouped = currentGroups
+    .filter((group) => group.id !== targetGroupId && group.confidence === 'ungrouped')
+    .flatMap((group) => group.photos);
+  const ungroupedPhotos = [...existingUngrouped, ...movingPhotos];
+  if (ungroupedPhotos.length > 0) {
+    next.push(buildUngroupedGroup(ungroupedPhotos, next.length, context));
+  }
+  return next;
 }
 
 function validateSortForm(form) {

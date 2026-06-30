@@ -10,6 +10,7 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
   const workContent = clean(input.workContent || input.workItem || scene?.workContent);
   const history = buildHistoryHint(input.historyRecords || [], { ...input, watermarkCategory: category, workContent });
   const currentSources = [];
+  const extraSources = Array.isArray(input.extraSources) ? input.extraSources : [];
   if (scene?.title) currentSources.push('常用场景');
   if (input.watermarkCategory || input.workContent || input.workItem) currentSources.push('用户当前输入');
 
@@ -20,6 +21,7 @@ export function buildArchiveSuggestion(input = {}, configs = {}) {
   const direction = findDirection(category, workContent);
   const isParkingOccupation = category.includes('机动车违规管理') && workContent.includes('占用') && workContent.includes('车位');
   const sources = unique([
+    ...extraSources,
     ...currentSources,
     category && '分类规则',
     workContent && '工作内容规则',
