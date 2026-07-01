@@ -19,7 +19,15 @@ const {
   diagnoseRecognitionConfig,
   parseRecognitionText,
   recognizePhoto,
-  recognizePhotos
+  recognizePhotos,
+  getStagedRecognitionResult,
+  getStagedRecognitionResultByTaskId,
+  getStagedRecognitionResultByPhoto,
+  listStagedRecognitionResults,
+  updateStagedRecognitionStatus,
+  clearStagedRecognitionResult,
+  clearStagedRecognitionResultsByPhoto,
+  clearAllStagedRecognitionResults
 } = require('./services/recognitionService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
 const {
@@ -325,6 +333,38 @@ ipcMain.handle('recognition:recognizePhoto', async (_event, photo, options) => s
 ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => safeRecognitionCall(
   () => recognizePhotos(photos, { ...options, userDataDir: app.getPath('userData') }),
   (error) => (Array.isArray(photos) ? photos : []).map((photo) => createRecognitionErrorResult(error, { ...options, photo }))
+));
+ipcMain.handle('recognition:getStagedResult', async (_event, id) => safeRecognitionCall(
+  () => getStagedRecognitionResult(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('recognition:getStagedResultByTaskId', async (_event, taskId) => safeRecognitionCall(
+  () => getStagedRecognitionResultByTaskId(app.getPath('userData'), taskId),
+  () => null
+));
+ipcMain.handle('recognition:getStagedResultByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => getStagedRecognitionResultByPhoto(app.getPath('userData'), photoInput),
+  () => null
+));
+ipcMain.handle('recognition:listStagedResults', async (_event, options) => safeRecognitionCall(
+  () => listStagedRecognitionResults(app.getPath('userData'), options),
+  () => []
+));
+ipcMain.handle('recognition:updateStagedResultStatus', async (_event, id, stageStatus) => safeRecognitionCall(
+  () => updateStagedRecognitionStatus(app.getPath('userData'), id, stageStatus),
+  () => null
+));
+ipcMain.handle('recognition:clearStagedResult', async (_event, id) => safeRecognitionCall(
+  () => clearStagedRecognitionResult(app.getPath('userData'), id),
+  () => false
+));
+ipcMain.handle('recognition:clearStagedResultsByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => clearStagedRecognitionResultsByPhoto(app.getPath('userData'), photoInput),
+  () => 0
+));
+ipcMain.handle('recognition:clearAllStagedResults', async () => safeRecognitionCall(
+  () => clearAllStagedRecognitionResults(app.getPath('userData')),
+  () => 0
 ));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));

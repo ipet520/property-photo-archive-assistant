@@ -12,6 +12,17 @@ const {
   loadRecognitionConfig,
   updateRecognitionConfig
 } = require('./recognitionConfigService.cjs');
+const {
+  clearAllStagedRecognitionResults,
+  clearStagedRecognitionResult,
+  clearStagedRecognitionResultsByPhoto,
+  getStagedRecognitionResult,
+  getStagedRecognitionResultByPhoto,
+  getStagedRecognitionResultByTaskId,
+  listStagedRecognitionResults,
+  stageRecognitionResult,
+  updateStagedRecognitionStatus
+} = require('./recognitionStagingService.cjs');
 
 const providers = [localProvider, ...cloudProviders, manualProvider];
 
@@ -104,7 +115,8 @@ async function recognizePhotos(photos = [], options = {}) {
         providerId: options.providerId || loaded.config.activeProviderId || '',
         providerType: options.providerType || ''
       });
-      results.push(await runRecognitionTask(task, photo, loaded.config, options, loaded));
+      const recognitionResult = await runRecognitionTask(task, photo, loaded.config, options, loaded);
+      results.push(await attachStagedResult(recognitionResult, options));
     }
     return results;
   } catch (error) {
@@ -113,6 +125,44 @@ async function recognizePhotos(photos = [], options = {}) {
       errors: [{ code: 'recognition_failed', message: error.message || '识别调用失败。' }],
       warnings: ['识别调用失败，未修改照片或台账。']
     }));
+  }
+}
+
+async function attachStagedResult(recognitionResult = {}, options = {}) {
+  if (!options.userDataDir) return recognitionResult;
+  try {
+    const stagedResult = await stageRecognitionResult(options.userDataDir, recognitionResult);
+    if (!stagedResult) {
+      return {
+        ...recognitionResult,
+        warnings: [
+          ...(recognitionResult.warnings || []),
+          '识别结果暂存失败，但识别结果已安全返回，未修改照片、表单或台账。'
+        ],
+        stagingError: {
+          code: 'recognition_staging_failed',
+          message: '识别结果暂存失败。'
+        }
+      };
+    }
+    return {
+      ...recognitionResult,
+      stagedResultId: stagedResult.id,
+      stageStatus: stagedResult.stageStatus,
+      stagedResult
+    };
+  } catch (error) {
+    return {
+      ...recognitionResult,
+      warnings: [
+        ...(recognitionResult.warnings || []),
+        '识别结果暂存异常，但识别结果已安全返回，未修改照片、表单或台账。'
+      ],
+      stagingError: {
+        code: 'recognition_staging_error',
+        message: error.message || '识别结果暂存异常。'
+      }
+    };
   }
 }
 
@@ -525,6 +575,15 @@ module.exports = {
   getSafeRecognitionConfig,
   updateRecognitionConfig,
   diagnoseRecognitionConfig,
+  stageRecognitionResult,
+  getStagedRecognitionResult,
+  getStagedRecognitionResultByTaskId,
+  getStagedRecognitionResultByPhoto,
+  listStagedRecognitionResults,
+  updateStagedRecognitionStatus,
+  clearStagedRecognitionResult,
+  clearStagedRecognitionResultsByPhoto,
+  clearAllStagedRecognitionResults,
   createRecognitionTask,
   selectProvider,
   recognizePhoto,

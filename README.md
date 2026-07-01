@@ -1,5 +1,17 @@
 # 物业工作照片归档助手
 
+## V2.8.5 识别结果暂存与人工确认预备版
+
+V2.8.5 在 V2.8.4 识别执行管线基础上，新增 RecognitionStagedResult 识别结果暂存结构和识别结果暂存服务。识别管线返回的 RecognitionResult 可以安全写入 Electron `userData/recognition-staged-results.json`，并支持按任务、照片、文件路径进行查询、状态更新和清除。
+
+本版重点：
+
+- 新增 RecognitionStagedResult 结构，记录 taskId、photoId、filePath、fileName、provider、识别状态、暂存状态、rawText、parsedFields、proposedFields、warnings、errors 和时间信息。
+- 新增识别结果暂存服务，支持按 id、taskId、photoId / filePath 查询，支持列出、更新状态、清除单条、按照片清除和清除全部暂存结果。
+- `recognizePhoto` / `recognizePhotos` 在返回 RecognitionResult 后会尝试写入暂存层，并附带 `stagedResultId` 与 `stageStatus` 便于后续人工确认流程关联。
+- 暂存结果与用户归档字段完全隔离：不写入当前归档表单、不覆盖用户字段、不触发应用信息、不自动预览、不自动归档、不写入 Excel 台账。
+- 本版本不接真实 OCR、不接云 API、不接 AI 识别、不上传照片、不保存图片 base64、不复制或移动照片，也不新增识别 UI、开始识别按钮或人工确认弹窗。
+
 ## V2.8.4 识别执行管线预备版
 
 V2.8.4 在 V2.8.3 识别服务配置入口基础上，新增内部识别执行管线预备能力：可以创建识别任务、读取识别配置、选择 provider，并返回统一的 RecognitionResult 结构。本版仍不接真实 OCR / 云识别 / AI 识别接口，不新增识别执行按钮，不上传照片，不自动生成归档建议，也不自动归档。

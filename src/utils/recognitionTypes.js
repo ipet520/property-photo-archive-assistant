@@ -5,6 +5,7 @@ import {
   RECOGNITION_PROVIDER_TYPES as PROVIDER_TYPES,
   RECOGNITION_RESULT_SOURCES,
   RECOGNITION_RESULT_STATUSES,
+  RECOGNITION_STAGE_STATUSES,
   RECOGNITION_TASK_STATUSES
 } from '../constants/recognition.js';
 
@@ -17,6 +18,8 @@ export const RECOGNITION_STATUSES = RECOGNITION_RESULT_STATUSES;
 export const RECOGNITION_PROVIDER_STATUS = RECOGNITION_PROVIDER_STATUSES;
 
 export const RECOGNITION_TASK_STATUS = RECOGNITION_TASK_STATUSES;
+
+export const RECOGNITION_STAGE_STATUS = RECOGNITION_STAGE_STATUSES;
 
 export const RECOGNITION_PROVIDERS = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual'];
 
@@ -52,7 +55,11 @@ export function createEmptyRecognitionResult(photo = {}) {
     fields: parsedFields,
     errorCode: '',
     errorMessage: '',
-    updatedAt: ''
+    updatedAt: '',
+    stagedResultId: '',
+    stageStatus: '',
+    stagedResult: undefined,
+    stagingError: undefined
   };
 }
 
@@ -101,7 +108,40 @@ export function normalizeRecognitionResult(result = {}) {
     errorCode: errors[0]?.code || result.errorCode || '',
     errorMessage: errors[0]?.message || result.errorMessage || '',
     updatedAt: createdAt,
-    task: result.task && typeof result.task === 'object' ? result.task : undefined
+    task: result.task && typeof result.task === 'object' ? result.task : undefined,
+    stagedResultId: String(result.stagedResultId || ''),
+    stageStatus: String(result.stageStatus || ''),
+    stagedResult: result.stagedResult && typeof result.stagedResult === 'object' ? normalizeRecognitionStagedResult(result.stagedResult) : undefined,
+    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined
+  };
+}
+
+export function normalizeRecognitionStagedResult(result = {}) {
+  const createdAt = String(result.createdAt || new Date().toISOString());
+  return {
+    id: String(result.id || ''),
+    taskId: String(result.taskId || ''),
+    photoId: String(result.photoId || ''),
+    filePath: String(result.filePath || ''),
+    fileName: String(result.fileName || ''),
+    providerId: String(result.providerId || ''),
+    providerKey: String(result.providerKey || result.providerId || ''),
+    providerType: String(result.providerType || ''),
+    recognitionStatus: String(result.recognitionStatus || result.status || 'pending'),
+    stageStatus: normalizeStageStatus(result.stageStatus),
+    rawText: String(result.rawText || ''),
+    parsedFields: normalizePlainObject(result.parsedFields),
+    proposedFields: normalizePlainObject(result.proposedFields),
+    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    warnings: normalizeStringArray(result.warnings),
+    errors: normalizeErrors(result.errors),
+    message: String(result.message || ''),
+    source: 'recognition_pipeline',
+    createdAt,
+    updatedAt: String(result.updatedAt || createdAt),
+    reviewedAt: String(result.reviewedAt || ''),
+    clearedAt: String(result.clearedAt || ''),
+    schemaVersion: 1
   };
 }
 
@@ -171,4 +211,18 @@ function nullableString(value) {
 
 function cleanText(value) {
   return String(value || '').replace(/\r/g, '\n').replace(/[ \t]+/g, ' ').trim();
+}
+
+function normalizeStageStatus(value = '') {
+  const stageStatus = String(value || '').trim();
+  return RECOGNITION_STAGE_STATUSES.includes(stageStatus) ? stageStatus : 'staged';
+}
+
+function normalizePlainObject(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return {};
+  }
 }

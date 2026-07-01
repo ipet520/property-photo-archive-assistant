@@ -13,7 +13,15 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     diagnoseConfig: () => ipcRenderer.invoke('recognition:diagnoseConfig'),
     parseText: (rawText, options) => ipcRenderer.invoke('recognition:parseText', rawText, options),
     recognizePhoto: (photo, options) => ipcRenderer.invoke('recognition:recognizePhoto', photo, options),
-    recognizePhotos: (photos, options) => ipcRenderer.invoke('recognition:recognizePhotos', photos, options)
+    recognizePhotos: (photos, options) => ipcRenderer.invoke('recognition:recognizePhotos', photos, options),
+    getStagedResult: (id) => ipcRenderer.invoke('recognition:getStagedResult', id),
+    getStagedResultByTaskId: (taskId) => ipcRenderer.invoke('recognition:getStagedResultByTaskId', taskId),
+    getStagedResultByPhoto: (photoInput) => ipcRenderer.invoke('recognition:getStagedResultByPhoto', photoInput),
+    listStagedResults: (options) => ipcRenderer.invoke('recognition:listStagedResults', options),
+    updateStagedResultStatus: (id, stageStatus) => ipcRenderer.invoke('recognition:updateStagedResultStatus', id, stageStatus),
+    clearStagedResult: (id) => ipcRenderer.invoke('recognition:clearStagedResult', id),
+    clearStagedResultsByPhoto: (photoInput) => ipcRenderer.invoke('recognition:clearStagedResultsByPhoto', photoInput),
+    clearAllStagedResults: () => ipcRenderer.invoke('recognition:clearAllStagedResults')
   },
   loadConfigs: () => ipcRenderer.invoke('configs:load'),
   loadUserConfigs: () => ipcRenderer.invoke('configs:loadUserConfigs'),

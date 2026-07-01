@@ -1,5 +1,5 @@
 import { parseRecognitionText as parseLocally } from './recognitionResultParser.js';
-import { normalizeRecognitionResult } from './recognitionTypes.js';
+import { normalizeRecognitionResult, normalizeRecognitionStagedResult } from './recognitionTypes.js';
 
 function getRecognitionApi() {
   return window.archiveAssistant?.recognition || null;
@@ -113,6 +113,85 @@ export async function parseRecognitionText(rawText = '', options = {}) {
       errors: [{ code: 'parse_failed', message: error.message || '识别文本解析失败。' }],
       createdAt: new Date().toISOString()
     });
+  }
+}
+
+export async function getStagedResult(id = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getStagedResult ? await api.getStagedResult(id) : null;
+    return result ? normalizeRecognitionStagedResult(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getStagedResultByTaskId(taskId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getStagedResultByTaskId ? await api.getStagedResultByTaskId(taskId) : null;
+    return result ? normalizeRecognitionStagedResult(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getStagedResultByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getStagedResultByPhoto ? await api.getStagedResultByPhoto(photoInput) : null;
+    return result ? normalizeRecognitionStagedResult(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listStagedResults(options = {}) {
+  try {
+    const api = getRecognitionApi();
+    const results = api?.listStagedResults ? await api.listStagedResults(options) : [];
+    return (Array.isArray(results) ? results : []).map(normalizeRecognitionStagedResult);
+  } catch {
+    return [];
+  }
+}
+
+export async function updateStagedResultStatus(id = '', stageStatus = 'staged') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.updateStagedResultStatus ? await api.updateStagedResultStatus(id, stageStatus) : null;
+    return result ? normalizeRecognitionStagedResult(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearStagedResult(id = '') {
+  try {
+    const api = getRecognitionApi();
+    return api?.clearStagedResult ? Boolean(await api.clearStagedResult(id)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearStagedResultsByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearStagedResultsByPhoto ? await api.clearStagedResultsByPhoto(photoInput) : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAllStagedResults() {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearAllStagedResults ? await api.clearAllStagedResults() : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
   }
 }
 

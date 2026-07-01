@@ -78,7 +78,11 @@ function normalizeRecognitionResult(result = {}) {
     errorCode: errors[0]?.code || '',
     errorMessage: errors[0]?.message || '',
     updatedAt: createdAt,
-    task: result.task && typeof result.task === 'object' ? result.task : undefined
+    task: result.task && typeof result.task === 'object' ? result.task : undefined,
+    stagedResultId: String(result.stagedResultId || ''),
+    stageStatus: String(result.stageStatus || ''),
+    stagedResult: result.stagedResult && typeof result.stagedResult === 'object' ? result.stagedResult : undefined,
+    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined
   };
 }
 

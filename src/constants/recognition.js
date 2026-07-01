@@ -69,6 +69,17 @@ export const RECOGNITION_TASK_STATUSES = [
   'no_input'
 ];
 
+export const RECOGNITION_STAGE_STATUS = {
+  STAGED: 'staged',
+  PENDING_REVIEW: 'pending_review',
+  REVIEWED: 'reviewed',
+  DISMISSED: 'dismissed',
+  CLEARED: 'cleared',
+  EXPIRED: 'expired'
+};
+
+export const RECOGNITION_STAGE_STATUSES = Object.values(RECOGNITION_STAGE_STATUS);
+
 export const RECOGNITION_PRIVACY_POLICY = {
   uploadsPhotos: false,
   callsRemoteService: false,

@@ -1,5 +1,15 @@
 # 更新记录
 
+## V2.8.5 识别结果暂存与人工确认预备版
+
+- 新增 RecognitionStagedResult 识别结果暂存结构，为后续人工确认识别结果预留数据模型。
+- 新增 `recognitionStagingService`，将识别结果暂存到 Electron `userData/recognition-staged-results.json`，不写入源码目录。
+- 支持按 id、taskId、photoId / filePath 查询暂存结果，支持列出暂存结果、更新暂存状态、清除指定结果、按照片清除和清除全部暂存结果。
+- `recognizePhoto` / `recognizePhotos` 在返回 RecognitionResult 后会尝试生成暂存结果；暂存失败只追加 warning，不影响识别结果返回和手工归档流程。
+- 新增识别暂存 IPC 与前端 recognitionClient 安全方法，Electron 不可用或暂存异常时返回 null / [] / false 等安全值。
+- 暂存结果与归档表单、预览归档、确认归档和 Excel 台账完全隔离，不自动应用字段、不覆盖用户输入、不自动预览、不自动归档、不写 Excel。
+- 当前版本仍不接真实 OCR / 云 API / AI 识别，不上传照片，不保存图片内容，不新增 UI 或识别入口。
+
 ## V2.8.4 识别执行管线预备版
 
 - 新增 RecognitionTask 结构，记录识别任务的照片、provider、模式、状态、时间、warnings 和 errors。
