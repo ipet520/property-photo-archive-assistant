@@ -615,6 +615,99 @@ button.primary {
   border-color: #c23b3b;
 }
 
+.recognition-settings-module {
+  gap: 18px;
+}
+
+.recognition-root-grid {
+  align-items: stretch;
+}
+
+.recognition-status-card {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.recognition-status-card span,
+.recognition-provider-status span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.recognition-status-card strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.recognition-status-card small,
+.recognition-diagnostic-row small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-action-grid {
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+}
+
+.recognition-provider-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.recognition-provider-card,
+.recognition-diagnostic-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fbfdff;
+}
+
+.recognition-provider-title {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.recognition-provider-title h3,
+.recognition-diagnostic-panel h3 {
+  margin: 0;
+}
+
+.recognition-provider-form {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+}
+
+.recognition-provider-form .wide {
+  grid-column: span 2;
+}
+
+.recognition-provider-status {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f1f5f9;
+}
+
+.recognition-diagnostic-list {
+  display: grid;
+  gap: 8px;
+}
+
+.recognition-diagnostic-row {
+  grid-template-columns: 150px minmax(180px, 1fr) minmax(220px, 1.2fr);
+}
+
 .settings-protection-note {
   padding: 14px;
   border: 1px solid #b9e4cf;

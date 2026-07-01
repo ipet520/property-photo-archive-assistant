@@ -1,15 +1,33 @@
 import { useEffect, useMemo, useState } from 'react';
 import ConfigManager from '../components/ConfigManager.jsx';
 import { APP_NAME, APP_VERSION } from '../constants/app.js';
+import {
+  diagnoseRecognitionConfig,
+  getRecognitionProviders,
+  getRecognitionStatus,
+  getSafeRecognitionConfig,
+  updateRecognitionConfig
+} from '../utils/recognitionClient.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SETTING_TABS = [
   { key: 'baseData', label: '基础数据' },
   { key: 'defaultPaths', label: '默认目录' },
   { key: 'packageSettings', label: '资料包设置' },
+  { key: 'recognition', label: '识别服务配置' },
   { key: 'backup', label: '设置备份与恢复' },
   { key: 'systemInfo', label: '系统信息' }
 ];
+
+const RECOGNITION_MODE_OPTIONS = [
+  { value: 'disabled', label: '禁用识别服务' },
+  { value: 'manual', label: '手动输入 / 人工校正' },
+  { value: 'local', label: '本地识别预留' },
+  { value: 'cloud', label: '云识别预留' },
+  { value: 'hybrid', label: '混合识别预留' }
+];
+
+const MASKED_SECRET_PATTERN = /^(\*{4}.+|已配置)$/;
 
 const PACKAGE_GROUPING_OPTIONS = [
   { value: 'project/category/workContent', label: '项目 / 水印分类 / 工作内容' },
@@ -24,6 +42,13 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   const [highlightedPathKey, setHighlightedPathKey] = useState('');
   const [settings, setSettings] = useState(archiveState.settings || null);
   const [message, setMessage] = useState({ type: 'idle', text: '' });
+  const [recognitionConfig, setRecognitionConfig] = useState(null);
+  const [recognitionStatus, setRecognitionStatus] = useState(null);
+  const [recognitionProviders, setRecognitionProviders] = useState([]);
+  const [recognitionDiagnostic, setRecognitionDiagnostic] = useState(null);
+  const [recognitionMessage, setRecognitionMessage] = useState({ type: 'idle', text: '' });
+  const [secretDrafts, setSecretDrafts] = useState({});
+  const [clearedSecrets, setClearedSecrets] = useState({});
   const appPaths = archiveState.appPaths || {};
   const configPaths = archiveState.configPaths || {};
 
@@ -37,10 +62,15 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   }, []);
 
   useEffect(() => {
+    void loadRecognitionSettings();
+  }, []);
+
+  useEffect(() => {
     const targetTab = {
       'settings-base-data': 'baseData',
       'settings-default-paths': 'defaultPaths',
       'settings-package': 'packageSettings',
+      'settings-recognition': 'recognition',
       'settings-backup': 'backup',
       'settings-system-info': 'systemInfo'
     }[navigationRequest?.action];
@@ -74,6 +104,111 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
         ...patch
       }
     }));
+  }
+
+  async function loadRecognitionSettings() {
+    try {
+      const [configResult, diagnosticResult, statusResult, providerResult] = await Promise.all([
+        getSafeRecognitionConfig(),
+        diagnoseRecognitionConfig(),
+        getRecognitionStatus(),
+        getRecognitionProviders()
+      ]);
+      setRecognitionConfig(configResult?.config || createEmptyRecognitionConfig());
+      setRecognitionDiagnostic(diagnosticResult || null);
+      setRecognitionStatus(statusResult || null);
+      setRecognitionProviders(Array.isArray(providerResult) ? providerResult : []);
+      setSecretDrafts({});
+      setClearedSecrets({});
+      if (configResult?.errors?.length) {
+        setRecognitionMessage({ type: 'error', text: configResult.errors.map((error) => error.message).join('；') });
+      }
+    } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '读取识别服务配置', errorType: '配置读取失败', summary: error.message, error });
+      setRecognitionMessage({ type: 'error', text: `识别配置读取失败：${error.message}` });
+    }
+  }
+
+  function updateRecognitionRoot(patch) {
+    setRecognitionConfig((current) => ({ ...(current || createEmptyRecognitionConfig()), ...patch }));
+  }
+
+  function updateProviderConfig(providerId, patch) {
+    setRecognitionConfig((current) => {
+      const safeConfig = current || createEmptyRecognitionConfig();
+      const provider = safeConfig.providers?.[providerId] || { providerId };
+      return {
+        ...safeConfig,
+        providers: {
+          ...(safeConfig.providers || {}),
+          [providerId]: {
+            ...provider,
+            ...patch
+          }
+        }
+      };
+    });
+  }
+
+  function updateSecretDraft(providerId, value) {
+    setSecretDrafts((current) => ({ ...current, [providerId]: value }));
+    if (value) {
+      setClearedSecrets((current) => {
+        const next = { ...current };
+        delete next[providerId];
+        return next;
+      });
+    }
+  }
+
+  function clearProviderSecret(providerId) {
+    setSecretDrafts((current) => ({ ...current, [providerId]: '' }));
+    setClearedSecrets((current) => ({ ...current, [providerId]: true }));
+    updateProviderConfig(providerId, { apiKey: '' });
+    setRecognitionMessage({ type: 'idle', text: '已标记清除密钥，请点击“保存识别配置”写入。' });
+  }
+
+  async function saveRecognitionConfig() {
+    const validation = validateRecognitionForm(recognitionConfig);
+    if (validation.errors.length > 0) {
+      setRecognitionMessage({ type: 'error', text: validation.errors.join('；') });
+      return;
+    }
+    const patch = buildRecognitionConfigPatch(recognitionConfig, secretDrafts, clearedSecrets);
+    try {
+      const result = await updateRecognitionConfig(patch);
+      if (!result?.success) {
+        const errorText = (result?.errors || []).map((error) => error.message).filter(Boolean).join('；') || '识别配置保存失败。';
+        setRecognitionMessage({ type: 'error', text: errorText });
+        return;
+      }
+      setRecognitionMessage({ type: 'success', text: '识别配置已保存。' });
+      await loadRecognitionSettings();
+    } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '保存识别服务配置', errorType: '配置保存失败', summary: error.message, error });
+      setRecognitionMessage({ type: 'error', text: `识别配置保存失败：${error.message}` });
+    }
+  }
+
+  async function diagnoseRecognition() {
+    try {
+      const [diagnosticResult, statusResult, providerResult] = await Promise.all([
+        diagnoseRecognitionConfig(),
+        getRecognitionStatus(),
+        getRecognitionProviders()
+      ]);
+      setRecognitionDiagnostic(diagnosticResult || null);
+      setRecognitionStatus(statusResult || null);
+      setRecognitionProviders(Array.isArray(providerResult) ? providerResult : []);
+      const errors = diagnosticResult?.errors || [];
+      const warnings = diagnosticResult?.warnings || [];
+      setRecognitionMessage(errors.length
+        ? { type: 'error', text: errors.map((error) => error.message).join('；') }
+        : { type: 'success', text: warnings.length ? `诊断完成：${warnings.join('；')}` : '识别配置诊断完成。' });
+    } catch (error) {
+      recordRuntimeLog({ page: '系统设置', operation: '诊断识别服务配置', errorType: '配置诊断失败', summary: error.message, error });
+      setRecognitionMessage({ type: 'error', text: `识别配置诊断失败：${error.message}` });
+    }
   }
 
   async function saveSettings() {
@@ -265,6 +400,25 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
             </div>
           )}
 
+          {activeTab === 'recognition' && (
+            <RecognitionSettingsPanel
+              config={recognitionConfig}
+              status={recognitionStatus}
+              providers={recognitionProviders}
+              diagnostic={recognitionDiagnostic}
+              message={recognitionMessage}
+              secretDrafts={secretDrafts}
+              clearedSecrets={clearedSecrets}
+              onRootChange={updateRecognitionRoot}
+              onProviderChange={updateProviderConfig}
+              onSecretChange={updateSecretDraft}
+              onClearSecret={clearProviderSecret}
+              onSave={saveRecognitionConfig}
+              onDiagnose={diagnoseRecognition}
+              onReload={loadRecognitionSettings}
+            />
+          )}
+
           {activeTab === 'backup' && (
             <div className="settings-module">
               <header>
@@ -313,6 +467,201 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   );
 }
 
+function RecognitionSettingsPanel({
+  config,
+  status,
+  providers,
+  diagnostic,
+  message,
+  secretDrafts,
+  clearedSecrets,
+  onRootChange,
+  onProviderChange,
+  onSecretChange,
+  onClearSecret,
+  onSave,
+  onDiagnose,
+  onReload
+}) {
+  const safeConfig = config || createEmptyRecognitionConfig();
+  const providerEntries = Object.entries(safeConfig.providers || {});
+  const providerOptions = providerEntries.map(([providerId, provider]) => ({
+    value: providerId,
+    label: `${provider.displayName || providerId}（${providerId}）`
+  }));
+  const activeProvider = safeConfig.activeProviderId || '';
+
+  return (
+    <div className="settings-module recognition-settings-module">
+      <header>
+        <p className="eyebrow">识别服务配置</p>
+        <h2>识别模式、provider 与接口参数</h2>
+        <p>这里只配置识别服务底座，不执行 OCR / AI 识别，不上传照片，也不会自动归档。密钥仅保存到 Electron userData 配置文件中，页面只显示脱敏状态。</p>
+      </header>
+
+      {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
+
+      <div className="settings-form-grid recognition-root-grid">
+        <label>
+          <span>识别服务总开关</span>
+          <select
+            value={safeConfig.recognitionMode || 'disabled'}
+            onChange={(event) => onRootChange({ recognitionMode: event.target.value })}
+          >
+            {RECOGNITION_MODE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>当前启用 provider</span>
+          <select value={activeProvider} onChange={(event) => onRootChange({ activeProviderId: event.target.value })}>
+            <option value="">不指定，按模式自动判断</option>
+            {providerOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <div className="recognition-status-card">
+          <span>当前状态</span>
+          <strong>{status?.status || diagnostic?.mode || safeConfig.recognitionMode || 'disabled'}</strong>
+          <small title={status?.reason || ''}>{status?.reason || '识别服务配置可诊断，不会自动执行识别。'}</small>
+        </div>
+      </div>
+
+      <div className="settings-action-grid recognition-action-grid">
+        <button type="button" className="primary" onClick={onSave}>保存识别配置</button>
+        <button type="button" onClick={onDiagnose}>诊断识别配置</button>
+        <button type="button" onClick={onReload}>重新读取配置</button>
+      </div>
+
+      <div className="recognition-provider-grid">
+        {providerEntries.map(([providerId, provider]) => (
+          <RecognitionProviderCard
+            key={providerId}
+            providerId={providerId}
+            provider={provider}
+            providerStatus={providers.find((item) => item.providerId === providerId || item.id === providerId)}
+            diagnostic={diagnostic?.providers?.[providerId]}
+            secretDraft={secretDrafts[providerId] || ''}
+            secretCleared={Boolean(clearedSecrets[providerId])}
+            onChange={(patch) => onProviderChange(providerId, patch)}
+            onSecretChange={(value) => onSecretChange(providerId, value)}
+            onClearSecret={() => onClearSecret(providerId)}
+          />
+        ))}
+      </div>
+
+      <section className="recognition-diagnostic-panel">
+        <div>
+          <p className="eyebrow">配置诊断</p>
+          <h3>当前模式：{diagnostic?.mode || safeConfig.recognitionMode || 'disabled'}</h3>
+          <p>当前 provider：{diagnostic?.activeProviderId || safeConfig.activeProviderId || '未指定'}</p>
+        </div>
+        <div className="recognition-diagnostic-list">
+          {providerEntries.map(([providerId]) => {
+            const item = providers.find((provider) => provider.providerId === providerId || provider.id === providerId) || diagnostic?.providers?.[providerId] || {};
+            const missingFields = item.configStatus?.missingFields || diagnostic?.providers?.[providerId]?.configStatus?.missingFields || [];
+            return (
+              <article key={providerId} className="settings-info-row recognition-diagnostic-row">
+                <span>{providerId}</span>
+                <strong>{item.status || 'unknown'}{missingFields.length ? ` / 缺少：${missingFields.join('、')}` : ''}</strong>
+                <small title={item.reason || ''}>{item.reason || '暂无诊断说明。'}</small>
+              </article>
+            );
+          })}
+        </div>
+        {(diagnostic?.warnings || []).length > 0 && <p className="muted">警告：{diagnostic.warnings.join('；')}</p>}
+        {(diagnostic?.errors || []).length > 0 && <p className="muted">错误：{diagnostic.errors.map((error) => error.message).join('；')}</p>}
+      </section>
+    </div>
+  );
+}
+
+function RecognitionProviderCard({
+  providerId,
+  provider,
+  providerStatus,
+  diagnostic,
+  secretDraft,
+  secretCleared,
+  onChange,
+  onSecretChange,
+  onClearSecret
+}) {
+  const providerType = provider.providerType || provider.type || providerId;
+  const isCloud = providerType.includes('cloud');
+  const configStatus = providerStatus?.configStatus || diagnostic?.configStatus || {};
+  const hasStoredSecret = Boolean(provider.apiKey && MASKED_SECRET_PATTERN.test(String(provider.apiKey)));
+  const secretLabel = secretCleared
+    ? '已标记清除'
+    : (hasStoredSecret ? provider.apiKey : '未配置');
+  return (
+    <article className="recognition-provider-card">
+      <div className="config-row-actions recognition-provider-title">
+        <div>
+          <p className="eyebrow">{providerType}</p>
+          <h3>{provider.displayName || providerId}</h3>
+        </div>
+        <label className="settings-toggle">
+          <input type="checkbox" checked={provider.enabled === true} onChange={(event) => onChange({ enabled: event.target.checked })} />
+          启用
+        </label>
+      </div>
+
+      <div className="settings-form-grid recognition-provider-form">
+        <label>
+          <span>providerId</span>
+          <input value={provider.providerId || providerId} onChange={(event) => onChange({ providerId: event.target.value })} />
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input value={provider.displayName || ''} onChange={(event) => onChange({ displayName: event.target.value })} />
+        </label>
+        <label>
+          <span>超时毫秒</span>
+          <input type="number" min="1" value={provider.timeoutMs || 15000} onChange={(event) => onChange({ timeoutMs: Number(event.target.value) })} />
+        </label>
+        <label>
+          <span>重试次数</span>
+          <input type="number" min="0" value={provider.maxRetries || 0} onChange={(event) => onChange({ maxRetries: Number(event.target.value) })} />
+        </label>
+        {isCloud && (
+          <>
+            <label className="wide">
+              <span>接口地址 endpoint</span>
+              <input value={provider.endpoint || ''} onChange={(event) => onChange({ endpoint: event.target.value })} placeholder="当前仅保存配置，不发起真实请求" />
+            </label>
+            <label>
+              <span>模型 model</span>
+              <input value={provider.model || ''} onChange={(event) => onChange({ model: event.target.value })} />
+            </label>
+            <label>
+              <span>密钥状态</span>
+              <input value={secretLabel} readOnly />
+            </label>
+            <label>
+              <span>输入新密钥</span>
+              <input
+                type="password"
+                value={secretDraft}
+                onChange={(event) => onSecretChange(event.target.value)}
+                placeholder={hasStoredSecret ? '留空则保留已保存密钥' : '未配置'}
+                autoComplete="new-password"
+              />
+            </label>
+            <button type="button" onClick={onClearSecret} disabled={!hasStoredSecret && !secretDraft && !provider.apiKey}>清除密钥</button>
+          </>
+        )}
+      </div>
+
+      <div className="recognition-provider-status">
+        <span>状态：{providerStatus?.status || '未诊断'}</span>
+        <span>可用：{providerStatus?.available ? '是' : '否'}</span>
+        <span>缺失字段：{(configStatus.missingFields || []).join('、') || '无'}</span>
+        <span>诊断时间：{providerStatus?.checkedAt || diagnostic?.checkedAt || '-'}</span>
+      </div>
+      <p className="muted" title={providerStatus?.reason || diagnostic?.reason || ''}>{providerStatus?.reason || diagnostic?.reason || '暂无诊断原因。'}</p>
+    </article>
+  );
+}
+
 function RecentPathList({ title, items, onClear }) {
   return (
     <div className="recent-path-card">
@@ -348,4 +697,73 @@ function InfoRow({ label, value, onCopy, onOpen }) {
 function parentDir(filePath) {
   if (!filePath) return '';
   return String(filePath).replace(/[\\/][^\\/]*$/, '');
+}
+
+function createEmptyRecognitionConfig() {
+  return {
+    recognitionMode: 'disabled',
+    activeProviderId: '',
+    providers: {}
+  };
+}
+
+function buildRecognitionConfigPatch(config = {}, secretDrafts = {}, clearedSecrets = {}) {
+  const providers = Object.fromEntries(Object.entries(config.providers || {}).map(([providerId, provider]) => {
+    const nextProvider = {
+      enabled: provider.enabled === true,
+      providerId: String(provider.providerId || providerId),
+      providerType: String(provider.providerType || ''),
+      displayName: String(provider.displayName || providerId),
+      endpoint: String(provider.endpoint || ''),
+      model: String(provider.model || ''),
+      timeoutMs: Number(provider.timeoutMs || 15000),
+      maxRetries: Number(provider.maxRetries || 0),
+      extraOptions: provider.extraOptions && typeof provider.extraOptions === 'object' ? provider.extraOptions : {}
+    };
+    const newSecret = String(secretDrafts[providerId] || '').trim();
+    if (clearedSecrets[providerId]) {
+      nextProvider.apiKey = '';
+    } else if (newSecret) {
+      nextProvider.apiKey = newSecret;
+    }
+    return [providerId, nextProvider];
+  }));
+  return {
+    recognitionMode: config.recognitionMode || 'disabled',
+    activeProviderId: config.activeProviderId || '',
+    providers
+  };
+}
+
+function validateRecognitionForm(config = {}) {
+  const errors = [];
+  const allowedModes = RECOGNITION_MODE_OPTIONS.map((option) => option.value);
+  if (!allowedModes.includes(config.recognitionMode)) {
+    errors.push('识别模式无效。');
+  }
+  const providers = config.providers && typeof config.providers === 'object' ? config.providers : {};
+  if (config.activeProviderId && !providers[config.activeProviderId]) {
+    errors.push('当前启用 provider 必须为空或存在于 provider 列表中。');
+  }
+  Object.entries(providers).forEach(([providerId, provider]) => {
+    if (!provider.providerId || !String(provider.providerId).trim()) {
+      errors.push(`${providerId} 的 providerId 不能为空。`);
+    }
+    if (typeof provider.enabled !== 'boolean') {
+      errors.push(`${providerId} 的 enabled 必须是布尔值。`);
+    }
+    if (!Number.isFinite(Number(provider.timeoutMs)) || Number(provider.timeoutMs) <= 0) {
+      errors.push(`${providerId} 的 timeoutMs 必须是正数。`);
+    }
+    if (!Number.isInteger(Number(provider.maxRetries)) || Number(provider.maxRetries) < 0) {
+      errors.push(`${providerId} 的 maxRetries 必须是非负整数。`);
+    }
+    if (provider.endpoint !== undefined && typeof provider.endpoint !== 'string') {
+      errors.push(`${providerId} 的 endpoint 必须是字符串。`);
+    }
+    if (provider.apiKey !== undefined && typeof provider.apiKey !== 'string') {
+      errors.push(`${providerId} 的 apiKey 必须是字符串。`);
+    }
+  });
+  return { errors };
 }
