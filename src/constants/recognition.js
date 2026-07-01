@@ -115,6 +115,60 @@ export const RECOGNITION_REVIEW_DRAFT_STATUS = {
 
 export const RECOGNITION_REVIEW_DRAFT_STATUSES = Object.values(RECOGNITION_REVIEW_DRAFT_STATUS);
 
+export const RECOGNITION_FIELD_DECISION_ACTION = {
+  ACCEPT: 'accept',
+  REJECT: 'reject',
+  IGNORE: 'ignore',
+  EDIT: 'edit'
+};
+
+export const RECOGNITION_FIELD_DECISION_ACTIONS = Object.values(RECOGNITION_FIELD_DECISION_ACTION);
+
+export const RECOGNITION_REVIEW_DECISION_STATUS = {
+  DRAFT: 'draft',
+  SUBMITTED: 'submitted',
+  CONVERTED_TO_PATCH: 'converted_to_patch',
+  DISMISSED: 'dismissed',
+  CLEARED: 'cleared'
+};
+
+export const RECOGNITION_REVIEW_DECISION_STATUSES = Object.values(RECOGNITION_REVIEW_DECISION_STATUS);
+
+export const RECOGNITION_FIELD_PATCH_OPERATION = {
+  SET: 'set',
+  APPEND: 'append',
+  CLEAR: 'clear'
+};
+
+export const RECOGNITION_FIELD_PATCH_OPERATIONS = Object.values(RECOGNITION_FIELD_PATCH_OPERATION);
+
+export const RECOGNITION_FORM_PATCH_DRAFT_STATUS = {
+  DRAFT: 'draft',
+  VALID: 'valid',
+  INVALID: 'invalid',
+  PARTIALLY_VALID: 'partially_valid',
+  APPLIED: 'applied',
+  DISMISSED: 'dismissed',
+  CLEARED: 'cleared'
+};
+
+export const RECOGNITION_FORM_PATCH_DRAFT_STATUSES = Object.values(RECOGNITION_FORM_PATCH_DRAFT_STATUS);
+
+export const RECOGNITION_ALLOWED_FORM_PATCH_FIELDS = [
+  'photoSource',
+  'project',
+  'department',
+  'watermarkCategory',
+  'workContent',
+  'date',
+  'location',
+  'itemName',
+  'photoStage',
+  'processStatus',
+  'keywords',
+  'remark'
+];
+
 export const RECOGNITION_PRIVACY_POLICY = {
   uploadsPhotos: false,
   callsRemoteService: false,

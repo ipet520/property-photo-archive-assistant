@@ -1,5 +1,18 @@
 # 更新记录
 
+## V2.8.7 人工确认应用管线预备版
+
+- 新增 RecognitionFieldDecision 人工字段确认决策结构，支持 accept / reject / ignore / edit，且不会自动生成接受决策。
+- 新增 RecognitionReviewDecision 人工确认决策结构，只根据显式传入的 fieldDecisions 创建确认结果。
+- 新增 RecognitionFieldPatch 字段补丁结构，所有补丁均 `requiresExplicitApply=true`，不会直接写入归档表单。
+- 新增 RecognitionFormPatchDraft 表单补丁草稿结构，支持按 id、reviewDecision、photoId / filePath 查询、列表、状态更新和清除。
+- 新增 RecognitionFormPatchValidationResult 补丁校验结果结构，区分有效、无效和冲突补丁。
+- 新增归档字段补丁白名单，只允许补丁指向当前已有归档字段，不新增字段、不修改 Excel 台账结构。
+- 支持根据人工确认决策生成待应用表单补丁草稿；accept / edit 可生成补丁，reject / ignore 和未确认字段不会生成补丁。
+- 支持显式 formSnapshot 下的轻量冲突检测；不传快照时不会读取 UI 当前表单，也不会覆盖用户字段。
+- 新增人工确认决策和表单补丁草稿的内部 IPC 与 recognitionClient 安全 fallback。
+- 当前版本仍不接真实 OCR / 云 API / AI 识别，不上传照片，不新增 UI，不新增开始识别 / 自动归档入口，不自动预览、不自动归档、不写 Excel。
+
 ## V2.8.6 候选字段映射与人工确认数据结构预备版
 
 - 新增 RecognitionCandidateField 候选字段结构，预留识别 proposedFields 到归档字段的人工确认数据模型。

@@ -2,11 +2,15 @@ import {
   EMPTY_RECOGNITION_FIELDS,
   RECOGNITION_CANDIDATE_FIELD_SET_STATUSES,
   RECOGNITION_CANDIDATE_FIELD_STATUSES,
+  RECOGNITION_FIELD_DECISION_ACTIONS,
+  RECOGNITION_FIELD_PATCH_OPERATIONS,
+  RECOGNITION_FORM_PATCH_DRAFT_STATUSES,
   RECOGNITION_MODES,
   RECOGNITION_PROVIDER_STATUSES,
   RECOGNITION_PROVIDER_TYPES as PROVIDER_TYPES,
   RECOGNITION_RESULT_SOURCES,
   RECOGNITION_RESULT_STATUSES,
+  RECOGNITION_REVIEW_DECISION_STATUSES,
   RECOGNITION_REVIEW_DRAFT_STATUSES,
   RECOGNITION_STAGE_STATUSES,
   RECOGNITION_TASK_STATUSES
@@ -234,6 +238,134 @@ export function normalizeRecognitionReviewDraft(draft = {}) {
   };
 }
 
+export function normalizeRecognitionFieldDecision(decision = {}) {
+  const decidedAt = String(decision.decidedAt || new Date().toISOString());
+  return {
+    id: String(decision.id || ''),
+    reviewDraftId: String(decision.reviewDraftId || ''),
+    candidateFieldId: String(decision.candidateFieldId || ''),
+    action: normalizeFieldDecisionAction(decision.action),
+    targetFieldKey: String(decision.targetFieldKey || ''),
+    label: String(decision.label || decision.targetFieldKey || ''),
+    originalValue: cloneJsonValue(decision.originalValue),
+    decidedValue: cloneJsonValue(decision.decidedValue),
+    sourceValue: cloneJsonValue(decision.sourceValue),
+    candidateCanApply: decision.candidateCanApply === true,
+    candidateStatus: String(decision.candidateStatus || ''),
+    candidateWarning: String(decision.candidateWarning || ''),
+    candidateError: String(decision.candidateError || ''),
+    reason: String(decision.reason || ''),
+    decidedBy: 'manual',
+    decidedAt,
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionReviewDecision(decision = {}) {
+  const createdAt = String(decision.createdAt || new Date().toISOString());
+  const fieldDecisions = (Array.isArray(decision.fieldDecisions) ? decision.fieldDecisions : []).map(normalizeRecognitionFieldDecision);
+  return {
+    id: String(decision.id || ''),
+    reviewDraftId: String(decision.reviewDraftId || ''),
+    stagedResultId: String(decision.stagedResultId || ''),
+    candidateFieldSetId: String(decision.candidateFieldSetId || ''),
+    taskId: String(decision.taskId || ''),
+    photoId: String(decision.photoId || ''),
+    filePath: String(decision.filePath || ''),
+    fileName: String(decision.fileName || ''),
+    fieldDecisions,
+    status: normalizeReviewDecisionStatus(decision.status),
+    summary: {
+      totalCandidates: Number(decision.summary?.totalCandidates || 0),
+      acceptedCount: Number(decision.summary?.acceptedCount || fieldDecisions.filter((item) => item.action === 'accept').length),
+      editedCount: Number(decision.summary?.editedCount || fieldDecisions.filter((item) => item.action === 'edit').length),
+      rejectedCount: Number(decision.summary?.rejectedCount || fieldDecisions.filter((item) => item.action === 'reject').length),
+      ignoredCount: Number(decision.summary?.ignoredCount || fieldDecisions.filter((item) => item.action === 'ignore').length),
+      patchableCount: Number(decision.summary?.patchableCount || 0)
+    },
+    warnings: normalizeStringArray(decision.warnings),
+    errors: normalizeErrors(decision.errors),
+    createdAt,
+    updatedAt: String(decision.updatedAt || createdAt),
+    submittedAt: String(decision.submittedAt || ''),
+    clearedAt: String(decision.clearedAt || ''),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionFieldPatch(patch = {}) {
+  const createdAt = String(patch.createdAt || new Date().toISOString());
+  return {
+    id: String(patch.id || ''),
+    reviewDecisionId: String(patch.reviewDecisionId || ''),
+    reviewDraftId: String(patch.reviewDraftId || ''),
+    candidateFieldId: String(patch.candidateFieldId || ''),
+    targetFieldKey: String(patch.targetFieldKey || ''),
+    label: String(patch.label || patch.targetFieldKey || ''),
+    operation: normalizeFieldPatchOperation(patch.operation),
+    value: cloneJsonValue(patch.value),
+    normalizedValue: cloneJsonValue(patch.normalizedValue),
+    sourceValue: cloneJsonValue(patch.sourceValue),
+    previousValue: patch.previousValue === undefined ? undefined : cloneJsonValue(patch.previousValue),
+    hasPreviousValue: patch.hasPreviousValue === true,
+    hasConflict: patch.hasConflict === true,
+    conflictReason: String(patch.conflictReason || ''),
+    canApply: patch.canApply === true,
+    requiresExplicitApply: true,
+    warning: String(patch.warning || ''),
+    error: String(patch.error || ''),
+    createdAt,
+    updatedAt: String(patch.updatedAt || createdAt),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionFormPatchDraft(draft = {}) {
+  const createdAt = String(draft.createdAt || new Date().toISOString());
+  const patches = (Array.isArray(draft.patches) ? draft.patches : []).map(normalizeRecognitionFieldPatch);
+  return {
+    id: String(draft.id || ''),
+    reviewDecisionId: String(draft.reviewDecisionId || ''),
+    reviewDraftId: String(draft.reviewDraftId || ''),
+    stagedResultId: String(draft.stagedResultId || ''),
+    candidateFieldSetId: String(draft.candidateFieldSetId || ''),
+    taskId: String(draft.taskId || ''),
+    photoId: String(draft.photoId || ''),
+    filePath: String(draft.filePath || ''),
+    fileName: String(draft.fileName || ''),
+    patches,
+    status: normalizeFormPatchDraftStatus(draft.status),
+    summary: {
+      total: Number(draft.summary?.total || patches.length),
+      validCount: Number(draft.summary?.validCount || patches.filter((patch) => patch.canApply && !patch.hasConflict && !patch.error).length),
+      invalidCount: Number(draft.summary?.invalidCount || patches.filter((patch) => !patch.canApply || patch.error).length),
+      conflictCount: Number(draft.summary?.conflictCount || patches.filter((patch) => patch.hasConflict).length),
+      blockedCount: Number(draft.summary?.blockedCount || patches.filter((patch) => !patch.canApply).length)
+    },
+    warnings: normalizeStringArray(draft.warnings),
+    errors: normalizeErrors(draft.errors),
+    createdAt,
+    updatedAt: String(draft.updatedAt || createdAt),
+    appliedAt: String(draft.appliedAt || ''),
+    clearedAt: String(draft.clearedAt || ''),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionFormPatchValidationResult(result = {}) {
+  return {
+    ok: result.ok === true,
+    patchDraftId: String(result.patchDraftId || ''),
+    validPatches: (Array.isArray(result.validPatches) ? result.validPatches : []).map(normalizeRecognitionFieldPatch),
+    invalidPatches: (Array.isArray(result.invalidPatches) ? result.invalidPatches : []).map(normalizeRecognitionFieldPatch),
+    conflictPatches: (Array.isArray(result.conflictPatches) ? result.conflictPatches : []).map(normalizeRecognitionFieldPatch),
+    warnings: normalizeStringArray(result.warnings),
+    errors: normalizeErrors(result.errors),
+    checkedAt: String(result.checkedAt || new Date().toISOString()),
+    schemaVersion: 1
+  };
+}
+
 function createTaskId(photo = {}) {
   const seed = `${photo.id || photo.photoId || photo.fileName || photo.name || 'photo'}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `rec_${seed.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
@@ -320,6 +452,26 @@ function normalizeCandidateFieldSetStatus(value = '') {
 function normalizeReviewDraftStatus(value = '') {
   const status = String(value || '').trim();
   return RECOGNITION_REVIEW_DRAFT_STATUSES.includes(status) ? status : 'pending_review';
+}
+
+function normalizeFieldDecisionAction(value = '') {
+  const action = String(value || '').trim();
+  return RECOGNITION_FIELD_DECISION_ACTIONS.includes(action) ? action : 'ignore';
+}
+
+function normalizeReviewDecisionStatus(value = '') {
+  const status = String(value || '').trim();
+  return RECOGNITION_REVIEW_DECISION_STATUSES.includes(status) ? status : 'submitted';
+}
+
+function normalizeFieldPatchOperation(value = '') {
+  const operation = String(value || '').trim();
+  return RECOGNITION_FIELD_PATCH_OPERATIONS.includes(operation) ? operation : 'set';
+}
+
+function normalizeFormPatchDraftStatus(value = '') {
+  const status = String(value || '').trim();
+  return RECOGNITION_FORM_PATCH_DRAFT_STATUSES.includes(status) ? status : 'draft';
 }
 
 function normalizePlainObject(value = {}) {

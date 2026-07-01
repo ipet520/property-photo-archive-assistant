@@ -1,5 +1,21 @@
 # 物业工作照片归档助手
 
+## V2.8.7 人工确认应用管线预备版
+
+V2.8.7 在 V2.8.6 候选字段映射与人工确认草稿基础上，新增“人工确认后如何安全生成待应用表单补丁”的内部管线。它只建立 ReviewDraft → ReviewDecision → FieldPatch → FormPatchDraft → 补丁校验的数据链路，不新增 UI，不自动应用字段，也不改归档表单、预览、确认归档或 Excel 台账。
+
+本版重点：
+
+- 新增 RecognitionFieldDecision 人工字段确认决策结构，支持 accept / reject / ignore / edit，且当前 `decidedBy` 固定为 manual。
+- 新增 RecognitionReviewDecision 人工确认决策结构，只根据显式传入的人工决策创建，不默认接受候选字段。
+- 新增 RecognitionFieldPatch 字段补丁结构，所有补丁 `requiresExplicitApply=true`，仅作为未来 UI 明确应用前的草稿数据。
+- 新增 RecognitionFormPatchDraft 表单补丁草稿结构，支持按 reviewDecision、photoId、filePath 查询、列表、状态更新和清除。
+- 新增 RecognitionFormPatchValidationResult 补丁校验结果结构，区分有效补丁、无效补丁和冲突补丁。
+- 新增归档字段补丁白名单，只允许指向当前已有归档表单字段，不新增归档字段，不修改 Excel 台账结构。
+- 支持根据显式人工决策生成表单补丁草稿；accept / edit 可生成补丁，reject / ignore 和未确认字段不会生成补丁。
+- 支持显式 `formSnapshot` 下的轻量冲突检测；未传入快照时不会主动读取 UI 当前表单。
+- 本版本不接真实 OCR、不接云 API、不接 AI 识别、不上传照片、不自动接受字段、不自动应用字段、不覆盖用户字段、不自动预览、不自动归档、不写 Excel 台账、不新增 UI。
+
 ## V2.8.6 候选字段映射与人工确认数据结构预备版
 
 V2.8.6 在 V2.8.5 识别结果暂存层基础上，新增 proposedFields 到候选字段、字段映射规则和人工确认草稿的内部数据结构。它只为后续人工确认界面预留安全数据层，不新增 UI，不接真实 OCR / 云识别 / AI 识别，也不会自动应用字段。

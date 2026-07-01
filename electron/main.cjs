@@ -39,6 +39,24 @@ const {
   clearReviewDraft,
   clearReviewDraftsByPhoto,
   clearAllReviewDrafts,
+  createReviewDecision,
+  getReviewDecision,
+  getReviewDecisionByReviewDraftId,
+  getReviewDecisionByPhoto,
+  listReviewDecisions,
+  clearReviewDecision,
+  clearReviewDecisionsByPhoto,
+  clearAllReviewDecisions,
+  buildFormPatchDraftFromReviewDecision,
+  validateFormPatchDraft,
+  getFormPatchDraft,
+  getFormPatchDraftByReviewDecisionId,
+  getFormPatchDraftByPhoto,
+  listFormPatchDrafts,
+  updateFormPatchDraftStatus,
+  clearFormPatchDraft,
+  clearFormPatchDraftsByPhoto,
+  clearAllFormPatchDrafts,
   getStagedRecognitionResult,
   getStagedRecognitionResultByTaskId,
   getStagedRecognitionResultByPhoto,
@@ -462,6 +480,88 @@ ipcMain.handle('recognition:clearReviewDraftsByPhoto', async (_event, photoInput
 ));
 ipcMain.handle('recognition:clearAllReviewDrafts', async () => safeRecognitionCall(
   () => clearAllReviewDrafts(app.getPath('userData')),
+  () => 0
+));
+ipcMain.handle('recognition:createReviewDecision', async (_event, input) => safeRecognitionCall(
+  () => createReviewDecision(app.getPath('userData'), input),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDecision', async (_event, id) => safeRecognitionCall(
+  () => getReviewDecision(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDecisionByReviewDraft', async (_event, reviewDraftId) => safeRecognitionCall(
+  () => getReviewDecisionByReviewDraftId(app.getPath('userData'), reviewDraftId),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDecisionByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => getReviewDecisionByPhoto(app.getPath('userData'), photoInput),
+  () => null
+));
+ipcMain.handle('recognition:listReviewDecisions', async (_event, options) => safeRecognitionCall(
+  () => listReviewDecisions(app.getPath('userData'), options),
+  () => []
+));
+ipcMain.handle('recognition:clearReviewDecision', async (_event, id) => safeRecognitionCall(
+  () => clearReviewDecision(app.getPath('userData'), id),
+  () => false
+));
+ipcMain.handle('recognition:clearReviewDecisionsByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => clearReviewDecisionsByPhoto(app.getPath('userData'), photoInput),
+  () => 0
+));
+ipcMain.handle('recognition:clearAllReviewDecisions', async () => safeRecognitionCall(
+  () => clearAllReviewDecisions(app.getPath('userData')),
+  () => 0
+));
+ipcMain.handle('recognition:buildFormPatchDraft', async (_event, input) => safeRecognitionCall(
+  () => buildFormPatchDraftFromReviewDecision(app.getPath('userData'), input),
+  () => null
+));
+ipcMain.handle('recognition:validateFormPatchDraft', async (_event, patchDraftId) => safeRecognitionCall(
+  () => validateFormPatchDraft(app.getPath('userData'), patchDraftId),
+  () => ({
+    ok: false,
+    patchDraftId: String(patchDraftId || ''),
+    validPatches: [],
+    invalidPatches: [],
+    conflictPatches: [],
+    warnings: [],
+    errors: [{ code: 'patch_validation_unavailable', message: '表单补丁校验接口不可用。' }],
+    checkedAt: new Date().toISOString(),
+    schemaVersion: 1
+  })
+));
+ipcMain.handle('recognition:getFormPatchDraft', async (_event, id) => safeRecognitionCall(
+  () => getFormPatchDraft(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('recognition:getFormPatchDraftByReviewDecision', async (_event, reviewDecisionId) => safeRecognitionCall(
+  () => getFormPatchDraftByReviewDecisionId(app.getPath('userData'), reviewDecisionId),
+  () => null
+));
+ipcMain.handle('recognition:getFormPatchDraftByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => getFormPatchDraftByPhoto(app.getPath('userData'), photoInput),
+  () => null
+));
+ipcMain.handle('recognition:listFormPatchDrafts', async (_event, options) => safeRecognitionCall(
+  () => listFormPatchDrafts(app.getPath('userData'), options),
+  () => []
+));
+ipcMain.handle('recognition:updateFormPatchDraftStatus', async (_event, id, status) => safeRecognitionCall(
+  () => updateFormPatchDraftStatus(app.getPath('userData'), id, status),
+  () => null
+));
+ipcMain.handle('recognition:clearFormPatchDraft', async (_event, id) => safeRecognitionCall(
+  () => clearFormPatchDraft(app.getPath('userData'), id),
+  () => false
+));
+ipcMain.handle('recognition:clearFormPatchDraftsByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => clearFormPatchDraftsByPhoto(app.getPath('userData'), photoInput),
+  () => 0
+));
+ipcMain.handle('recognition:clearAllFormPatchDrafts', async () => safeRecognitionCall(
+  () => clearAllFormPatchDrafts(app.getPath('userData')),
   () => 0
 ));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));

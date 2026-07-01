@@ -1,7 +1,10 @@
 import { parseRecognitionText as parseLocally } from './recognitionResultParser.js';
 import {
   normalizeRecognitionCandidateFieldSet,
+  normalizeRecognitionFormPatchDraft,
+  normalizeRecognitionFormPatchValidationResult,
   normalizeRecognitionResult,
+  normalizeRecognitionReviewDecision,
   normalizeRecognitionReviewDraft,
   normalizeRecognitionStagedResult
 } from './recognitionTypes.js';
@@ -377,6 +380,184 @@ export async function clearAllReviewDrafts() {
   }
 }
 
+export async function createReviewDecision(input = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.createReviewDecision ? await api.createReviewDecision(input) : null;
+    return result ? normalizeRecognitionReviewDecision(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDecision(id = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDecision ? await api.getReviewDecision(id) : null;
+    return result ? normalizeRecognitionReviewDecision(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDecisionByReviewDraft(reviewDraftId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDecisionByReviewDraft ? await api.getReviewDecisionByReviewDraft(reviewDraftId) : null;
+    return result ? normalizeRecognitionReviewDecision(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDecisionByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDecisionByPhoto ? await api.getReviewDecisionByPhoto(photoInput) : null;
+    return result ? normalizeRecognitionReviewDecision(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listReviewDecisions(options = {}) {
+  try {
+    const api = getRecognitionApi();
+    const results = api?.listReviewDecisions ? await api.listReviewDecisions(options) : [];
+    return (Array.isArray(results) ? results : []).map(normalizeRecognitionReviewDecision);
+  } catch {
+    return [];
+  }
+}
+
+export async function clearReviewDecision(id = '') {
+  try {
+    const api = getRecognitionApi();
+    return api?.clearReviewDecision ? Boolean(await api.clearReviewDecision(id)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearReviewDecisionsByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearReviewDecisionsByPhoto ? await api.clearReviewDecisionsByPhoto(photoInput) : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAllReviewDecisions() {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearAllReviewDecisions ? await api.clearAllReviewDecisions() : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function buildFormPatchDraft(input = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.buildFormPatchDraft ? await api.buildFormPatchDraft(input) : null;
+    return result ? normalizeRecognitionFormPatchDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function validateFormPatchDraft(patchDraftId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.validateFormPatchDraft ? await api.validateFormPatchDraft(patchDraftId) : createPatchValidationFallback(patchDraftId);
+    return normalizeRecognitionFormPatchValidationResult(result);
+  } catch (error) {
+    return createPatchValidationFallback(patchDraftId, error);
+  }
+}
+
+export async function getFormPatchDraft(id = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getFormPatchDraft ? await api.getFormPatchDraft(id) : null;
+    return result ? normalizeRecognitionFormPatchDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getFormPatchDraftByReviewDecision(reviewDecisionId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getFormPatchDraftByReviewDecision ? await api.getFormPatchDraftByReviewDecision(reviewDecisionId) : null;
+    return result ? normalizeRecognitionFormPatchDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getFormPatchDraftByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getFormPatchDraftByPhoto ? await api.getFormPatchDraftByPhoto(photoInput) : null;
+    return result ? normalizeRecognitionFormPatchDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listFormPatchDrafts(options = {}) {
+  try {
+    const api = getRecognitionApi();
+    const results = api?.listFormPatchDrafts ? await api.listFormPatchDrafts(options) : [];
+    return (Array.isArray(results) ? results : []).map(normalizeRecognitionFormPatchDraft);
+  } catch {
+    return [];
+  }
+}
+
+export async function updateFormPatchDraftStatus(id = '', status = 'draft') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.updateFormPatchDraftStatus ? await api.updateFormPatchDraftStatus(id, status) : null;
+    return result ? normalizeRecognitionFormPatchDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearFormPatchDraft(id = '') {
+  try {
+    const api = getRecognitionApi();
+    return api?.clearFormPatchDraft ? Boolean(await api.clearFormPatchDraft(id)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearFormPatchDraftsByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearFormPatchDraftsByPhoto ? await api.clearFormPatchDraftsByPhoto(photoInput) : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAllFormPatchDrafts() {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearAllFormPatchDrafts ? await api.clearAllFormPatchDrafts() : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 function createUnavailableStatus(error = null) {
   return {
     success: false,
@@ -421,5 +602,22 @@ function createUnavailableResult(photo = {}, options = {}) {
     warnings: ['当前仅可手动填写归档信息。'],
     errors: [{ code: 'provider_unavailable', message: options.errorMessage || '识别服务底座不可用。' }],
     createdAt: new Date().toISOString()
+  });
+}
+
+function createPatchValidationFallback(patchDraftId = '', error = null) {
+  return normalizeRecognitionFormPatchValidationResult({
+    ok: false,
+    patchDraftId,
+    validPatches: [],
+    invalidPatches: [],
+    conflictPatches: [],
+    warnings: [],
+    errors: [{
+      code: 'patch_validation_unavailable',
+      message: error?.message || '表单补丁校验接口不可用。'
+    }],
+    checkedAt: new Date().toISOString(),
+    schemaVersion: 1
   });
 }

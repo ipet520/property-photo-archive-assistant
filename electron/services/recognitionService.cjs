@@ -47,6 +47,27 @@ const {
   listReviewDrafts,
   updateReviewDraftStatus
 } = require('./recognitionReviewDraftService.cjs');
+const {
+  ALLOWED_FORM_PATCH_FIELDS,
+  buildFormPatchDraftFromReviewDecision,
+  clearAllFormPatchDrafts,
+  clearAllReviewDecisions,
+  clearFormPatchDraft,
+  clearFormPatchDraftsByPhoto,
+  clearReviewDecision,
+  clearReviewDecisionsByPhoto,
+  createReviewDecision,
+  getFormPatchDraft,
+  getFormPatchDraftByPhoto,
+  getFormPatchDraftByReviewDecisionId,
+  getReviewDecision,
+  getReviewDecisionByPhoto,
+  getReviewDecisionByReviewDraftId,
+  listFormPatchDrafts,
+  listReviewDecisions,
+  updateFormPatchDraftStatus,
+  validateFormPatchDraft
+} = require('./recognitionApplyPipelineService.cjs');
 
 const providers = [localProvider, ...cloudProviders, manualProvider];
 
@@ -655,6 +676,25 @@ module.exports = {
   clearReviewDraft,
   clearReviewDraftsByPhoto,
   clearAllReviewDrafts,
+  ALLOWED_FORM_PATCH_FIELDS,
+  createReviewDecision,
+  getReviewDecision,
+  getReviewDecisionByReviewDraftId,
+  getReviewDecisionByPhoto,
+  listReviewDecisions,
+  clearReviewDecision,
+  clearReviewDecisionsByPhoto,
+  clearAllReviewDecisions,
+  buildFormPatchDraftFromReviewDecision,
+  validateFormPatchDraft,
+  getFormPatchDraft,
+  getFormPatchDraftByReviewDecisionId,
+  getFormPatchDraftByPhoto,
+  listFormPatchDrafts,
+  updateFormPatchDraftStatus,
+  clearFormPatchDraft,
+  clearFormPatchDraftsByPhoto,
+  clearAllFormPatchDrafts,
   stageRecognitionResult,
   getStagedRecognitionResult,
   getStagedRecognitionResultByTaskId,
