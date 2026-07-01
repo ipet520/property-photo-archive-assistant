@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import RecognitionReadOnlyPanel from '../components/recognition/RecognitionReadOnlyPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
@@ -166,6 +167,7 @@ export default function SortWorkspacePage({ archiveState }) {
   const pagePhotos = visiblePhotos.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedPhotos = photos.filter((photo) => selectedIds.includes(photo.id));
   const primaryPhoto = selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
+  const recognitionReadOnlyPhoto = selectedPhotos[0] || null;
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
@@ -963,6 +965,7 @@ export default function SortWorkspacePage({ archiveState }) {
               <strong>识别底座</strong>
               <span>待配置，当前手动填写归档信息。</span>
             </div>
+            <RecognitionReadOnlyPanel currentPhoto={recognitionReadOnlyPhoto} />
           </div>
           <div className="sort-right-actions">
             <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0 || selectedHasIgnored}>应用</button>

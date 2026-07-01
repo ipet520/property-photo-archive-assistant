@@ -1,5 +1,16 @@
 # 更新记录
 
+## V2.8.8 人工确认 UI 只读展示骨架版
+
+- 新增照片分拣工作台右侧“识别确认（只读）”展示区，用于核对当前选中照片关联的识别链路数据。
+- 支持按照片只读查询 stagedResult、CandidateFieldSet、ReviewDraft、ReviewDecision 和 FormPatchDraft。
+- 支持只读展示识别暂存状态、候选字段、人工确认草稿摘要、人工确认决策摘要、表单补丁草稿和冲突提示。
+- 支持当前未选择照片、当前照片无识别数据、加载中、读取失败和 Electron API 不可用等安全状态。
+- 新增 recognitionClient 只读聚合查询能力，单项读取失败不会影响其它查询结果。
+- 只读展示区不调用 recognizePhoto / recognizePhotos，不调用 create / build / update / clear 类识别接口。
+- 当前版本不新增开始识别 / AI识别 / 自动归档 / 应用识别结果按钮，不新增人工确认弹窗或可编辑候选字段控件。
+- 保持照片分拣主流程、归档表单主操作、忽略 / 还原、悬浮大图、预览归档、确认归档和 Excel 台账追加逻辑不变。
+
 ## V2.8.7 人工确认应用管线预备版
 
 - 新增 RecognitionFieldDecision 人工字段确认决策结构，支持 accept / reject / ignore / edit，且不会自动生成接受决策。

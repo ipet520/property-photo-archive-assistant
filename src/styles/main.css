@@ -13317,6 +13317,204 @@ table tbody tr.selected td {
   padding: 6px 8px;
 }
 
+.recognition-readonly-panel {
+  margin-top: 10px;
+  border: 1px solid #dbe8f6;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px;
+  color: #18324a;
+}
+
+.recognition-readonly-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.recognition-readonly-panel > header div {
+  min-width: 0;
+}
+
+.recognition-readonly-panel > header strong {
+  display: block;
+  font-size: 13px;
+}
+
+.recognition-readonly-panel > header span,
+.recognition-readonly-panel > header small {
+  color: #5d728a;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.recognition-readonly-panel > header small {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eaf3ff;
+  padding: 2px 7px;
+  color: #1a5f9f;
+  font-weight: 700;
+}
+
+.recognition-readonly-empty {
+  display: grid;
+  gap: 4px;
+  border: 1px dashed #cbdff2;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 10px;
+  color: #5d728a;
+  font-size: 12px;
+}
+
+.recognition-readonly-empty.error {
+  border-color: #f5c2c7;
+  background: #fff8f8;
+  color: #8a3541;
+}
+
+.recognition-readonly-empty small,
+.recognition-readonly-line {
+  margin: 0;
+  color: #6f8092;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.recognition-readonly-content {
+  display: grid;
+  gap: 8px;
+}
+
+.recognition-readonly-section {
+  min-width: 0;
+  border: 1px solid #e3edf7;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 8px;
+}
+
+.recognition-readonly-section h4 {
+  margin: 0 0 6px;
+  color: #18324a;
+  font-size: 12px;
+}
+
+.recognition-readonly-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 0;
+}
+
+.recognition-readonly-grid.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.recognition-readonly-grid div {
+  min-width: 0;
+  border-radius: 8px;
+  background: #f6f9fc;
+  padding: 5px 6px;
+}
+
+.recognition-readonly-grid dt {
+  margin: 0;
+  color: #6f8092;
+  font-size: 10px;
+}
+
+.recognition-readonly-grid dd {
+  min-width: 0;
+  margin: 1px 0 0;
+  overflow: hidden;
+  color: #18324a;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-readonly-table {
+  display: grid;
+  gap: 4px;
+  max-height: 168px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.recognition-readonly-row {
+  display: grid;
+  grid-template-columns: 0.9fr 1.2fr 0.9fr 1fr;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  border-radius: 8px;
+  background: #f6f9fc;
+  padding: 5px 6px;
+  color: #18324a;
+  font-size: 11px;
+}
+
+.recognition-readonly-table.patch .recognition-readonly-row {
+  grid-template-columns: 0.9fr 1.2fr 1fr;
+}
+
+.recognition-readonly-row.heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #eaf3ff;
+  color: #1a5f9f;
+  font-weight: 800;
+}
+
+.recognition-readonly-row.warning {
+  background: #fff8ea;
+}
+
+.recognition-readonly-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recognition-readonly-messages {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recognition-readonly-messages li {
+  border-radius: 8px;
+  padding: 5px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.recognition-readonly-messages li.warning {
+  background: #fff8ea;
+  color: #8a5b12;
+}
+
+.recognition-readonly-messages li.error {
+  background: #fff0f1;
+  color: #8a3541;
+}
+
+.recognition-readonly-risk {
+  margin: 0;
+  color: #5d728a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .sort-right-actions {
   flex: 0 0 auto;
   display: grid;

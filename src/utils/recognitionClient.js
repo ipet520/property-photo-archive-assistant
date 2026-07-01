@@ -420,6 +420,39 @@ export async function getReviewDecisionByPhoto(photoInput = {}) {
   }
 }
 
+export async function getRecognitionReadOnlyBundleByPhoto(photoInput = {}) {
+  const emptyBundle = createEmptyReadOnlyBundle();
+  try {
+    const [stagedResult, candidateFieldSet, reviewDraft, reviewDecision, formPatchDraft] = await Promise.allSettled([
+      getStagedResultByPhoto(photoInput),
+      getCandidateFieldSetByPhoto(photoInput),
+      getReviewDraftByPhoto(photoInput),
+      getReviewDecisionByPhoto(photoInput),
+      getFormPatchDraftByPhoto(photoInput)
+    ]);
+    return {
+      stagedResult: settledValue(stagedResult, null),
+      candidateFieldSet: settledValue(candidateFieldSet, null),
+      reviewDraft: settledValue(reviewDraft, null),
+      reviewDecision: settledValue(reviewDecision, null),
+      formPatchDraft: settledValue(formPatchDraft, null),
+      warnings: [
+        ...settledWarning(stagedResult, '识别暂存状态读取失败。'),
+        ...settledWarning(candidateFieldSet, '候选字段读取失败。'),
+        ...settledWarning(reviewDraft, '人工确认草稿读取失败。'),
+        ...settledWarning(reviewDecision, '人工确认决策读取失败。'),
+        ...settledWarning(formPatchDraft, '表单补丁草稿读取失败。')
+      ],
+      errors: []
+    };
+  } catch (error) {
+    return {
+      ...emptyBundle,
+      errors: [{ code: 'recognition_readonly_bundle_error', message: error.message || '识别确认信息读取失败。' }]
+    };
+  }
+}
+
 export async function listReviewDecisions(options = {}) {
   try {
     const api = getRecognitionApi();
@@ -620,4 +653,24 @@ function createPatchValidationFallback(patchDraftId = '', error = null) {
     checkedAt: new Date().toISOString(),
     schemaVersion: 1
   });
+}
+
+function createEmptyReadOnlyBundle() {
+  return {
+    stagedResult: null,
+    candidateFieldSet: null,
+    reviewDraft: null,
+    reviewDecision: null,
+    formPatchDraft: null,
+    warnings: [],
+    errors: []
+  };
+}
+
+function settledValue(result, fallback) {
+  return result.status === 'fulfilled' ? result.value : fallback;
+}
+
+function settledWarning(result, message) {
+  return result.status === 'rejected' ? [message] : [];
 }
