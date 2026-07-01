@@ -965,7 +965,7 @@ export default function SortWorkspacePage({ archiveState }) {
               <strong>识别底座</strong>
               <span>待配置，当前手动填写归档信息。</span>
             </div>
-            <RecognitionReadOnlyPanel currentPhoto={recognitionReadOnlyPhoto} />
+            <RecognitionReadOnlyPanel currentPhoto={recognitionReadOnlyPhoto} formSnapshot={form} />
           </div>
           <div className="sort-right-actions">
             <button type="button" className="primary" title={`应用归档信息到选中照片（${selectedIds.length}）`} onClick={applyInfoToSelected} disabled={selectedIds.length === 0 || selectedHasIgnored}>应用</button>

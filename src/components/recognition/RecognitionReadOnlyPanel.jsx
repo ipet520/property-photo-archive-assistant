@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { getRecognitionReadOnlyBundleByPhoto } from '../../utils/recognitionClient.js';
+import {
+  buildFormPatchDraft,
+  createReviewDecision,
+  getRecognitionReadOnlyBundleByPhoto
+} from '../../utils/recognitionClient.js';
 
 const emptyBundle = {
   stagedResult: null,
@@ -11,17 +15,18 @@ const emptyBundle = {
   errors: []
 };
 
-export default function RecognitionReadOnlyPanel({ currentPhoto }) {
+export default function RecognitionReadOnlyPanel({ currentPhoto, formSnapshot = null }) {
   const photoInput = useMemo(() => buildPhotoInput(currentPhoto), [currentPhoto]);
   const photoKey = `${photoInput.photoId || ''}::${photoInput.filePath || ''}`;
-  const [state, setState] = useState({
-    loading: false,
-    error: '',
-    bundle: emptyBundle
-  });
+  const [state, setState] = useState({ loading: false, error: '', bundle: emptyBundle });
+  const [fieldDraftActions, setFieldDraftActions] = useState({});
+  const [draftStatus, setDraftStatus] = useState({ type: 'idle', text: '' });
+  const [isGenerating, setIsGenerating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    setFieldDraftActions({});
+    setDraftStatus({ type: 'idle', text: '' });
     if (!photoInput.photoId && !photoInput.filePath) {
       setState({ loading: false, error: '', bundle: emptyBundle });
       return () => { cancelled = true; };
@@ -41,7 +46,7 @@ export default function RecognitionReadOnlyPanel({ currentPhoto }) {
         });
       });
     return () => { cancelled = true; };
-  }, [photoKey]);
+  }, [photoKey, photoInput.photoId, photoInput.filePath]);
 
   const { bundle, loading, error } = state;
   const hasData = Boolean(
@@ -53,12 +58,98 @@ export default function RecognitionReadOnlyPanel({ currentPhoto }) {
   );
   const riskMessages = buildRiskMessages(bundle);
 
+  async function refreshBundle() {
+    const nextBundle = await getRecognitionReadOnlyBundleByPhoto(photoInput);
+    setState({ loading: false, error: '', bundle: nextBundle || emptyBundle });
+    return nextBundle;
+  }
+
+  function updateFieldDraftAction(candidateFieldId, patch) {
+    setFieldDraftActions((current) => ({
+      ...current,
+      [candidateFieldId]: {
+        action: '',
+        decidedValue: '',
+        ...(current[candidateFieldId] || {}),
+        ...patch
+      }
+    }));
+  }
+
+  async function generateReviewDraft() {
+    if (isGenerating) return;
+    if (!currentPhoto) {
+      setDraftStatus({ type: 'error', text: '请先选择照片。' });
+      return;
+    }
+    if (!bundle.reviewDraft) {
+      setDraftStatus({ type: 'error', text: '暂无人工确认草稿，当前不能生成确认草稿。' });
+      return;
+    }
+    const fields = Array.isArray(bundle.candidateFieldSet?.fields) ? bundle.candidateFieldSet.fields : [];
+    const fieldDecisions = fields.map((field) => {
+      const draftAction = fieldDraftActions[field.id] || {};
+      const action = String(draftAction.action || '');
+      if (!action) return null;
+      if (action === 'edit' && String(draftAction.decidedValue || '').trim() === '') {
+        return {
+          invalid: true,
+          candidateFieldId: field.id,
+          message: `“${field.label || field.sourceFieldKey || '候选字段'}”选择了编辑，但确认值为空。`
+        };
+      }
+      return {
+        candidateFieldId: field.id,
+        action,
+        decidedValue: action === 'edit' ? draftAction.decidedValue : undefined,
+        reason: '用户在识别确认区显式生成确认草稿。'
+      };
+    }).filter(Boolean);
+    const invalidDecision = fieldDecisions.find((item) => item.invalid);
+    if (invalidDecision) {
+      setDraftStatus({ type: 'error', text: invalidDecision.message });
+      return;
+    }
+    const validDecisions = fieldDecisions.filter((item) => !item.invalid);
+    if (validDecisions.length === 0) {
+      setDraftStatus({ type: 'warning', text: '请至少选择一个候选字段处理方式。' });
+      return;
+    }
+    setIsGenerating(true);
+    setDraftStatus({ type: 'idle', text: '正在生成确认草稿...' });
+    try {
+      const reviewDecision = await createReviewDecision({
+        reviewDraftId: bundle.reviewDraft.id,
+        fieldDecisions: validDecisions
+      });
+      if (!reviewDecision) {
+        setDraftStatus({ type: 'error', text: '确认草稿生成失败，未修改归档表单。' });
+        return;
+      }
+      const patchDraft = await buildFormPatchDraft({
+        reviewDecisionId: reviewDecision.id,
+        formSnapshot: isPlainObject(formSnapshot) ? formSnapshot : undefined
+      });
+      await refreshBundle();
+      setDraftStatus({
+        type: patchDraft ? 'success' : 'warning',
+        text: patchDraft
+          ? '已生成确认草稿和待应用补丁草稿，尚未应用到表单。'
+          : '已生成确认草稿，但待应用补丁草稿生成失败；未修改归档表单。'
+      });
+    } catch (generateError) {
+      setDraftStatus({ type: 'error', text: generateError.message || '生成确认草稿失败，未修改归档表单。' });
+    } finally {
+      setIsGenerating(false);
+    }
+  }
+
   return (
-    <section className="recognition-readonly-panel" aria-label="识别确认只读信息">
+    <section className="recognition-readonly-panel" aria-label="识别确认草稿信息">
       <header>
         <div>
-          <strong>识别确认（只读）</strong>
-          <span>仅供核对，当前版本不会自动写入表单</span>
+          <strong>识别确认（草稿）</strong>
+          <span>生成草稿仅用于核对，当前版本不会写入表单</span>
         </div>
         <small>{loading ? '读取中' : (hasData ? '已有数据' : '无数据')}</small>
       </header>
@@ -71,7 +162,18 @@ export default function RecognitionReadOnlyPanel({ currentPhoto }) {
       {currentPhoto && !loading && !error && hasData && (
         <div className="recognition-readonly-content">
           <StagedResultSummary stagedResult={bundle.stagedResult} />
-          <CandidateFieldTable candidateFieldSet={bundle.candidateFieldSet} />
+          <CandidateFieldTable
+            candidateFieldSet={bundle.candidateFieldSet}
+            fieldDraftActions={fieldDraftActions}
+            onDraftActionChange={updateFieldDraftAction}
+          />
+          <DraftActionBar
+            candidateFieldSet={bundle.candidateFieldSet}
+            reviewDraft={bundle.reviewDraft}
+            isGenerating={isGenerating}
+            status={draftStatus}
+            onGenerate={generateReviewDraft}
+          />
           <ReviewSummary reviewDraft={bundle.reviewDraft} reviewDecision={bundle.reviewDecision} />
           <PatchDraftTable formPatchDraft={bundle.formPatchDraft} />
           <RiskSummary messages={riskMessages} warnings={bundle.warnings} errors={bundle.errors} />
@@ -98,32 +200,82 @@ function StagedResultSummary({ stagedResult }) {
   );
 }
 
-function CandidateFieldTable({ candidateFieldSet }) {
+function CandidateFieldTable({ candidateFieldSet, fieldDraftActions, onDraftActionChange }) {
   const fields = Array.isArray(candidateFieldSet?.fields) ? candidateFieldSet.fields : [];
   return (
     <MiniSection title="候选字段">
       {fields.length === 0 ? (
-        <EmptyLine text="暂无候选字段。" />
+        <EmptyLine text="暂无候选字段可确认。" />
       ) : (
         <div className="recognition-readonly-table">
-          <div className="recognition-readonly-row heading">
+          <div className="recognition-readonly-row interactive heading">
             <span>字段</span>
             <span>候选值</span>
+            <span>确认值</span>
             <span>目标字段</span>
             <span>状态</span>
+            <span>操作</span>
+            <span>提示</span>
           </div>
           {fields.map((field) => (
-            <div className="recognition-readonly-row" key={field.id || `${field.sourceFieldKey}-${field.targetFieldKey}`}>
+            <div className="recognition-readonly-row interactive" key={field.id || `${field.sourceFieldKey}-${field.targetFieldKey}`}>
               <span title={field.label || field.sourceFieldKey}>{field.label || field.sourceFieldKey || '-'}</span>
               <span title={formatValue(field.normalizedValue ?? field.value)}>{formatValue(field.normalizedValue ?? field.value)}</span>
+              <span>
+                {(fieldDraftActions[field.id]?.action === 'edit') ? (
+                  <input
+                    type="text"
+                    value={fieldDraftActions[field.id]?.decidedValue || ''}
+                    onChange={(event) => onDraftActionChange(field.id, { decidedValue: event.target.value })}
+                    placeholder="输入确认值"
+                  />
+                ) : (
+                  <em>{formatDecisionValue(field, fieldDraftActions[field.id])}</em>
+                )}
+              </span>
               <span>{field.targetFieldKey === 'unmapped' ? '未映射' : (field.targetFieldKey || '-')}</span>
               <span>{field.canApply ? '可应用' : '不可应用'} / {field.requiresReview ? '需人工确认' : '无需确认'}</span>
+              <span className="recognition-action-pills">
+                {['accept', 'reject', 'ignore', 'edit'].map((action) => (
+                  <button
+                    type="button"
+                    className={fieldDraftActions[field.id]?.action === action ? 'active' : ''}
+                    key={action}
+                    onClick={() => onDraftActionChange(field.id, {
+                      action,
+                      decidedValue: action === 'edit'
+                        ? String(fieldDraftActions[field.id]?.decidedValue || valueForEdit(field))
+                        : ''
+                    })}
+                  >
+                    {actionLabel(action)}
+                  </button>
+                ))}
+              </span>
+              <span title={field.warning || field.error || ''}>{buildFieldHint(field, fieldDraftActions[field.id])}</span>
             </div>
           ))}
         </div>
       )}
       <MessageList warnings={candidateFieldSet?.warnings} errors={candidateFieldSet?.errors} />
     </MiniSection>
+  );
+}
+
+function DraftActionBar({ candidateFieldSet, reviewDraft, isGenerating, status, onGenerate }) {
+  const fields = Array.isArray(candidateFieldSet?.fields) ? candidateFieldSet.fields : [];
+  if (fields.length === 0) return null;
+  return (
+    <div className="recognition-draft-actionbar">
+      <div>
+        <strong>当前不会写入表单</strong>
+        <span>只会生成 ReviewDecision 和 FormPatchDraft 草稿。</span>
+      </div>
+      <button type="button" onClick={onGenerate} disabled={isGenerating || !reviewDraft}>
+        {isGenerating ? '生成中...' : '生成确认草稿'}
+      </button>
+      {status.text && <small className={status.type}>{status.text}</small>}
+    </div>
   );
 }
 
@@ -265,6 +417,14 @@ function formatValue(value) {
   return trimText(String(value), 80);
 }
 
+function valueForEdit(field) {
+  const value = field?.normalizedValue ?? field?.value;
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.join('、');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
 function formatTime(value) {
   if (!value) return '-';
   return String(value).replace('T', ' ').replace(/\.\d{3}Z$/, '');
@@ -281,4 +441,33 @@ function normalizeMessages(values = []) {
 function trimText(value = '', max = 80) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max)}...` : text;
+}
+
+function actionLabel(action) {
+  return {
+    accept: '接受',
+    reject: '拒绝',
+    ignore: '忽略',
+    edit: '编辑'
+  }[action] || action;
+}
+
+function formatDecisionValue(field, draftAction = {}) {
+  if (!draftAction?.action) return '未决定';
+  if (draftAction.action === 'reject') return '拒绝，不生成补丁';
+  if (draftAction.action === 'ignore') return '忽略，不生成补丁';
+  if (draftAction.action === 'edit') return draftAction.decidedValue || '待输入确认值';
+  return formatValue(field.normalizedValue ?? field.value);
+}
+
+function buildFieldHint(field, draftAction = {}) {
+  if (!draftAction?.action) return field.canApply ? '待人工选择' : '不可应用，可拒绝或忽略';
+  if (draftAction.action === 'edit' && !String(draftAction.decidedValue || '').trim()) return '编辑值不能为空';
+  if (field.targetFieldKey === 'unmapped') return '未映射字段不会生成可应用补丁';
+  if (!field.canApply && ['accept', 'edit'].includes(draftAction.action)) return '可生成草稿，但补丁会标记不可应用';
+  return field.warning || field.error || '显式选择后才进入确认草稿';
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

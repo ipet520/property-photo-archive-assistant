@@ -1,4 +1,4 @@
-export const APP_VERSION = '2.8.8';
+export const APP_VERSION = '2.8.9';
 export const APP_NAME = '物业工作照片归档助手';
 
 export const PAGE_KEYS = {
