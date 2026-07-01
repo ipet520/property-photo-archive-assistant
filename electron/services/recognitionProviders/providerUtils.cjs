@@ -82,7 +82,12 @@ function normalizeRecognitionResult(result = {}) {
     stagedResultId: String(result.stagedResultId || ''),
     stageStatus: String(result.stageStatus || ''),
     stagedResult: result.stagedResult && typeof result.stagedResult === 'object' ? result.stagedResult : undefined,
-    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined
+    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined,
+    candidateFieldSetId: String(result.candidateFieldSetId || ''),
+    candidateFieldSet: result.candidateFieldSet && typeof result.candidateFieldSet === 'object' ? result.candidateFieldSet : undefined,
+    reviewDraftId: String(result.reviewDraftId || ''),
+    reviewDraft: result.reviewDraft && typeof result.reviewDraft === 'object' ? result.reviewDraft : undefined,
+    candidateReviewError: result.candidateReviewError && typeof result.candidateReviewError === 'object' ? result.candidateReviewError : undefined
   };
 }
 

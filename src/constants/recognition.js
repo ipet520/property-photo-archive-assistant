@@ -80,6 +80,41 @@ export const RECOGNITION_STAGE_STATUS = {
 
 export const RECOGNITION_STAGE_STATUSES = Object.values(RECOGNITION_STAGE_STATUS);
 
+export const RECOGNITION_CANDIDATE_FIELD_STATUS = {
+  CANDIDATE: 'candidate',
+  PENDING_REVIEW: 'pending_review',
+  ACCEPTED: 'accepted',
+  REJECTED: 'rejected',
+  IGNORED: 'ignored',
+  CONFLICT: 'conflict',
+  INVALID: 'invalid'
+};
+
+export const RECOGNITION_CANDIDATE_FIELD_STATUSES = Object.values(RECOGNITION_CANDIDATE_FIELD_STATUS);
+
+export const RECOGNITION_CANDIDATE_FIELD_SET_STATUS = {
+  EMPTY: 'empty',
+  PENDING_REVIEW: 'pending_review',
+  PARTIALLY_REVIEWED: 'partially_reviewed',
+  REVIEWED: 'reviewed',
+  DISMISSED: 'dismissed',
+  FAILED: 'failed'
+};
+
+export const RECOGNITION_CANDIDATE_FIELD_SET_STATUSES = Object.values(RECOGNITION_CANDIDATE_FIELD_SET_STATUS);
+
+export const RECOGNITION_REVIEW_DRAFT_STATUS = {
+  PENDING_REVIEW: 'pending_review',
+  REVIEWING: 'reviewing',
+  ACCEPTED: 'accepted',
+  PARTIALLY_ACCEPTED: 'partially_accepted',
+  REJECTED: 'rejected',
+  DISMISSED: 'dismissed',
+  CLEARED: 'cleared'
+};
+
+export const RECOGNITION_REVIEW_DRAFT_STATUSES = Object.values(RECOGNITION_REVIEW_DRAFT_STATUS);
+
 export const RECOGNITION_PRIVACY_POLICY = {
   uploadsPhotos: false,
   callsRemoteService: false,

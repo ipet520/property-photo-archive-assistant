@@ -1,5 +1,10 @@
 import { parseRecognitionText as parseLocally } from './recognitionResultParser.js';
-import { normalizeRecognitionResult, normalizeRecognitionStagedResult } from './recognitionTypes.js';
+import {
+  normalizeRecognitionCandidateFieldSet,
+  normalizeRecognitionResult,
+  normalizeRecognitionReviewDraft,
+  normalizeRecognitionStagedResult
+} from './recognitionTypes.js';
 
 function getRecognitionApi() {
   return window.archiveAssistant?.recognition || null;
@@ -189,6 +194,183 @@ export async function clearAllStagedResults() {
   try {
     const api = getRecognitionApi();
     const count = api?.clearAllStagedResults ? await api.clearAllStagedResults() : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function getFieldMappingRules() {
+  try {
+    const api = getRecognitionApi();
+    return api?.getFieldMappingRules ? await api.getFieldMappingRules() : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function buildCandidateFieldSet(stagedResultId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.buildCandidateFieldSet ? await api.buildCandidateFieldSet(stagedResultId) : null;
+    return result ? normalizeRecognitionCandidateFieldSet(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getCandidateFieldSet(id = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getCandidateFieldSet ? await api.getCandidateFieldSet(id) : null;
+    return result ? normalizeRecognitionCandidateFieldSet(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getCandidateFieldSetByStagedResult(stagedResultId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getCandidateFieldSetByStagedResult ? await api.getCandidateFieldSetByStagedResult(stagedResultId) : null;
+    return result ? normalizeRecognitionCandidateFieldSet(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getCandidateFieldSetByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getCandidateFieldSetByPhoto ? await api.getCandidateFieldSetByPhoto(photoInput) : null;
+    return result ? normalizeRecognitionCandidateFieldSet(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listCandidateFieldSets(options = {}) {
+  try {
+    const api = getRecognitionApi();
+    const results = api?.listCandidateFieldSets ? await api.listCandidateFieldSets(options) : [];
+    return (Array.isArray(results) ? results : []).map(normalizeRecognitionCandidateFieldSet);
+  } catch {
+    return [];
+  }
+}
+
+export async function clearCandidateFieldSet(id = '') {
+  try {
+    const api = getRecognitionApi();
+    return api?.clearCandidateFieldSet ? Boolean(await api.clearCandidateFieldSet(id)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearCandidateFieldSetsByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearCandidateFieldSetsByPhoto ? await api.clearCandidateFieldSetsByPhoto(photoInput) : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAllCandidateFieldSets() {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearAllCandidateFieldSets ? await api.clearAllCandidateFieldSets() : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function createReviewDraft(stagedResultId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.createReviewDraft ? await api.createReviewDraft(stagedResultId) : null;
+    return result ? normalizeRecognitionReviewDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDraft(id = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDraft ? await api.getReviewDraft(id) : null;
+    return result ? normalizeRecognitionReviewDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDraftByStagedResult(stagedResultId = '') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDraftByStagedResult ? await api.getReviewDraftByStagedResult(stagedResultId) : null;
+    return result ? normalizeRecognitionReviewDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function getReviewDraftByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.getReviewDraftByPhoto ? await api.getReviewDraftByPhoto(photoInput) : null;
+    return result ? normalizeRecognitionReviewDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function listReviewDrafts(options = {}) {
+  try {
+    const api = getRecognitionApi();
+    const results = api?.listReviewDrafts ? await api.listReviewDrafts(options) : [];
+    return (Array.isArray(results) ? results : []).map(normalizeRecognitionReviewDraft);
+  } catch {
+    return [];
+  }
+}
+
+export async function updateReviewDraftStatus(id = '', status = 'pending_review') {
+  try {
+    const api = getRecognitionApi();
+    const result = api?.updateReviewDraftStatus ? await api.updateReviewDraftStatus(id, status) : null;
+    return result ? normalizeRecognitionReviewDraft(result) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearReviewDraft(id = '') {
+  try {
+    const api = getRecognitionApi();
+    return api?.clearReviewDraft ? Boolean(await api.clearReviewDraft(id)) : false;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearReviewDraftsByPhoto(photoInput = {}) {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearReviewDraftsByPhoto ? await api.clearReviewDraftsByPhoto(photoInput) : 0;
+    return Number.isFinite(Number(count)) ? Number(count) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function clearAllReviewDrafts() {
+  try {
+    const api = getRecognitionApi();
+    const count = api?.clearAllReviewDrafts ? await api.clearAllReviewDrafts() : 0;
     return Number.isFinite(Number(count)) ? Number(count) : 0;
   } catch {
     return 0;

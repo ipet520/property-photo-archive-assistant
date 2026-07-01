@@ -1,10 +1,13 @@
 import {
   EMPTY_RECOGNITION_FIELDS,
+  RECOGNITION_CANDIDATE_FIELD_SET_STATUSES,
+  RECOGNITION_CANDIDATE_FIELD_STATUSES,
   RECOGNITION_MODES,
   RECOGNITION_PROVIDER_STATUSES,
   RECOGNITION_PROVIDER_TYPES as PROVIDER_TYPES,
   RECOGNITION_RESULT_SOURCES,
   RECOGNITION_RESULT_STATUSES,
+  RECOGNITION_REVIEW_DRAFT_STATUSES,
   RECOGNITION_STAGE_STATUSES,
   RECOGNITION_TASK_STATUSES
 } from '../constants/recognition.js';
@@ -59,6 +62,11 @@ export function createEmptyRecognitionResult(photo = {}) {
     stagedResultId: '',
     stageStatus: '',
     stagedResult: undefined,
+    candidateFieldSetId: '',
+    candidateFieldSet: undefined,
+    reviewDraftId: '',
+    reviewDraft: undefined,
+    candidateReviewError: undefined,
     stagingError: undefined
   };
 }
@@ -112,6 +120,11 @@ export function normalizeRecognitionResult(result = {}) {
     stagedResultId: String(result.stagedResultId || ''),
     stageStatus: String(result.stageStatus || ''),
     stagedResult: result.stagedResult && typeof result.stagedResult === 'object' ? normalizeRecognitionStagedResult(result.stagedResult) : undefined,
+    candidateFieldSetId: String(result.candidateFieldSetId || ''),
+    candidateFieldSet: result.candidateFieldSet && typeof result.candidateFieldSet === 'object' ? normalizeRecognitionCandidateFieldSet(result.candidateFieldSet) : undefined,
+    reviewDraftId: String(result.reviewDraftId || ''),
+    reviewDraft: result.reviewDraft && typeof result.reviewDraft === 'object' ? normalizeRecognitionReviewDraft(result.reviewDraft) : undefined,
+    candidateReviewError: result.candidateReviewError && typeof result.candidateReviewError === 'object' ? result.candidateReviewError : undefined,
     stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined
   };
 }
@@ -141,6 +154,82 @@ export function normalizeRecognitionStagedResult(result = {}) {
     updatedAt: String(result.updatedAt || createdAt),
     reviewedAt: String(result.reviewedAt || ''),
     clearedAt: String(result.clearedAt || ''),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionCandidateField(field = {}) {
+  const createdAt = String(field.createdAt || new Date().toISOString());
+  return {
+    id: String(field.id || ''),
+    stagedResultId: String(field.stagedResultId || ''),
+    taskId: String(field.taskId || ''),
+    sourceFieldKey: String(field.sourceFieldKey || ''),
+    targetFieldKey: String(field.targetFieldKey || 'unmapped'),
+    label: String(field.label || field.sourceFieldKey || ''),
+    value: cloneJsonValue(field.value),
+    normalizedValue: cloneJsonValue(field.normalizedValue),
+    confidence: Number.isFinite(Number(field.confidence)) ? Number(field.confidence) : null,
+    status: normalizeCandidateFieldStatus(field.status),
+    source: 'recognition_proposed_fields',
+    reason: String(field.reason || ''),
+    warning: String(field.warning || ''),
+    error: String(field.error || ''),
+    canApply: field.canApply === true,
+    requiresReview: true,
+    allowAutoApply: false,
+    existingValue: field.existingValue === undefined ? null : cloneJsonValue(field.existingValue),
+    hasConflict: field.hasConflict === true,
+    conflictReason: String(field.conflictReason || ''),
+    createdAt,
+    updatedAt: String(field.updatedAt || createdAt),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionCandidateFieldSet(fieldSet = {}) {
+  const createdAt = String(fieldSet.createdAt || new Date().toISOString());
+  return {
+    id: String(fieldSet.id || ''),
+    stagedResultId: String(fieldSet.stagedResultId || ''),
+    taskId: String(fieldSet.taskId || ''),
+    photoId: String(fieldSet.photoId || ''),
+    filePath: String(fieldSet.filePath || ''),
+    fileName: String(fieldSet.fileName || ''),
+    fields: (Array.isArray(fieldSet.fields) ? fieldSet.fields : []).map(normalizeRecognitionCandidateField),
+    status: normalizeCandidateFieldSetStatus(fieldSet.status),
+    warnings: normalizeStringArray(fieldSet.warnings),
+    errors: normalizeErrors(fieldSet.errors),
+    createdAt,
+    updatedAt: String(fieldSet.updatedAt || createdAt),
+    schemaVersion: 1
+  };
+}
+
+export function normalizeRecognitionReviewDraft(draft = {}) {
+  const createdAt = String(draft.createdAt || new Date().toISOString());
+  const fields = (Array.isArray(draft.fields) ? draft.fields : []).map(normalizeRecognitionCandidateField);
+  return {
+    id: String(draft.id || ''),
+    stagedResultId: String(draft.stagedResultId || ''),
+    candidateFieldSetId: String(draft.candidateFieldSetId || ''),
+    taskId: String(draft.taskId || ''),
+    photoId: String(draft.photoId || ''),
+    filePath: String(draft.filePath || ''),
+    fileName: String(draft.fileName || ''),
+    fields,
+    status: normalizeReviewDraftStatus(draft.status),
+    summary: {
+      total: Number(draft.summary?.total || fields.length),
+      canApplyCount: Number(draft.summary?.canApplyCount || fields.filter((field) => field.canApply).length),
+      requiresReviewCount: Number(draft.summary?.requiresReviewCount || fields.filter((field) => field.requiresReview).length),
+      conflictCount: Number(draft.summary?.conflictCount || fields.filter((field) => field.hasConflict).length),
+      invalidCount: Number(draft.summary?.invalidCount || fields.filter((field) => field.status === 'invalid').length)
+    },
+    createdAt,
+    updatedAt: String(draft.updatedAt || createdAt),
+    reviewedAt: String(draft.reviewedAt || ''),
+    clearedAt: String(draft.clearedAt || ''),
     schemaVersion: 1
   };
 }
@@ -218,11 +307,35 @@ function normalizeStageStatus(value = '') {
   return RECOGNITION_STAGE_STATUSES.includes(stageStatus) ? stageStatus : 'staged';
 }
 
+function normalizeCandidateFieldStatus(value = '') {
+  const status = String(value || '').trim();
+  return RECOGNITION_CANDIDATE_FIELD_STATUSES.includes(status) ? status : 'pending_review';
+}
+
+function normalizeCandidateFieldSetStatus(value = '') {
+  const status = String(value || '').trim();
+  return RECOGNITION_CANDIDATE_FIELD_SET_STATUSES.includes(status) ? status : 'empty';
+}
+
+function normalizeReviewDraftStatus(value = '') {
+  const status = String(value || '').trim();
+  return RECOGNITION_REVIEW_DRAFT_STATUSES.includes(status) ? status : 'pending_review';
+}
+
 function normalizePlainObject(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   try {
     return JSON.parse(JSON.stringify(value));
   } catch {
     return {};
+  }
+}
+
+function cloneJsonValue(value) {
+  if (value === undefined) return null;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return null;
   }
 }

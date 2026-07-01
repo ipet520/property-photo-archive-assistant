@@ -1,5 +1,19 @@
 # 物业工作照片归档助手
 
+## V2.8.6 候选字段映射与人工确认数据结构预备版
+
+V2.8.6 在 V2.8.5 识别结果暂存层基础上，新增 proposedFields 到候选字段、字段映射规则和人工确认草稿的内部数据结构。它只为后续人工确认界面预留安全数据层，不新增 UI，不接真实 OCR / 云识别 / AI 识别，也不会自动应用字段。
+
+本版重点：
+
+- 新增 RecognitionCandidateField 候选字段结构，记录来源字段、目标归档字段、原始值、标准化值、置信度、风险状态、是否可应用和是否需要人工确认。
+- 新增 RecognitionCandidateFieldSet 候选字段集结构，一条 RecognitionStagedResult 对应一组候选字段；proposedFields 为空时会生成 `empty` 字段集。
+- 新增 RecognitionFieldMappingRule 字段映射规则结构，只映射到现有归档字段，`allowAutoApply` 固定为 false，所有候选字段都必须等待人工确认。
+- 新增 RecognitionReviewDraft 人工确认草稿结构，支持后续按候选字段生成待确认草稿、统计可应用字段和风险字段。
+- 新增候选字段集和 ReviewDraft 的查询、列表、状态更新、清除等内部 IPC 与 recognitionClient 安全方法。
+- `recognizePhoto` / `recognizePhotos` 可在保留 RecognitionResult 兼容结构的同时附带 `stagedResultId`、`candidateFieldSetId`、`reviewDraftId`。
+- 本版本不接真实 OCR、不接云 API、不接 AI 识别、不上传照片、不自动应用字段、不覆盖用户字段、不自动预览、不自动归档、不写 Excel 台账、不新增 UI。
+
 ## V2.8.5 识别结果暂存与人工确认预备版
 
 V2.8.5 在 V2.8.4 识别执行管线基础上，新增 RecognitionStagedResult 识别结果暂存结构和识别结果暂存服务。识别管线返回的 RecognitionResult 可以安全写入 Electron `userData/recognition-staged-results.json`，并支持按任务、照片、文件路径进行查询、状态更新和清除。

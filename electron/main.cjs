@@ -20,6 +20,25 @@ const {
   parseRecognitionText,
   recognizePhoto,
   recognizePhotos,
+  getRecognitionFieldMappingRules,
+  getRecognitionFieldMappingRule,
+  buildCandidateFieldSetFromStagedResult,
+  getCandidateFieldSet,
+  getCandidateFieldSetByStagedResult,
+  getCandidateFieldSetByPhoto,
+  listCandidateFieldSets,
+  clearCandidateFieldSet,
+  clearCandidateFieldSetsByPhoto,
+  clearAllCandidateFieldSets,
+  createReviewDraftFromStagedResult,
+  getReviewDraft,
+  getReviewDraftByStagedResultId,
+  getReviewDraftByPhoto,
+  listReviewDrafts,
+  updateReviewDraftStatus,
+  clearReviewDraft,
+  clearReviewDraftsByPhoto,
+  clearAllReviewDrafts,
   getStagedRecognitionResult,
   getStagedRecognitionResultByTaskId,
   getStagedRecognitionResultByPhoto,
@@ -364,6 +383,85 @@ ipcMain.handle('recognition:clearStagedResultsByPhoto', async (_event, photoInpu
 ));
 ipcMain.handle('recognition:clearAllStagedResults', async () => safeRecognitionCall(
   () => clearAllStagedRecognitionResults(app.getPath('userData')),
+  () => 0
+));
+ipcMain.handle('recognition:getFieldMappingRules', async () => safeRecognitionCall(
+  () => getRecognitionFieldMappingRules(),
+  () => []
+));
+ipcMain.handle('recognition:getFieldMappingRule', async (_event, sourceFieldKey) => safeRecognitionCall(
+  () => getRecognitionFieldMappingRule(sourceFieldKey),
+  () => null
+));
+ipcMain.handle('recognition:buildCandidateFieldSet', async (_event, stagedResultId) => safeRecognitionCall(
+  async () => {
+    const stagedResult = await getStagedRecognitionResult(app.getPath('userData'), stagedResultId);
+    return stagedResult ? buildCandidateFieldSetFromStagedResult(app.getPath('userData'), stagedResult) : null;
+  },
+  () => null
+));
+ipcMain.handle('recognition:getCandidateFieldSet', async (_event, id) => safeRecognitionCall(
+  () => getCandidateFieldSet(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('recognition:getCandidateFieldSetByStagedResult', async (_event, stagedResultId) => safeRecognitionCall(
+  () => getCandidateFieldSetByStagedResult(app.getPath('userData'), stagedResultId),
+  () => null
+));
+ipcMain.handle('recognition:getCandidateFieldSetByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => getCandidateFieldSetByPhoto(app.getPath('userData'), photoInput),
+  () => null
+));
+ipcMain.handle('recognition:listCandidateFieldSets', async (_event, options) => safeRecognitionCall(
+  () => listCandidateFieldSets(app.getPath('userData'), options),
+  () => []
+));
+ipcMain.handle('recognition:clearCandidateFieldSet', async (_event, id) => safeRecognitionCall(
+  () => clearCandidateFieldSet(app.getPath('userData'), id),
+  () => false
+));
+ipcMain.handle('recognition:clearCandidateFieldSetsByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => clearCandidateFieldSetsByPhoto(app.getPath('userData'), photoInput),
+  () => 0
+));
+ipcMain.handle('recognition:clearAllCandidateFieldSets', async () => safeRecognitionCall(
+  () => clearAllCandidateFieldSets(app.getPath('userData')),
+  () => 0
+));
+ipcMain.handle('recognition:createReviewDraft', async (_event, stagedResultId) => safeRecognitionCall(
+  () => createReviewDraftFromStagedResult(app.getPath('userData'), stagedResultId),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDraft', async (_event, id) => safeRecognitionCall(
+  () => getReviewDraft(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDraftByStagedResult', async (_event, stagedResultId) => safeRecognitionCall(
+  () => getReviewDraftByStagedResultId(app.getPath('userData'), stagedResultId),
+  () => null
+));
+ipcMain.handle('recognition:getReviewDraftByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => getReviewDraftByPhoto(app.getPath('userData'), photoInput),
+  () => null
+));
+ipcMain.handle('recognition:listReviewDrafts', async (_event, options) => safeRecognitionCall(
+  () => listReviewDrafts(app.getPath('userData'), options),
+  () => []
+));
+ipcMain.handle('recognition:updateReviewDraftStatus', async (_event, id, status) => safeRecognitionCall(
+  () => updateReviewDraftStatus(app.getPath('userData'), id, status),
+  () => null
+));
+ipcMain.handle('recognition:clearReviewDraft', async (_event, id) => safeRecognitionCall(
+  () => clearReviewDraft(app.getPath('userData'), id),
+  () => false
+));
+ipcMain.handle('recognition:clearReviewDraftsByPhoto', async (_event, photoInput) => safeRecognitionCall(
+  () => clearReviewDraftsByPhoto(app.getPath('userData'), photoInput),
+  () => 0
+));
+ipcMain.handle('recognition:clearAllReviewDrafts', async () => safeRecognitionCall(
+  () => clearAllReviewDrafts(app.getPath('userData')),
   () => 0
 ));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));

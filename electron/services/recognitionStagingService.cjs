@@ -168,7 +168,7 @@ function createRecognitionStagedResult(result = {}) {
     stageStatus: 'staged',
     rawText: String(result.rawText || ''),
     parsedFields: clonePlainObject(result.parsedFields || result.fields || {}),
-    proposedFields: {},
+    proposedFields: clonePlainObject(result.proposedFields || {}),
     confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
     warnings: normalizeStringArray(result.warnings),
     errors: normalizeErrors(result.errors, result.errorCode, result.errorMessage),

@@ -1,5 +1,16 @@
 # 更新记录
 
+## V2.8.6 候选字段映射与人工确认数据结构预备版
+
+- 新增 RecognitionCandidateField 候选字段结构，预留识别 proposedFields 到归档字段的人工确认数据模型。
+- 新增 RecognitionCandidateFieldSet 候选字段集结构，支持 proposedFields 为空、非对象或有字段时的安全转换。
+- 新增 RecognitionFieldMappingRule 字段映射规则结构，只映射到现有归档字段，`allowAutoApply` 固定为 false。
+- 新增 RecognitionReviewDraft 人工确认草稿结构，为后续人工确认界面预留草稿状态、字段统计和清除能力。
+- 新增候选字段集与 ReviewDraft 的本地 JSON 存储、查询、列表、状态更新和清除能力，存储在 Electron `userData` 目录。
+- `recognizePhoto` / `recognizePhotos` 在暂存识别结果后会尝试生成 CandidateFieldSet 和 ReviewDraft，并附加 `candidateFieldSetId`、`reviewDraftId` 兼容字段。
+- 候选字段和 ReviewDraft 与归档表单、预览归档、确认归档、Excel 台账完全隔离，不自动应用字段、不覆盖用户输入、不自动预览、不自动归档。
+- 当前版本仍不接真实 OCR / 云 API / AI 识别，不上传照片，不新增 UI 或识别入口，不修改页面布局和顶栏配色。
+
 ## V2.8.5 识别结果暂存与人工确认预备版
 
 - 新增 RecognitionStagedResult 识别结果暂存结构，为后续人工确认识别结果预留数据模型。

@@ -23,6 +23,30 @@ const {
   stageRecognitionResult,
   updateStagedRecognitionStatus
 } = require('./recognitionStagingService.cjs');
+const {
+  buildCandidateFieldSetFromStagedResult,
+  clearAllCandidateFieldSets,
+  clearCandidateFieldSet,
+  clearCandidateFieldSetsByPhoto,
+  getCandidateFieldSet,
+  getCandidateFieldSetByPhoto,
+  getCandidateFieldSetByStagedResult,
+  getRecognitionFieldMappingRule,
+  getRecognitionFieldMappingRules,
+  listCandidateFieldSets
+} = require('./recognitionFieldMappingService.cjs');
+const {
+  clearAllReviewDrafts,
+  clearReviewDraft,
+  clearReviewDraftsByPhoto,
+  createReviewDraftFromCandidateFieldSet,
+  createReviewDraftFromStagedResult,
+  getReviewDraft,
+  getReviewDraftByPhoto,
+  getReviewDraftByStagedResultId,
+  listReviewDrafts,
+  updateReviewDraftStatus
+} = require('./recognitionReviewDraftService.cjs');
 
 const providers = [localProvider, ...cloudProviders, manualProvider];
 
@@ -145,11 +169,17 @@ async function attachStagedResult(recognitionResult = {}, options = {}) {
         }
       };
     }
+    const candidatePayload = await attachCandidateReviewDraft(stagedResult, options);
     return {
       ...recognitionResult,
       stagedResultId: stagedResult.id,
       stageStatus: stagedResult.stageStatus,
-      stagedResult
+      stagedResult,
+      ...candidatePayload,
+      warnings: [
+        ...(recognitionResult.warnings || []),
+        ...(candidatePayload.warnings || [])
+      ]
     };
   } catch (error) {
     return {
@@ -161,6 +191,36 @@ async function attachStagedResult(recognitionResult = {}, options = {}) {
       stagingError: {
         code: 'recognition_staging_error',
         message: error.message || '识别结果暂存异常。'
+      }
+    };
+  }
+}
+
+async function attachCandidateReviewDraft(stagedResult = {}, options = {}) {
+  try {
+    const candidateFieldSet = await buildCandidateFieldSetFromStagedResult(options.userDataDir, stagedResult);
+    if (!candidateFieldSet) {
+      return {
+        warnings: ['候选字段集生成失败，但识别结果已安全返回，未修改照片、表单或台账。']
+      };
+    }
+    const reviewDraft = await createReviewDraftFromCandidateFieldSet(options.userDataDir, candidateFieldSet);
+    return {
+      candidateFieldSetId: candidateFieldSet.id,
+      candidateFieldSet,
+      reviewDraftId: reviewDraft?.id || '',
+      reviewDraft: reviewDraft || undefined,
+      warnings: [
+        ...(candidateFieldSet.warnings || []),
+        ...(reviewDraft ? [] : ['人工确认草稿生成失败，但识别结果已安全返回，未修改照片、表单或台账。'])
+      ].filter(Boolean)
+    };
+  } catch (error) {
+    return {
+      warnings: ['候选字段或人工确认草稿生成异常，但识别结果已安全返回，未修改照片、表单或台账。'],
+      candidateReviewError: {
+        code: 'recognition_candidate_review_error',
+        message: error.message || '候选字段或人工确认草稿生成异常。'
       }
     };
   }
@@ -575,6 +635,26 @@ module.exports = {
   getSafeRecognitionConfig,
   updateRecognitionConfig,
   diagnoseRecognitionConfig,
+  getRecognitionFieldMappingRules,
+  getRecognitionFieldMappingRule,
+  buildCandidateFieldSetFromStagedResult,
+  getCandidateFieldSet,
+  getCandidateFieldSetByStagedResult,
+  getCandidateFieldSetByPhoto,
+  listCandidateFieldSets,
+  clearCandidateFieldSet,
+  clearCandidateFieldSetsByPhoto,
+  clearAllCandidateFieldSets,
+  createReviewDraftFromStagedResult,
+  createReviewDraftFromCandidateFieldSet,
+  getReviewDraft,
+  getReviewDraftByStagedResultId,
+  getReviewDraftByPhoto,
+  listReviewDrafts,
+  updateReviewDraftStatus,
+  clearReviewDraft,
+  clearReviewDraftsByPhoto,
+  clearAllReviewDrafts,
   stageRecognitionResult,
   getStagedRecognitionResult,
   getStagedRecognitionResultByTaskId,
