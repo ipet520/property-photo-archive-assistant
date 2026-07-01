@@ -25,11 +25,11 @@ function createCloudProvider({ id, name, type }) {
       const enabled = providerConfig.enabled === true;
       const missingFields = configStatus.missingFields || [];
       const isConfigured = missingFields.length === 0 && configStatus.hasEndpoint && configStatus.hasApiKey;
-      const status = !enabled ? 'disabled' : (isConfigured ? 'provider_unavailable' : 'not_configured');
+      const status = !enabled ? 'disabled' : (isConfigured ? 'not_implemented' : 'not_configured');
       const reason = !enabled
         ? '联网识别 provider 未启用，当前不会上传照片或调用远程服务。'
         : (isConfigured
-          ? '联网识别 provider 已配置但当前版本仅做配置诊断，不发起真实远程请求。'
+          ? '联网识别 provider 已配置，但真实远程识别请求尚未启用。'
           : `联网识别 provider 缺少配置项：${missingFields.join('、') || 'endpoint、apiKey'}。`);
       return createProviderStatus(this, {
         enabled,
@@ -49,19 +49,26 @@ function createCloudProvider({ id, name, type }) {
     getStatus() {
       return this.diagnose();
     },
-    async recognize(photo = {}) {
+    async recognize(photo = {}, options = {}) {
+      const providerConfig = resolveProviderConfig(this, options.config || {});
+      const configStatus = getProviderConfigStatus(providerConfig);
+      const missingFields = configStatus.missingFields || [];
+      const hasRequiredConfig = configStatus.hasEndpoint && configStatus.hasApiKey && missingFields.length === 0;
       return createUnavailableResult(photo, this, {
-        status: 'disabled',
-        code: `${id}_disabled`,
-        reason: '联网识别 provider 尚未配置，未发起任何网络请求。',
+        taskId: options.taskId || options.task?.taskId || '',
+        status: hasRequiredConfig ? 'not_implemented' : 'not_configured',
+        code: hasRequiredConfig ? `${id}_not_implemented` : `${id}_not_configured`,
+        reason: hasRequiredConfig
+          ? '真实远程识别请求尚未启用，未上传照片、未发起网络请求。'
+          : `联网识别 provider 缺少配置项：${missingFields.join('、') || 'endpoint、apiKey'}。`,
         warnings: ['当前版本不上传照片、不调用远程识别服务。']
       });
     },
-    async recognizePhoto(photo = {}) {
-      return this.recognize(photo);
+    async recognizePhoto(photo = {}, options = {}) {
+      return this.recognize(photo, options);
     },
-    async recognizePhotos(photos = []) {
-      return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo)));
+    async recognizePhotos(photos = [], options = {}) {
+      return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo, options)));
     }
   };
 }

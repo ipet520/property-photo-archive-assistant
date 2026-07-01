@@ -1,5 +1,14 @@
 # 更新记录
 
+## V2.8.4 识别执行管线预备版
+
+- 新增 RecognitionTask 结构，记录识别任务的照片、provider、模式、状态、时间、warnings 和 errors。
+- 新增并完善 `recognizePhoto` / `recognizePhotos` 内部入口，支持顺序处理照片并返回标准 RecognitionResult。
+- 识别执行入口会读取 recognitionConfigService 配置，并根据识别模式和 active provider 选择 provider。
+- provider recognize 返回统一结构，disabled、not_configured、provider_unavailable、not_implemented 等状态都有明确原因。
+- 新增 `recognition:recognizePhoto` IPC 预留，前端 recognitionClient 增加单张识别安全 fallback。
+- 当前版本不新增 UI、不新增识别执行按钮、不上传照片、不发起真实远程请求、不返回假 OCR / 假 AI 结果、不修改归档主流程。
+
 ## V2.8.3 识别服务配置入口版
 
 - 在系统设置中新增识别服务配置区域，不新增独立页面和左侧导航入口。

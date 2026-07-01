@@ -18,6 +18,7 @@ const {
   updateRecognitionConfig,
   diagnoseRecognitionConfig,
   parseRecognitionText,
+  recognizePhoto,
   recognizePhotos
 } = require('./services/recognitionService.cjs');
 const { exportSummaryWorkbook, loadSummaryData } = require('./services/summaryService.cjs');
@@ -159,6 +160,8 @@ function createRecognitionErrorResult(error = {}, options = {}) {
   return {
     photoId: photo.id || options.photoId || '',
     filePath: photo.originalPath || photo.path || options.filePath || '',
+    fileName: photo.fileName || photo.name || options.fileName || '',
+    taskId: options.taskId || '',
     source: 'system',
     providerId: options.providerId || '',
     providerType: options.providerType || '',
@@ -314,6 +317,10 @@ ipcMain.handle('recognition:diagnoseConfig', async () => safeRecognitionCall(
 ipcMain.handle('recognition:parseText', async (_event, rawText, options) => safeRecognitionCall(
   () => parseRecognitionText(rawText, options),
   (error) => createRecognitionErrorResult(error, options)
+));
+ipcMain.handle('recognition:recognizePhoto', async (_event, photo, options) => safeRecognitionCall(
+  () => recognizePhoto(photo, { ...options, userDataDir: app.getPath('userData') }),
+  (error) => createRecognitionErrorResult(error, { ...options, photo })
 ));
 ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => safeRecognitionCall(
   () => recognizePhotos(photos, { ...options, userDataDir: app.getPath('userData') }),

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     updateConfig: (patch) => ipcRenderer.invoke('recognition:updateConfig', patch),
     diagnoseConfig: () => ipcRenderer.invoke('recognition:diagnoseConfig'),
     parseText: (rawText, options) => ipcRenderer.invoke('recognition:parseText', rawText, options),
+    recognizePhoto: (photo, options) => ipcRenderer.invoke('recognition:recognizePhoto', photo, options),
     recognizePhotos: (photos, options) => ipcRenderer.invoke('recognition:recognizePhotos', photos, options)
   },
   loadConfigs: () => ipcRenderer.invoke('configs:load'),

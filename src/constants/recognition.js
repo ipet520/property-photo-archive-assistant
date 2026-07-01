@@ -39,14 +39,34 @@ export const RECOGNITION_RESULT_SOURCES = [
 
 export const RECOGNITION_RESULT_STATUSES = [
   'pending',
+  'skipped',
+  'running',
+  'success',
   'recognized',
   'weak',
   'failed',
+  'cancelled',
   'corrected',
   'provider_unavailable',
   'not_configured',
+  'not_implemented',
+  'no_input',
   'disabled',
   'error'
+];
+
+export const RECOGNITION_TASK_STATUSES = [
+  'pending',
+  'skipped',
+  'running',
+  'success',
+  'failed',
+  'cancelled',
+  'provider_unavailable',
+  'not_configured',
+  'not_implemented',
+  'disabled',
+  'no_input'
 ];
 
 export const RECOGNITION_PRIVACY_POLICY = {

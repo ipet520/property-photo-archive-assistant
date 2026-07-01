@@ -20,7 +20,7 @@ const LOCAL_PROVIDER = {
     return createProviderStatus(this, {
       enabled,
       available: false,
-      status: enabled ? 'provider_unavailable' : 'disabled',
+      status: enabled ? 'not_implemented' : 'disabled',
       reason,
       message: reason,
       capabilities: this.capabilities,
@@ -35,19 +35,20 @@ const LOCAL_PROVIDER = {
   getStatus() {
     return this.diagnose();
   },
-  async recognize(photo = {}) {
+  async recognize(photo = {}, options = {}) {
     return createUnavailableResult(photo, this, {
-      status: 'not_configured',
-      code: 'local_ocr_not_configured',
-      reason: '本地 OCR provider 当前仅作为架构预留，不执行真实识别。',
-      warnings: ['本地 OCR provider 当前仅作为架构预留，不返回假识别文本。']
+      taskId: options.taskId || options.task?.taskId || '',
+      status: 'not_implemented',
+      code: 'local_ocr_not_implemented',
+      reason: '本地 OCR 引擎尚未接入，当前不执行真实识别。',
+      warnings: ['本地 OCR 引擎尚未接入，不返回假 OCR 文本。']
     });
   },
-  async recognizePhoto(photo = {}) {
-    return this.recognize(photo);
+  async recognizePhoto(photo = {}, options = {}) {
+    return this.recognize(photo, options);
   },
-  async recognizePhotos(photos = []) {
-    return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo)));
+  async recognizePhotos(photos = [], options = {}) {
+    return Promise.all((Array.isArray(photos) ? photos : []).map((photo) => this.recognize(photo, options)));
   }
 };
 

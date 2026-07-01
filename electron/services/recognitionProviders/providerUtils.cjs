@@ -36,8 +36,10 @@ function createProviderStatus(provider = {}, patch = {}) {
 function createUnavailableResult(photo = {}, provider = {}, patch = {}) {
   const reason = patch.reason || '识别 provider 尚未配置。';
   return normalizeRecognitionResult({
+    taskId: patch.taskId || photo.taskId || '',
     photoId: photo.id || photo.photoId || '',
     filePath: photo.originalPath || photo.filePath || photo.path || '',
+    fileName: photo.fileName || photo.name || '',
     source: provider.type || 'system',
     providerId: provider.id || '',
     providerType: provider.type || '',
@@ -56,8 +58,10 @@ function normalizeRecognitionResult(result = {}) {
   const errors = normalizeErrors(result.errors, result.errorCode, result.errorMessage);
   const createdAt = result.createdAt || result.updatedAt || new Date().toISOString();
   return {
+    taskId: String(result.taskId || ''),
     photoId: String(result.photoId || ''),
     filePath: String(result.filePath || ''),
+    fileName: String(result.fileName || ''),
     source: result.source || 'system',
     providerId: result.providerId || '',
     providerType: result.providerType || result.type || result.mode || '',
@@ -73,7 +77,8 @@ function normalizeRecognitionResult(result = {}) {
     fields: parsedFields,
     errorCode: errors[0]?.code || '',
     errorMessage: errors[0]?.message || '',
-    updatedAt: createdAt
+    updatedAt: createdAt,
+    task: result.task && typeof result.task === 'object' ? result.task : undefined
   };
 }
 

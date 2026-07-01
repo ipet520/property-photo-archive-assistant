@@ -84,6 +84,19 @@ export async function recognizePhotos(photos = [], options = {}) {
   }
 }
 
+export async function recognizePhoto(photo = {}, options = {}) {
+  try {
+    const api = getRecognitionApi();
+    if (!api?.recognizePhoto) return createUnavailableResult(photo, options);
+    return normalizeRecognitionResult(await api.recognizePhoto(photo, options));
+  } catch (error) {
+    return createUnavailableResult(photo, {
+      ...options,
+      errorMessage: error.message || '识别服务调用失败。'
+    });
+  }
+}
+
 export async function parseRecognitionText(rawText = '', options = {}) {
   try {
     const api = getRecognitionApi();
@@ -135,6 +148,8 @@ function createUnavailableResult(photo = {}, options = {}) {
   return normalizeRecognitionResult({
     photoId: photo.id || '',
     filePath: photo.originalPath || photo.path || '',
+    fileName: photo.fileName || photo.name || '',
+    taskId: options.taskId || '',
     source: 'system',
     providerId: options.providerId || '',
     providerType: options.providerType || '',

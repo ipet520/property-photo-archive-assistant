@@ -1,5 +1,17 @@
 # 物业工作照片归档助手
 
+## V2.8.4 识别执行管线预备版
+
+V2.8.4 在 V2.8.3 识别服务配置入口基础上，新增内部识别执行管线预备能力：可以创建识别任务、读取识别配置、选择 provider，并返回统一的 RecognitionResult 结构。本版仍不接真实 OCR / 云识别 / AI 识别接口，不新增识别执行按钮，不上传照片，不自动生成归档建议，也不自动归档。
+
+本版重点：
+
+- 新增 RecognitionTask 结构，记录任务、照片、provider、模式、状态、时间、warnings 和 errors。
+- `recognizePhoto` / `recognizePhotos` 内部入口按配置顺序调度 provider，并对 disabled、not_configured、provider_unavailable、not_implemented 等状态返回标准结果。
+- local provider 未接真实 OCR 时只返回 `not_implemented`，cloud provider 不发起真实网络请求、不上传照片，manual provider 仅作为人工输入来源。
+- 识别结果继续保持可 JSON 序列化的 RecognitionResult 结构，可作为后续建议链路输入，但当前不自动应用到表单。
+- 当前主流程仍以手动填写归档信息为主，不新增“开始识别”“AI 自动归档”或“一键智能归档”入口。
+
 ## V2.8.3 识别服务配置入口版
 
 V2.8.3 基于 V2.8.2 识别服务配置底座，在系统设置中新增“识别服务配置”入口，用于维护识别模式、provider、接口地址、密钥、模型、超时和重试等本地配置。本版只做配置和诊断，不接真实 OCR / 云识别 / AI 识别接口，不新增照片分拣页识别按钮，不自动归档，也不修改 Excel 台账结构。

@@ -87,39 +87,126 @@ async function getRecognitionConfig(userDataDir) {
 }
 
 async function recognizePhoto(photo = {}, options = {}) {
-  return (await recognizePhotos([photo], options))[0] || createProviderUnavailableResult(photo, options);
+  return (await recognizePhotos([photo], options))[0] || buildErrorResult(createRecognitionTask(photo, options), new Error('未生成识别结果。'));
 }
 
 async function recognizePhotos(photos = [], options = {}) {
   try {
     const safePhotos = Array.isArray(photos) ? photos : [];
     if (safePhotos.length === 0) return [];
-    const loaded = options.userDataDir ? await loadRecognitionConfig(options.userDataDir) : null;
-    const provider = resolveProvider(options, loaded?.config);
-    if (!provider || provider.id === 'manual') {
-      return safePhotos.map((photo) => createProviderUnavailableResult(photo, options));
+    const loaded = options.config
+      ? { config: options.config, warnings: [], errors: [] }
+      : (options.userDataDir ? await loadRecognitionConfig(options.userDataDir) : { config: createDisabledRecognitionConfig(), warnings: [], errors: [] });
+    const results = [];
+    for (const photo of safePhotos) {
+      const task = createRecognitionTask(photo, {
+        mode: loaded.config.recognitionMode || 'disabled',
+        providerId: options.providerId || loaded.config.activeProviderId || '',
+        providerType: options.providerType || ''
+      });
+      results.push(await runRecognitionTask(task, photo, loaded.config, options, loaded));
     }
-    const status = safeDiagnoseProvider(provider, loaded?.config || {});
-    if (!status.available) {
-      return safePhotos.map((photo) => createProviderUnavailableResult(photo, {
-        ...options,
-        providerId: provider.id,
-        reason: status.reason || status.message,
-        status: status.status
-      }));
-    }
-    if (typeof provider.recognizePhotos === 'function') {
-      const results = await provider.recognizePhotos(safePhotos, options);
-      return (Array.isArray(results) ? results : []).map((result) => normalizeRecognitionResult(result));
-    }
-    return Promise.all(safePhotos.map((photo) => provider.recognize(photo, options).then(normalizeRecognitionResult)));
+    return results;
   } catch (error) {
     return (Array.isArray(photos) ? photos : []).map((photo) => normalizeRecognitionResult({
-      ...createProviderUnavailableResult(photo, options),
-      status: 'failed',
+      ...buildErrorResult(createRecognitionTask(photo, options), error),
       errors: [{ code: 'recognition_failed', message: error.message || '识别调用失败。' }],
       warnings: ['识别调用失败，未修改照片或台账。']
     }));
+  }
+}
+
+async function runRecognitionTask(task, photo = {}, config = {}, options = {}, loaded = {}) {
+  const startedAt = new Date().toISOString();
+  const runningTask = { ...task, status: 'running', startedAt };
+  const mode = config.recognitionMode || 'disabled';
+  if (mode === 'disabled') {
+    return buildUnavailableResult(runningTask, '识别服务已禁用，当前保持手动填写归档信息流程。', {
+      status: 'disabled',
+      code: 'recognition_disabled',
+      warnings: ['识别服务已禁用，已跳过识别任务。']
+    });
+  }
+
+  const provider = selectProvider(config, options);
+  if (!provider) {
+    return buildUnavailableResult(runningTask, '未找到可用识别 provider。', {
+      status: 'not_configured',
+      code: 'provider_not_configured',
+      warnings: ['识别 provider 未配置，已跳过识别任务。']
+    });
+  }
+
+  const providerStatus = safeDiagnoseProvider(provider, config);
+  const providerTask = {
+    ...runningTask,
+    providerId: provider.id || '',
+    providerType: provider.type || '',
+    mode: provider.mode || mode
+  };
+  const normalizedStatus = normalizeProviderExecutionStatus(providerStatus);
+  if (!providerStatus.available && provider.id !== 'manual') {
+    return buildUnavailableResult(providerTask, providerStatus.reason || providerStatus.message || '识别 provider 不可用。', {
+      status: normalizedStatus,
+      code: normalizedStatus,
+      warnings: [
+        providerStatus.reason || '识别 provider 不可用。',
+        ...(loaded.warnings || [])
+      ]
+    });
+  }
+
+  try {
+    const providerOptions = {
+      ...options,
+      config,
+      providerStatus,
+      task: providerTask,
+      taskId: providerTask.taskId
+    };
+    const rawResult = typeof provider.recognize === 'function'
+      ? await provider.recognize(photo, providerOptions)
+      : createUnavailableResult(photo, provider, {
+        taskId: providerTask.taskId,
+        status: 'not_implemented',
+        code: 'provider_not_implemented',
+        reason: '识别 provider 尚未实现 recognize 方法。'
+      });
+    const parsedManualResult = provider.id === 'manual' && rawResult.rawText
+      ? parseRecognitionText(rawResult.rawText, {
+        photoId: providerTask.photoId,
+        filePath: providerTask.filePath,
+        source: 'manual',
+        providerId: provider.id,
+        providerType: provider.type
+      })
+      : null;
+    const parsedFields = hasUsefulParsedFields(rawResult.parsedFields)
+      ? rawResult.parsedFields
+      : (parsedManualResult?.parsedFields || rawResult.parsedFields);
+    return normalizeRecognitionResult({
+      ...rawResult,
+      parsedFields,
+      warnings: [
+        ...(rawResult.warnings || []),
+        ...(parsedManualResult?.warnings || [])
+      ],
+      taskId: providerTask.taskId,
+      photoId: providerTask.photoId,
+      fileName: providerTask.fileName,
+      filePath: providerTask.filePath,
+      providerId: provider.id || rawResult.providerId || '',
+      providerType: provider.type || rawResult.providerType || '',
+      source: rawResult.source || provider.type || 'system',
+      createdAt: rawResult.createdAt || new Date().toISOString(),
+      task: {
+        ...providerTask,
+        status: normalizeTaskStatus(rawResult.status),
+        finishedAt: new Date().toISOString()
+      }
+    });
+  } catch (error) {
+    return buildErrorResult(providerTask, error);
   }
 }
 
@@ -174,6 +261,105 @@ function resolveProvider(options = {}, config = {}) {
     || providers.find((provider) => provider.mode === activeMode && provider.mode !== 'manual')
     || providers.find((provider) => provider.type === activeMode && provider.type !== 'manual')
     || null;
+}
+
+function selectProvider(config = {}, options = {}) {
+  return resolveProvider(options, config);
+}
+
+function createRecognitionTask(photo = {}, patch = {}) {
+  const filePath = photo.originalPath || photo.filePath || photo.path || patch.filePath || '';
+  const fileName = photo.fileName || photo.name || String(filePath).split(/[\\/]/).pop() || '';
+  const createdAt = patch.createdAt || new Date().toISOString();
+  return {
+    taskId: patch.taskId || createTaskId(photo, createdAt),
+    photoId: String(photo.id || photo.photoId || patch.photoId || ''),
+    filePath: String(filePath || ''),
+    fileName: String(fileName || ''),
+    providerId: String(patch.providerId || ''),
+    providerType: String(patch.providerType || ''),
+    mode: String(patch.mode || 'disabled'),
+    status: patch.status || 'pending',
+    createdAt,
+    startedAt: patch.startedAt || '',
+    finishedAt: patch.finishedAt || '',
+    errors: Array.isArray(patch.errors) ? patch.errors : [],
+    warnings: Array.isArray(patch.warnings) ? patch.warnings : []
+  };
+}
+
+function buildUnavailableResult(task = {}, reason = '', patch = {}) {
+  const status = patch.status || 'provider_unavailable';
+  return normalizeRecognitionResult({
+    taskId: task.taskId || '',
+    photoId: task.photoId || '',
+    filePath: task.filePath || '',
+    fileName: task.fileName || '',
+    source: patch.source || 'system',
+    providerId: task.providerId || patch.providerId || '',
+    providerType: task.providerType || patch.providerType || '',
+    status,
+    confidence: null,
+    rawText: '',
+    parsedFields: {},
+    warnings: Array.isArray(patch.warnings) ? patch.warnings : [reason || '识别任务未执行。'],
+    errors: patch.errors || [{ code: patch.code || status, message: reason || '识别任务未执行。' }],
+    createdAt: new Date().toISOString(),
+    task: {
+      ...task,
+      status: normalizeTaskStatus(status),
+      finishedAt: new Date().toISOString(),
+      errors: patch.errors || [{ code: patch.code || status, message: reason || '识别任务未执行。' }],
+      warnings: Array.isArray(patch.warnings) ? patch.warnings : [reason || '识别任务未执行。']
+    }
+  });
+}
+
+function buildErrorResult(task = {}, error = {}) {
+  const message = error.message || '识别任务执行失败。';
+  return buildUnavailableResult(task, message, {
+    status: 'failed',
+    code: 'recognition_task_failed',
+    warnings: ['识别任务执行失败，未修改照片或台账。'],
+    errors: [{ code: 'recognition_task_failed', message }]
+  });
+}
+
+function normalizeProviderExecutionStatus(providerStatus = {}) {
+  if (providerStatus.status === 'disabled') return 'disabled';
+  if (providerStatus.status === 'not_configured') return 'not_configured';
+  if (providerStatus.status === 'not_implemented') return 'not_implemented';
+  if (providerStatus.status === 'error') return 'provider_unavailable';
+  return providerStatus.available ? 'success' : 'provider_unavailable';
+}
+
+function normalizeTaskStatus(status = '') {
+  if (['disabled', 'not_configured', 'not_implemented', 'provider_unavailable', 'failed', 'cancelled', 'skipped', 'no_input'].includes(status)) {
+    return status;
+  }
+  if (['success', 'recognized', 'corrected'].includes(status)) return 'success';
+  return status || 'failed';
+}
+
+function hasUsefulParsedFields(fields = {}) {
+  return Object.entries(fields || {}).some(([key, value]) => {
+    if (['project', 'categoryHint', 'possibleStage', 'possibleStatus', 'dateTime'].includes(key)) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    return value !== null && value !== undefined && String(value).trim() !== '';
+  });
+}
+
+function createDisabledRecognitionConfig() {
+  return {
+    recognitionMode: 'disabled',
+    activeProviderId: '',
+    providers: {}
+  };
+}
+
+function createTaskId(photo = {}, createdAt = new Date().toISOString()) {
+  const seed = `${photo.id || photo.photoId || photo.fileName || photo.name || 'photo'}-${createdAt}-${Math.random().toString(16).slice(2)}`;
+  return `rec_${seed.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
 }
 
 function resolveStatusProvider(providerStatuses = [], config = {}) {
@@ -339,6 +525,8 @@ module.exports = {
   getSafeRecognitionConfig,
   updateRecognitionConfig,
   diagnoseRecognitionConfig,
+  createRecognitionTask,
+  selectProvider,
   recognizePhoto,
   recognizePhotos,
   parseRecognitionText,

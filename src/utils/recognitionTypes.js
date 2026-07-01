@@ -4,7 +4,8 @@ import {
   RECOGNITION_PROVIDER_STATUSES,
   RECOGNITION_PROVIDER_TYPES as PROVIDER_TYPES,
   RECOGNITION_RESULT_SOURCES,
-  RECOGNITION_RESULT_STATUSES
+  RECOGNITION_RESULT_STATUSES,
+  RECOGNITION_TASK_STATUSES
 } from '../constants/recognition.js';
 
 export { RECOGNITION_MODES };
@@ -14,6 +15,8 @@ export const RECOGNITION_SOURCES = RECOGNITION_RESULT_SOURCES;
 export const RECOGNITION_STATUSES = RECOGNITION_RESULT_STATUSES;
 
 export const RECOGNITION_PROVIDER_STATUS = RECOGNITION_PROVIDER_STATUSES;
+
+export const RECOGNITION_TASK_STATUS = RECOGNITION_TASK_STATUSES;
 
 export const RECOGNITION_PROVIDERS = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual'];
 
@@ -31,6 +34,8 @@ export function createEmptyRecognitionResult(photo = {}) {
   return {
     photoId: photo.id || '',
     filePath: photo.originalPath || photo.path || '',
+    fileName: photo.fileName || photo.name || '',
+    taskId: '',
     source: 'system',
     providerId: '',
     providerType: '',
@@ -51,6 +56,25 @@ export function createEmptyRecognitionResult(photo = {}) {
   };
 }
 
+export function createRecognitionTask(photo = {}, patch = {}) {
+  const createdAt = patch.createdAt || new Date().toISOString();
+  return {
+    taskId: patch.taskId || createTaskId(photo),
+    photoId: String(photo.id || photo.photoId || patch.photoId || ''),
+    filePath: String(photo.originalPath || photo.filePath || photo.path || patch.filePath || ''),
+    fileName: String(photo.fileName || photo.name || patch.fileName || ''),
+    providerId: String(patch.providerId || ''),
+    providerType: String(patch.providerType || ''),
+    mode: String(patch.mode || 'disabled'),
+    status: patch.status || 'pending',
+    createdAt,
+    startedAt: patch.startedAt || '',
+    finishedAt: patch.finishedAt || '',
+    errors: normalizeErrors(patch.errors),
+    warnings: normalizeStringArray(patch.warnings)
+  };
+}
+
 export function normalizeRecognitionResult(result = {}) {
   const empty = createEmptyRecognitionResult();
   const parsedFields = normalizeRecognitionFields(result.parsedFields || result.fields || {});
@@ -60,6 +84,9 @@ export function normalizeRecognitionResult(result = {}) {
   return {
     ...empty,
     ...result,
+    taskId: String(result.taskId || empty.taskId || ''),
+    photoId: String(result.photoId || empty.photoId || ''),
+    fileName: String(result.fileName || empty.fileName || ''),
     providerType,
     status: result.status || empty.status,
     confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
@@ -73,8 +100,14 @@ export function normalizeRecognitionResult(result = {}) {
     fields: parsedFields,
     errorCode: errors[0]?.code || result.errorCode || '',
     errorMessage: errors[0]?.message || result.errorMessage || '',
-    updatedAt: createdAt
+    updatedAt: createdAt,
+    task: result.task && typeof result.task === 'object' ? result.task : undefined
   };
+}
+
+function createTaskId(photo = {}) {
+  const seed = `${photo.id || photo.photoId || photo.fileName || photo.name || 'photo'}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `rec_${seed.replace(/[^a-zA-Z0-9_-]+/g, '_')}`;
 }
 
 export function normalizeRecognitionFields(fields = {}) {

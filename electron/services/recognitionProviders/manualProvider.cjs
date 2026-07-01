@@ -53,19 +53,23 @@ function resolveProviderConfig(provider, config = {}) {
 }
 
 function normalizeManualResult(photo = {}, manualResult = {}) {
+  const rawText = manualResult.rawText || manualResult.manualText || '';
   const hasFields = Boolean(manualResult.parsedFields || manualResult.fields);
+  const hasInput = hasFields || Boolean(String(rawText || '').trim());
   return normalizeRecognitionResult({
+    taskId: manualResult.taskId || photo.taskId || '',
     photoId: photo.id || photo.photoId || manualResult.photoId || '',
     filePath: photo.originalPath || photo.filePath || photo.path || manualResult.filePath || '',
+    fileName: photo.fileName || photo.name || manualResult.fileName || '',
     source: 'manual',
     providerId: 'manual',
     providerType: 'manual',
-    rawText: manualResult.rawText || '',
+    rawText,
     parsedFields: manualResult.parsedFields || manualResult.fields || {},
     confidence: null,
-    status: hasFields ? 'corrected' : 'pending',
-    warnings: hasFields ? [] : ['尚未输入人工识别结果。'],
-    errors: [],
+    status: hasInput ? 'corrected' : 'skipped',
+    warnings: hasInput ? ['人工输入结果仅作为手动校正来源，不代表 OCR 或 AI 识别。'] : ['未提供人工输入文本，已跳过识别。'],
+    errors: hasInput ? [] : [{ code: 'no_input', message: '未提供人工输入文本。' }],
     createdAt: new Date().toISOString()
   });
 }
