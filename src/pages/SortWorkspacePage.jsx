@@ -10,6 +10,7 @@ import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import {
   buildArchiveSuggestion,
+  buildRecognitionSuggestionDisplayModel,
   clearArchiveSuggestionForPhoto,
   clearRecognitionForPhoto,
   confirmArchiveSuggestion,
@@ -224,7 +225,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const currentRecognitionResult = currentRecognitionPhoto ? recognitionResultsByPhoto[currentRecognitionPhoto.id] : null;
   const currentWatermarkRecord = currentPanelPhoto ? watermarkRecordsByPhoto[currentPanelPhoto.id] : null;
   const currentArchiveSuggestion = currentPanelPhoto ? archiveSuggestionsByPhoto[currentPanelPhoto.id] : null;
-  const recognitionSuggestion = useMemo(() => buildRecognitionSuggestion(currentRecognitionResult), [currentRecognitionResult]);
+  const recognitionSuggestion = useMemo(() => buildRecognitionSuggestionDisplayModel({
+    archiveSuggestion: currentArchiveSuggestion,
+    recognitionResult: currentRecognitionResult,
+    watermarkRecord: currentWatermarkRecord
+  }), [currentArchiveSuggestion, currentRecognitionResult, currentWatermarkRecord]);
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
   const previewDisabledReason = getPreviewDisabledReason({
     isBusy,
