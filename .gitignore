@@ -15,3 +15,9 @@ Thumbs.db
 settings.json
 sort-drafts/
 rectification/
+tools/rapidocr-runner/.venv/
+tools/rapidocr-runner/build/
+tools/rapidocr-runner/dist/
+tools/rapidocr-runner/*.spec
+__pycache__/
+*.pyc

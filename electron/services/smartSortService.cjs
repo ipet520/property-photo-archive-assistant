@@ -82,6 +82,21 @@ async function generateSmartSortGroups(userDataDir, input = {}) {
       return emptyResult;
     }
 
+    const recognitionGroups = await buildRecognitionGroups(userDataDir, photos);
+    if (recognitionGroups.length > 0) {
+      const result = createGroupingResult({
+        groups: recognitionGroups,
+        rules,
+        status: 'created',
+        warnings: ['已优先使用 OCR 水印解析结果生成分组；结果仅用于辅助查看，不会自动写入表单或归档。'],
+        createdAt: now,
+        updatedAt: now,
+        source: 'selected_photos'
+      });
+      await writeGroupingResult(userDataDir, result);
+      return result;
+    }
+
     const timedPhotos = photos.filter((photo) => Number.isFinite(photo.sortTimestamp));
     const canUseTimeWindow = timedPhotos.length === photos.length;
     const groups = canUseTimeWindow
@@ -96,7 +111,8 @@ async function generateSmartSortGroups(userDataDir, input = {}) {
       status: 'created',
       warnings,
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+        source: input.source || input.options?.source || 'selected_photos'
     });
     await writeGroupingResult(userDataDir, result);
     return result;
@@ -209,13 +225,43 @@ async function buildSelectionOrderGroups(userDataDir, photos, options = {}) {
   })));
 }
 
+async function buildRecognitionGroups(userDataDir, photos) {
+  const buckets = new Map();
+  const hasRecognitionInput = photos.some((photo) => photo.recognition);
+  photos.forEach((photo) => {
+    const parsed = photo.recognition?.parsedWatermark || photo.recognition?.parsedFields || photo.parsedWatermark || {};
+    const text = [
+      parsed.workContent,
+      parsed.watermarkCategory,
+      parsed.category,
+      parsed.location,
+      parsed.remark
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    const rawText = String(photo.recognition?.rawText || photo.recognition?.adoptedOcrText || '').trim();
+    const key = text[0] || inferWorkContentFromText(rawText) || '';
+    const bucketKey = key || getPendingRecognitionBucket(photo.recognition);
+    if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
+    buckets.get(bucketKey).push(photo);
+  });
+  if (!hasRecognitionInput) return [];
+  const entries = Array.from(buckets.entries());
+  return Promise.all(entries.map(([title, bucket], index) => buildGroup(userDataDir, bucket, {
+    index,
+    titlePrefix: title.startsWith('待确认') ? title : title,
+    fixedTitle: title,
+    basis: title.startsWith('待确认') ? 'recognition_pending' : 'watermark_ocr',
+    basisLabel: title.startsWith('待确认') ? getPendingRecognitionBasisLabel(title) : `来自水印识别：${title}`,
+    confidenceLabel: title.startsWith('待确认') ? 'low' : 'medium'
+  })));
+}
+
 async function buildGroup(userDataDir, photos, meta) {
   const now = new Date().toISOString();
   const recognitionSummary = await summarizeRecognitionState(userDataDir, photos);
   const range = buildTimeRange(photos);
   return {
     id: createId('smart-sort-group'),
-    title: `${meta.titlePrefix} ${meta.index + 1}`,
+    title: meta.fixedTitle || `${meta.titlePrefix} ${meta.index + 1}`,
     status: 'pending',
     basis: meta.basis,
     photos: photos.map(({ sortTimestamp, ...photo }) => photo),
@@ -279,9 +325,50 @@ function normalizePhoto(photo = {}, index = 0) {
     modifiedAt,
     sortTimestamp: sortDate ? Date.parse(sortDate) : null,
     source: 'photo_list',
+    recognition: normalizeRecognitionForGrouping(photo.recognition || photo.ocrResult || null),
     createdAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION
   };
+}
+
+function normalizeRecognitionForGrouping(recognition) {
+  if (!recognition || typeof recognition !== 'object') return null;
+  return {
+    status: String(recognition.status || ''),
+    rawText: String(recognition.rawText || recognition.adoptedOcrText || ''),
+    adoptedOcrText: String(recognition.adoptedOcrText || recognition.rawText || ''),
+    parsedFields: recognition.parsedFields && typeof recognition.parsedFields === 'object' ? recognition.parsedFields : {},
+    parsedWatermark: recognition.parsedWatermark && typeof recognition.parsedWatermark === 'object' ? recognition.parsedWatermark : {}
+  };
+}
+
+function inferWorkContentFromText(text = '') {
+  const value = String(text || '').replace(/\s+/g, '');
+  const rules = [
+    ['楼道杂物清理', ['楼道杂物', '杂物清理']],
+    ['飞线充电治理', ['飞线充电', '飞线']],
+    ['消防通道违停', ['消防通道', '违停', '违规停车']],
+    ['公共设施设备维修', ['公共设施', '设备维修', '设施维修']],
+    ['环境卫生维护', ['环境卫生', '保洁', '清扫']],
+    ['绿化养护', ['绿化', '修剪', '养护']]
+  ];
+  return rules.find(([, keywords]) => keywords.some((keyword) => value.includes(keyword)))?.[0] || '';
+}
+
+function getPendingRecognitionBucket(recognition = {}) {
+  if (!recognition) return '待确认';
+  if (['failed', 'provider_unavailable', 'not_configured', 'disabled'].includes(recognition.status)) return '待确认｜识别失败';
+  const rawText = String(recognition.rawText || recognition.adoptedOcrText || '').trim();
+  if (rawText) return '待确认｜已识别未匹配';
+  return '待确认｜未识别到水印';
+}
+
+function getPendingRecognitionBasisLabel(title = '') {
+  if (title.includes('识别失败')) return 'OCR 识别失败，需人工确认；错误原因见该照片识别结果。';
+  if (title.includes('未识别到水印')) return '已执行 OCR，但未识别到有效水印文字。';
+  if (title.includes('已识别未匹配')) return '已识别 OCR 文本，未匹配明确工作内容。';
+  if (title.includes('未执行 OCR')) return '尚未执行 OCR 识别。';
+  return 'OCR 结果为空或需人工确认。';
 }
 
 function buildTimeRange(photos) {
@@ -296,11 +383,11 @@ function buildTimeRange(photos) {
   };
 }
 
-function createGroupingResult({ groups = [], rules = [], status = 'created', warnings = [], errors = [], createdAt, updatedAt }) {
+function createGroupingResult({ groups = [], rules = [], status = 'created', warnings = [], errors = [], createdAt, updatedAt, source = 'current_photo_list' }) {
   const now = new Date().toISOString();
   return {
     id: createId('smart-sort-result'),
-    source: 'current_photo_list',
+    source,
     groupCount: groups.length,
     photoCount: groups.reduce((sum, group) => sum + Number(group.photoCount || 0), 0),
     groups,
@@ -336,7 +423,7 @@ function normalizeGroupingResult(result = {}) {
   const groups = (Array.isArray(result.groups) ? result.groups : []).map(normalizeGroup).filter(Boolean);
   return {
     id: String(result.id || createId('smart-sort-result')),
-    source: 'current_photo_list',
+    source: String(result.source || 'current_photo_list'),
     groupCount: groups.length,
     photoCount: groups.reduce((sum, group) => sum + group.photoCount, 0),
     groups,

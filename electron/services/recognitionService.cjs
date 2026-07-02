@@ -1,6 +1,8 @@
 const localProvider = require('./recognitionProviders/localProvider.cjs');
 const cloudProviders = require('./recognitionProviders/cloudProvider.cjs');
 const manualProvider = require('./recognitionProviders/manualProvider.cjs');
+const { cropWatermarkRegion } = require('./watermarkCropService.cjs');
+const { parseWatermarkText } = require('./watermarkTextParser.cjs');
 const {
   createUnavailableResult,
   normalizeParsedFields,
@@ -72,8 +74,8 @@ const {
 const providers = [localProvider, ...cloudProviders, manualProvider];
 
 const RECOGNITION_CONFIG = {
-  defaultMode: 'disabled',
-  modes: ['local', 'cloud', 'hybrid', 'manual', 'disabled'],
+  defaultMode: 'local_first',
+  modes: ['local_only', 'cloud_only', 'local_first', 'compare', 'manual', 'disabled', 'local', 'cloud', 'hybrid'],
   providerTypes: ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual'],
   privacy: {
     uploadsPhotos: false,
@@ -131,7 +133,7 @@ async function getRecognitionStatus(userDataDir) {
 
 async function getRecognitionProviders(userDataDir, loadedConfig = null) {
   const config = loadedConfig || (await loadRecognitionConfig(userDataDir)).config;
-  return providers.map((provider) => safeDiagnoseProvider(provider, config));
+  return Promise.all(providers.map((provider) => safeDiagnoseProvider(provider, config)));
 }
 
 async function getRecognitionConfig(userDataDir) {
@@ -250,13 +252,48 @@ async function attachCandidateReviewDraft(stagedResult = {}, options = {}) {
 async function runRecognitionTask(task, photo = {}, config = {}, options = {}, loaded = {}) {
   const startedAt = new Date().toISOString();
   const runningTask = { ...task, status: 'running', startedAt };
-  const mode = config.recognitionMode || 'disabled';
+  const mode = normalizeRecognitionMode(config.recognitionMode || 'disabled');
   if (mode === 'disabled') {
     return buildUnavailableResult(runningTask, '识别服务已禁用，当前保持手动填写归档信息流程。', {
       status: 'disabled',
       code: 'recognition_disabled',
       warnings: ['识别服务已禁用，已跳过识别任务。']
     });
+  }
+
+  if (['local_only', 'cloud_only', 'local_first', 'compare'].includes(mode)) {
+    const providerTask = {
+      ...runningTask,
+      providerId: mode === 'cloud_only' ? 'custom_ocr' : 'local_ocr',
+      providerType: mode === 'cloud_only' ? 'cloud_ocr' : 'local_ocr',
+      mode
+    };
+    try {
+      const rawResult = await executeRecognitionMode(photo, providerTask, { ...config, recognitionMode: mode }, {
+        ...options,
+        config: { ...config, recognitionMode: mode },
+        task: providerTask,
+        taskId: providerTask.taskId
+      });
+      return normalizeRecognitionResult({
+        ...rawResult,
+        taskId: providerTask.taskId,
+        photoId: providerTask.photoId,
+        fileName: providerTask.fileName,
+        filePath: providerTask.filePath,
+        providerId: rawResult.providerId || providerTask.providerId,
+        providerType: rawResult.providerType || providerTask.providerType,
+        source: rawResult.source || 'watermark_ocr',
+        createdAt: rawResult.createdAt || new Date().toISOString(),
+        task: {
+          ...providerTask,
+          status: normalizeTaskStatus(rawResult.status),
+          finishedAt: new Date().toISOString()
+        }
+      });
+    } catch (error) {
+      return buildErrorResult(providerTask, error);
+    }
   }
 
   const provider = selectProvider(config, options);
@@ -268,7 +305,7 @@ async function runRecognitionTask(task, photo = {}, config = {}, options = {}, l
     });
   }
 
-  const providerStatus = safeDiagnoseProvider(provider, config);
+  const providerStatus = await safeDiagnoseProvider(provider, config);
   const providerTask = {
     ...runningTask,
     providerId: provider.id || '',
@@ -295,14 +332,7 @@ async function runRecognitionTask(task, photo = {}, config = {}, options = {}, l
       task: providerTask,
       taskId: providerTask.taskId
     };
-    const rawResult = typeof provider.recognize === 'function'
-      ? await provider.recognize(photo, providerOptions)
-      : createUnavailableResult(photo, provider, {
-        taskId: providerTask.taskId,
-        status: 'not_implemented',
-        code: 'provider_not_implemented',
-        reason: '识别 provider 尚未实现 recognize 方法。'
-      });
+    const rawResult = await executeRecognitionMode(photo, providerTask, config, providerOptions);
     const parsedManualResult = provider.id === 'manual' && rawResult.rawText
       ? parseRecognitionText(rawResult.rawText, {
         photoId: providerTask.photoId,
@@ -396,6 +426,135 @@ function resolveProvider(options = {}, config = {}) {
 
 function selectProvider(config = {}, options = {}) {
   return resolveProvider(options, config);
+}
+
+async function executeRecognitionMode(photo = {}, task = {}, config = {}, options = {}) {
+  const mode = normalizeRecognitionMode(options.mode || config.recognitionMode || 'disabled');
+  if (mode === 'manual') {
+    return runSingleProvider(manualProvider, photo, task, config, options);
+  }
+  const cropResult = await cropWatermarkRegion(photo, {
+    ...options,
+    cropArea: config.watermarkCrop || config.cropArea || config.providers?.local_ocr?.extraOptions?.cropArea
+  });
+  if (!cropResult.success) {
+    return buildUnavailableResult(task, cropResult.error, {
+      status: 'failed',
+      code: 'watermark_crop_failed',
+      warnings: ['水印裁剪失败，未执行 OCR。'],
+      errors: [{ code: 'watermark_crop_failed', message: cropResult.error }]
+    });
+  }
+
+  const local = providers.find((provider) => provider.id === 'local_ocr');
+  const cloud = resolveCloudProvider(config, options);
+  const croppedPhoto = { ...photo, croppedPath: cropResult.croppedPath };
+  if (mode === 'local_only') {
+    return enrichWatermarkResult(await runSingleProvider(local, croppedPhoto, task, config, options), cropResult, null, null);
+  }
+  if (mode === 'cloud_only') {
+    return enrichWatermarkResult(await runSingleProvider(cloud, croppedPhoto, task, config, options), cropResult, null, null);
+  }
+  if (mode === 'compare') {
+    const localResult = await runSingleProvider(local, croppedPhoto, task, config, options);
+    const cloudResult = options.allowCloudUpload
+      ? await runSingleProvider(cloud, croppedPhoto, task, config, options)
+      : createUnavailableResult(croppedPhoto, cloud || {}, {
+        taskId: task.taskId,
+        status: 'cloud_upload_not_allowed',
+        code: 'cloud_upload_not_allowed',
+        reason: '未授权上传裁剪后的水印区域，已跳过云端 OCR。'
+      });
+    const adopted = cloudResult.rawText ? cloudResult : localResult;
+    return enrichWatermarkResult({
+      ...adopted,
+      status: adopted.rawText ? 'success' : 'failed',
+      compareResults: { local: localResult, cloud: cloudResult },
+      warnings: [...(localResult.warnings || []), ...(cloudResult.warnings || []), '双引擎结果仅供人工对比，系统不会自动填表或归档。']
+    }, cropResult, localResult, cloudResult);
+  }
+
+  const localResult = await runSingleProvider(local, croppedPhoto, task, config, options);
+  if (localResult.rawText) return enrichWatermarkResult(localResult, cropResult, localResult, null);
+  if (!options.allowCloudUpload) {
+    return enrichWatermarkResult({
+      ...localResult,
+      warnings: [
+        ...(localResult.warnings || []),
+        '本地 OCR 未取得有效文本；如需云端增强，请先授权上传裁剪后的水印区域。'
+      ]
+    }, cropResult, localResult, null);
+  }
+  const cloudResult = await runSingleProvider(cloud, croppedPhoto, task, config, options);
+  return enrichWatermarkResult({
+    ...cloudResult,
+    localResult,
+    warnings: [...(cloudResult.warnings || []), ...(localResult.errors || []).map((error) => `本地 OCR：${error.message}`)]
+  }, cropResult, localResult, cloudResult);
+}
+
+async function runSingleProvider(provider, photo, task, config, options) {
+  if (!provider || typeof provider.recognize !== 'function') {
+    return buildUnavailableResult(task, '未找到可用识别 provider。', {
+      status: 'not_configured',
+      code: 'provider_not_configured'
+    });
+  }
+  return provider.recognize(photo, {
+    ...options,
+    config,
+    task,
+    taskId: task.taskId
+  });
+}
+
+function enrichWatermarkResult(result = {}, cropResult = null, localResult = null, cloudResult = null) {
+  const adoptedText = String(result.rawText || '').trim();
+  const parsedWatermark = parseWatermarkText(adoptedText);
+  const parsedFields = normalizeParsedFields({
+    ...result.parsedFields,
+    date: parsedWatermark.date,
+    time: parsedWatermark.time,
+    weekday: parsedWatermark.weekday,
+    location: parsedWatermark.location,
+    remark: parsedWatermark.remark,
+    projectName: parsedWatermark.project,
+    watermarkCategory: parsedWatermark.watermarkCategory,
+    workContent: parsedWatermark.workContent,
+    keywords: parsedWatermark.keywords
+  });
+  return {
+    ...result,
+    rawText: adoptedText,
+    parsedFields,
+    status: adoptedText ? 'success' : (result.status || 'empty'),
+    cropResult,
+    localResult,
+    cloudResult,
+    adoptedOcrText: adoptedText,
+    parsedWatermark,
+    warnings: [
+      ...(result.warnings || []),
+      ...(parsedWatermark.warnings || [])
+    ],
+    errors: result.errors || []
+  };
+}
+
+function normalizeRecognitionMode(mode = '') {
+  return {
+    local: 'local_only',
+    cloud: 'cloud_only',
+    hybrid: 'local_first'
+  }[mode] || mode || 'disabled';
+}
+
+function resolveCloudProvider(config = {}, options = {}) {
+  const targetId = options.cloudProviderId || (config.providers?.custom_ocr ? 'custom_ocr' : 'cloud_ocr');
+  return providers.find((provider) => provider.id === targetId)
+    || providers.find((provider) => provider.id === 'custom_ocr')
+    || providers.find((provider) => provider.type === 'cloud_ocr')
+    || null;
 }
 
 function createRecognitionTask(photo = {}, patch = {}) {
@@ -496,6 +655,19 @@ function createTaskId(photo = {}, createdAt = new Date().toISOString()) {
 function resolveStatusProvider(providerStatuses = [], config = {}) {
   const mode = config.recognitionMode || 'disabled';
   if (mode === 'disabled') return null;
+  if (['local_first', 'local_only'].includes(mode)) {
+    return providerStatuses.find((provider) => provider.providerId === 'local_ocr') || null;
+  }
+  if (mode === 'cloud_only') {
+    return providerStatuses.find((provider) => provider.providerId === 'custom_ocr')
+      || providerStatuses.find((provider) => provider.type === 'cloud_ocr')
+      || null;
+  }
+  if (mode === 'compare') {
+    return providerStatuses.find((provider) => provider.providerId === 'local_ocr')
+      || providerStatuses.find((provider) => provider.providerId === 'custom_ocr')
+      || null;
+  }
   if (config.activeProviderId) {
     return providerStatuses.find((provider) => provider.providerId === config.activeProviderId || provider.id === config.activeProviderId) || null;
   }
@@ -507,10 +679,11 @@ function resolveStatusProvider(providerStatuses = [], config = {}) {
   return providerStatuses.find((provider) => provider.mode === mode || provider.type === mode || provider.providerId === mode) || null;
 }
 
-function safeDiagnoseProvider(provider, config = {}) {
+async function safeDiagnoseProvider(provider, config = {}) {
   try {
     const diagnose = provider.diagnose || provider.checkAvailability || provider.getStatus;
     if (typeof diagnose !== 'function') throw new Error('Provider 未实现 diagnose/checkAvailability。');
+    const patch = await diagnose.call(provider, config);
     return {
       id: provider.id,
       providerId: provider.id,
@@ -522,7 +695,7 @@ function safeDiagnoseProvider(provider, config = {}) {
       status: provider.status || 'unavailable',
       reason: provider.reason || '',
       capabilities: Array.isArray(provider.capabilities) ? provider.capabilities : [],
-      ...diagnose.call(provider, config)
+      ...patch
     };
   } catch (error) {
     return {

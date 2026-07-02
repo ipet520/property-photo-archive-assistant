@@ -21,10 +21,11 @@ const SETTING_TABS = [
 
 const RECOGNITION_MODE_OPTIONS = [
   { value: 'disabled', label: '禁用识别服务' },
-  { value: 'manual', label: '手动输入 / 人工校正' },
-  { value: 'local', label: '本地识别预留' },
-  { value: 'cloud', label: '云识别预留' },
-  { value: 'hybrid', label: '混合识别预留' }
+  { value: 'local_first', label: '本地优先，失败时询问云端增强' },
+  { value: 'local_only', label: '仅本地识别' },
+  { value: 'cloud_only', label: '仅云端识别' },
+  { value: 'compare', label: '本地与云端双识别对比' },
+  { value: 'manual', label: '手动输入 / 人工校正' }
 ];
 
 const MASKED_SECRET_PATTERN = /^(\*{4}.+|已配置)$/;
@@ -496,7 +497,7 @@ function RecognitionSettingsPanel({
       <header>
         <p className="eyebrow">识别服务配置</p>
         <h2>识别模式、provider 与接口参数</h2>
-        <p>这里只配置识别服务底座，不执行 OCR / AI 识别，不上传照片，也不会自动归档。密钥仅保存到 Electron userData 配置文件中，页面只显示脱敏状态。</p>
+        <p>这里复用现有识别服务配置基座。本地 OCR 优先检测内置目录、外部命令路径和系统 PATH；云端 custom_ocr 只在用户授权后上传裁剪后的水印区域，不上传整张照片，也不会自动归档。</p>
       </header>
 
       {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
@@ -626,7 +627,7 @@ function RecognitionProviderCard({
           <>
             <label className="wide">
               <span>接口地址 endpoint</span>
-              <input value={provider.endpoint || ''} onChange={(event) => onChange({ endpoint: event.target.value })} placeholder="当前仅保存配置，不发起真实请求" />
+              <input value={provider.endpoint || ''} onChange={(event) => onChange({ endpoint: event.target.value })} placeholder="custom_ocr HTTP endpoint" />
             </label>
             <label>
               <span>模型 model</span>
@@ -649,11 +650,61 @@ function RecognitionProviderCard({
             <button type="button" onClick={onClearSecret} disabled={!hasStoredSecret && !secretDraft && !provider.apiKey}>清除密钥</button>
           </>
         )}
+        {!isCloud && providerType === 'local_ocr' && (
+          <>
+            <label className="wide">
+              <span>本地 OCR 命令路径</span>
+              <input
+                value={provider.extraOptions?.commandPath || ''}
+                onChange={(event) => onChange({ extraOptions: { ...(provider.extraOptions || {}), commandPath: event.target.value } })}
+                placeholder="可留空，系统会继续检测内置 OCR 和 PATH 中的 tesseract"
+              />
+            </label>
+            <label>
+              <span>识别语言</span>
+              <input
+                value={provider.extraOptions?.language || 'chi_sim+eng'}
+                onChange={(event) => onChange({ extraOptions: { ...(provider.extraOptions || {}), language: event.target.value } })}
+              />
+            </label>
+          </>
+        )}
+        {providerId === 'custom_ocr' && (
+          <>
+            <label>
+              <span>请求体类型</span>
+              <select
+                value={provider.extraOptions?.bodyType || 'json'}
+                onChange={(event) => onChange({ extraOptions: { ...(provider.extraOptions || {}), bodyType: event.target.value } })}
+              >
+                <option value="json">JSON base64</option>
+                <option value="multipart">multipart 文件</option>
+              </select>
+            </label>
+            <label>
+              <span>图片字段名</span>
+              <input
+                value={provider.extraOptions?.imageField || 'image'}
+                onChange={(event) => onChange({ extraOptions: { ...(provider.extraOptions || {}), imageField: event.target.value } })}
+              />
+            </label>
+            <label className="wide">
+              <span>返回文本字段路径</span>
+              <input
+                value={provider.extraOptions?.textPath || 'data.text'}
+                onChange={(event) => onChange({ extraOptions: { ...(provider.extraOptions || {}), textPath: event.target.value } })}
+                placeholder="例如 data.text 或 words_result[].words"
+              />
+            </label>
+          </>
+        )}
       </div>
 
       <div className="recognition-provider-status">
         <span>状态：{providerStatus?.status || '未诊断'}</span>
         <span>可用：{providerStatus?.available ? '是' : '否'}</span>
+        {providerStatus?.engineName && <span>引擎：{providerStatus.engineName}</span>}
+        {providerStatus?.source && <span>来源：{providerStatus.source}</span>}
         <span>缺失字段：{(configStatus.missingFields || []).join('、') || '无'}</span>
         <span>诊断时间：{providerStatus?.checkedAt || diagnostic?.checkedAt || '-'}</span>
       </div>

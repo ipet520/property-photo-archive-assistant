@@ -1,6 +1,6 @@
 export const RECOGNITION_PROVIDER_TYPES = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual'];
 
-export const RECOGNITION_MODES = ['local', 'cloud', 'hybrid', 'manual', 'disabled'];
+export const RECOGNITION_MODES = ['local_first', 'local_only', 'cloud_only', 'compare', 'manual', 'disabled', 'local', 'cloud', 'hybrid'];
 
 export const RECOGNITION_CONFIG_SENSITIVE_FIELDS = [
   'apiKey',
@@ -32,6 +32,7 @@ export const RECOGNITION_RESULT_SOURCES = [
   'local_ocr',
   'cloud_ocr',
   'cloud_ai',
+  'custom_ocr',
   'manual',
   'watermark_parser',
   'system'

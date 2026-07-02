@@ -3,7 +3,7 @@ const path = require('node:path');
 
 const CONFIG_FILE_NAME = 'recognition-config.json';
 const CONFIG_VERSION = 1;
-const RECOGNITION_MODES = ['disabled', 'manual', 'local', 'cloud', 'hybrid'];
+const RECOGNITION_MODES = ['disabled', 'manual', 'local', 'cloud', 'hybrid', 'local_only', 'cloud_only', 'local_first', 'compare'];
 const SENSITIVE_FIELDS = new Set([
   'apiKey',
   'secretKey',
@@ -22,7 +22,25 @@ const DEFAULT_PROVIDER_CONFIGS = {
     providerId: 'local_ocr',
     providerType: 'local_ocr',
     displayName: '本地 OCR',
-    enabled: false
+    enabled: true
+  }),
+  custom_ocr: createDefaultProviderConfig({
+    providerId: 'custom_ocr',
+    providerType: 'cloud_ocr',
+    displayName: '通用 HTTP OCR',
+    enabled: false,
+    extraOptions: {
+      method: 'POST',
+      bodyType: 'json',
+      imageField: 'image',
+      useBase64: true,
+      textPath: 'data.text',
+      requireAuth: true,
+      authHeaderName: 'Authorization',
+      authPrefix: 'Bearer',
+      headers: {},
+      payload: {}
+    }
   }),
   cloud_ocr: createDefaultProviderConfig({
     providerId: 'cloud_ocr',
@@ -52,7 +70,7 @@ function createDefaultRecognitionConfig() {
   const now = new Date().toISOString();
   return {
     version: CONFIG_VERSION,
-    recognitionMode: 'disabled',
+    recognitionMode: 'local_first',
     activeProviderId: '',
     providers: cloneJson(DEFAULT_PROVIDER_CONFIGS),
     createdAt: now,
@@ -296,10 +314,11 @@ function getProviderConfigStatus(providerConfig = {}) {
   const hasApiKey = Boolean(String(providerConfig.apiKey || '').trim());
   const hasModel = Boolean(String(providerConfig.model || '').trim());
   const isEnabled = providerConfig.enabled === true;
+  const requireAuth = providerConfig.extraOptions?.requireAuth !== false;
   const missingFields = [];
   if (isEnabled && isCloudProviderType(providerConfig.providerType)) {
     if (!hasEndpoint) missingFields.push('endpoint');
-    if (!hasApiKey) missingFields.push('apiKey');
+    if (requireAuth && !hasApiKey) missingFields.push('apiKey');
   }
   return {
     hasEndpoint,
@@ -326,7 +345,7 @@ function maskSensitiveValue(value) {
   return `****${text.slice(-4)}`;
 }
 
-function createDefaultProviderConfig({ providerId, providerType, displayName, enabled }) {
+function createDefaultProviderConfig({ providerId, providerType, displayName, enabled, extraOptions = {} }) {
   return {
     enabled,
     providerId,
@@ -337,7 +356,7 @@ function createDefaultProviderConfig({ providerId, providerType, displayName, en
     model: '',
     timeoutMs: DEFAULT_TIMEOUT_MS,
     maxRetries: DEFAULT_MAX_RETRIES,
-    extraOptions: {}
+    extraOptions
   };
 }
 
