@@ -6,6 +6,14 @@ const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs');
+const {
+  clearSmartSortGroups,
+  generateSmartSortGroups,
+  getSmartSortGroup,
+  getSmartSortGroupingResult,
+  listSmartSortGroups,
+  updateSmartSortGroupStatus
+} = require('./services/smartSortService.cjs');
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { clearHandledTrialIssues, deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
@@ -563,6 +571,43 @@ ipcMain.handle('recognition:clearFormPatchDraftsByPhoto', async (_event, photoIn
 ipcMain.handle('recognition:clearAllFormPatchDrafts', async () => safeRecognitionCall(
   () => clearAllFormPatchDrafts(app.getPath('userData')),
   () => 0
+));
+ipcMain.handle('smartSort:generateGroups', async (_event, input) => safeRecognitionCall(
+  () => generateSmartSortGroups(app.getPath('userData'), input),
+  (error) => ({
+    id: '',
+    source: 'current_photo_list',
+    groupCount: 0,
+    photoCount: 0,
+    groups: [],
+    rules: [],
+    status: 'failed',
+    warnings: [],
+    errors: [{ code: 'smart_sort_ipc_error', message: error.message || '智能分拣分组生成失败。' }],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    schemaVersion: 1
+  })
+));
+ipcMain.handle('smartSort:getGroupingResult', async () => safeRecognitionCall(
+  () => getSmartSortGroupingResult(app.getPath('userData')),
+  () => null
+));
+ipcMain.handle('smartSort:listGroups', async () => safeRecognitionCall(
+  () => listSmartSortGroups(app.getPath('userData')),
+  () => []
+));
+ipcMain.handle('smartSort:getGroup', async (_event, id) => safeRecognitionCall(
+  () => getSmartSortGroup(app.getPath('userData'), id),
+  () => null
+));
+ipcMain.handle('smartSort:updateGroupStatus', async (_event, id, status) => safeRecognitionCall(
+  () => updateSmartSortGroupStatus(app.getPath('userData'), id, status),
+  () => null
+));
+ipcMain.handle('smartSort:clearGroups', async () => safeRecognitionCall(
+  () => clearSmartSortGroups(app.getPath('userData')),
+  () => false
 ));
 ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
 ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));
