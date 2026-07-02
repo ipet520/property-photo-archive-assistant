@@ -146,6 +146,7 @@ export default function SortWorkspacePage({ archiveState }) {
     if (smartSortViewMode !== 'smartSortGroup' || !activeSmartGroup) return null;
     return new Set([...activeSmartSortGroupPhotoIds, ...activeSmartSortGroupPhotoPaths].filter(Boolean));
   }, [activeSmartGroup, activeSmartSortGroupPhotoIds, activeSmartSortGroupPhotoPaths, smartSortViewMode]);
+  const currentPhotoKeySet = useMemo(() => new Set(photos.flatMap((photo) => [photo.id, photo.originalPath]).filter(Boolean)), [photos]);
 
   const visiblePhotos = useMemo(() => {
     const keyword = searchText.trim().toLowerCase();
@@ -197,6 +198,12 @@ export default function SortWorkspacePage({ archiveState }) {
     filter,
     photos
   });
+  const smartSortStatusText = buildSmartSortStatusText({
+    photos,
+    result: smartSortResult,
+    isBusy: isSmartSortBusy,
+    message: smartSortMessage
+  });
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -207,6 +214,23 @@ export default function SortWorkspacePage({ archiveState }) {
       resetSmartSortState({ type: 'idle', text: '' });
     }
   }, [photos.length, smartSortResult]);
+
+  useEffect(() => {
+    if (!smartSortGroups.length) return;
+    const hasInvalidGroupPhoto = smartSortGroups.some((group) => getSmartSortGroupKeys(group).some((key) => !currentPhotoKeySet.has(key)));
+    const groupedPhotoCount = smartSortGroups.reduce((sum, group) => sum + getSmartSortGroupPhotoCount(group), 0);
+    const countMismatch = photos.length > 0 && groupedPhotoCount > 0 && groupedPhotoCount !== photos.length;
+    if (photos.length === 0 || hasInvalidGroupPhoto || countMismatch) {
+      resetSmartSortState({ type: 'idle', text: '当前照片列表已变化，请重新执行智能分拣。' });
+    }
+  }, [currentPhotoKeySet, photos.length, smartSortGroups]);
+
+  useEffect(() => {
+    if (activeSmartSortGroupId && !activeSmartGroup) {
+      setSmartSortViewMode('statusFilter');
+      setActiveSmartSortGroupId('');
+    }
+  }, [activeSmartGroup, activeSmartSortGroupId]);
 
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
@@ -400,8 +424,12 @@ export default function SortWorkspacePage({ archiveState }) {
   }
 
   async function generateSmartGroups() {
+    if (isBusy || isSmartSortBusy) {
+      setSmartSortMessage({ type: 'warning', text: '照片扫描或智能分拣正在进行，请稍候。' });
+      return;
+    }
     if (photos.length === 0) {
-      setSmartSortMessage({ type: 'warning', text: '暂无照片，选择目录并扫描后可使用智能分拣。' });
+      setSmartSortMessage({ type: 'warning', text: '请先选择目录并扫描照片。' });
       return;
     }
     setIsSmartSortBusy(true);
@@ -417,7 +445,8 @@ export default function SortWorkspacePage({ archiveState }) {
       if (result.status === 'failed') {
         setSmartSortMessage({ type: 'error', text: result.errors?.[0]?.message || '分拣组生成失败，手动归档流程不受影响。' });
       } else if (result.groupCount > 0) {
-        setSmartSortMessage({ type: 'success', text: `已生成 ${result.groupCount} 个分拣组，仅用于辅助查看，不会自动填表或归档。` });
+        const groupedPhotoCount = Number(result.photoCount) || photos.length;
+        setSmartSortMessage({ type: 'success', text: `已分拣 ${groupedPhotoCount} 张照片，生成 ${result.groupCount} 个分组。` });
       } else {
         setSmartSortMessage({ type: 'warning', text: '当前照片缺少足够识别信息，暂未形成有效分组，您仍可手动选择照片进行归档。' });
       }
@@ -450,6 +479,8 @@ export default function SortWorkspacePage({ archiveState }) {
     setPage(1);
     const group = smartSortGroups.find((item) => item.id === groupId);
     if (group) {
+      const groupKeys = new Set(getSmartSortGroupKeys(group));
+      setSelectedIds((current) => current.filter((id) => groupKeys.has(id)));
       setSmartSortMessage({ type: 'idle', text: `当前查看“${group.title}”，未自动选择照片、未填表、未归档。` });
     }
   }
@@ -871,6 +902,7 @@ export default function SortWorkspacePage({ archiveState }) {
             <SmartSortGroupNav
               groups={smartSortGroups}
               activeGroupId={activeSmartSortGroupId}
+              statusText={smartSortStatusText}
               onSelectGroup={viewSmartGroup}
             />
           </SortSection>
@@ -930,7 +962,7 @@ export default function SortWorkspacePage({ archiveState }) {
               <div className="sort-empty-state">
                 <strong>{effectivePhotoFolder ? '点击扫描读取当前照片目录。' : '请选择照片文件夹并扫描照片。'}</strong>
                 <span>{visiblePhotos.length === 0 && photos.length > 0
-                  ? '当前筛选条件下没有照片，可调整左侧筛选。'
+                  ? (smartSortViewMode === 'smartSortGroup' ? '当前分组暂无匹配照片，可切换分组或重新执行智能分拣。' : '当前筛选条件下没有照片，可调整左侧筛选。')
                   : '原始照片只读取，不移动、不删除、不压缩。'}</span>
                 {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
               </div>
@@ -1047,10 +1079,11 @@ export default function SortWorkspacePage({ archiveState }) {
   );
 }
 
-function SmartSortGroupNav({ groups, activeGroupId, onSelectGroup }) {
+function SmartSortGroupNav({ groups, activeGroupId, statusText, onSelectGroup }) {
   const hasGroups = groups.length > 0;
   return (
     <div className="smart-sort-nav-list">
+      {statusText && <p className="smart-sort-nav-status">{statusText}</p>}
       {!hasGroups ? (
         <p className="smart-sort-nav-empty">
           <strong>暂无分组</strong>
@@ -1394,6 +1427,19 @@ function getSmartSortGroupPhotoPaths(group) {
     .map((value) => String(value || '').trim())
     .filter(Boolean);
   return [...rawPaths.map((value) => String(value || '').trim()).filter(Boolean), ...objectPaths];
+}
+
+function getSmartSortGroupKeys(group) {
+  return [...getSmartSortGroupPhotoIds(group), ...getSmartSortGroupPhotoPaths(group)].filter(Boolean);
+}
+
+function buildSmartSortStatusText({ photos, result, isBusy, message }) {
+  if (isBusy) return '正在整理智能分拣分组...';
+  if (message?.type === 'error' && message.text) return message.text;
+  if (photos.length === 0) return '请选择照片目录并扫描照片';
+  if (!result?.groupCount) return `已扫描 ${photos.length} 张照片，可点击智能分拣`;
+  const groupedPhotoCount = Number(result.photoCount) || photos.length;
+  return `已分拣 ${groupedPhotoCount} 张照片，生成 ${result.groupCount} 个分组`;
 }
 
 function buildSmartSortBottomText({ result, viewMode, activeGroup, activeGroupName, activeGroupPhotoCount, filter, photos }) {

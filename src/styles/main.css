@@ -14115,6 +14115,18 @@ table tbody tr.selected td {
   min-width: 0;
 }
 
+.smart-sort-nav-status {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(33, 81, 145, 0.14);
+  border-radius: 10px;
+  color: #46617c;
+  background: #f7fbff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
 .smart-sort-nav-empty {
   display: grid;
   gap: 4px;
