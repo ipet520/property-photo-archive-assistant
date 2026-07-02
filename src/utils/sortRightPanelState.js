@@ -1,5 +1,5 @@
 const defaultArchiveFields = {
-  photoSource: '',
+  photoSource: '工作照片',
   project: '',
   department: '',
   watermarkCategory: '',
@@ -16,13 +16,10 @@ const defaultArchiveFields = {
 };
 
 const requiredFieldLabels = [
-  ['照片来源', 'photoSource'],
-  ['项目', 'project'],
-  ['部门', 'department'],
-  ['水印分类', 'watermarkCategory'],
-  ['工作内容', 'workContent'],
   ['日期', 'date'],
-  ['照片阶段', 'photoStage']
+  ['位置/区域', 'location'],
+  ['工作内容', 'workContent'],
+  ['归档分类', 'watermarkCategory']
 ];
 
 export function normalizeRecognitionEvidence(recognitionResult = {}, photo = {}) {
@@ -96,7 +93,8 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
   const configs = context.configs || {};
 
   Object.entries(previousSuggestion?.fieldSources || {}).forEach(([key, source]) => {
-    if (!String(source || '').includes('manual')) return;
+    const sourceText = String(source || '');
+    if (!sourceText.includes('manual') && !sourceText.includes('mixed')) return;
     const manualValue = normalizeValue(previousSuggestion?.suggestedFields?.[key]);
     if (!manualValue) return;
     suggestedFields[key] = manualValue;
@@ -109,7 +107,7 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
     if (!normalized) return;
     const previousValue = normalizeValue(previousSuggestion?.suggestedFields?.[key]);
     const previousSource = previousSuggestion?.fieldSources?.[key] || '';
-    if (previousValue && previousValue !== normalized && previousSource.includes('manual')) {
+    if (previousValue && previousValue !== normalized && (previousSource.includes('manual') || previousSource.includes('mixed'))) {
       conflictFields.add(getFieldLabel(key));
       suggestedFields[key] = previousValue;
       fieldSources[key] = previousSource;
@@ -122,7 +120,7 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
   };
 
   setField('date', watermarkRecord.captureDate, 'watermark.date', 0.95);
-  setField('photoSource', context.currentPhotoSource || context.defaultPhotoSource || configs.photoSources?.[0], 'context.photoSource', 0.9);
+  setField('photoSource', context.currentPhotoSource || context.defaultPhotoSource || '工作照片', 'context.photoSource', 0.9);
   setField('project', context.currentProject || inferProjectFromText(watermarkRecord.projectText || watermarkRecord.locationText, configs.projects) || context.defaultProject, context.currentProject ? 'context.project' : 'watermark.project', 0.85);
   setField('department', context.defaultDepartment, 'default.department', 0.55);
 
@@ -209,10 +207,8 @@ export function confirmArchiveSuggestion(archiveSuggestion = {}) {
 
 export function clearRecognitionForPhoto({ recognitionResultsByPhoto = {}, watermarkRecordsByPhoto = {}, photoId = '' } = {}) {
   const nextRecognition = { ...recognitionResultsByPhoto };
-  const nextWatermark = { ...watermarkRecordsByPhoto };
   delete nextRecognition[photoId];
-  delete nextWatermark[photoId];
-  return { recognitionResultsByPhoto: nextRecognition, watermarkRecordsByPhoto: nextWatermark };
+  return { recognitionResultsByPhoto: nextRecognition, watermarkRecordsByPhoto };
 }
 
 export function clearArchiveSuggestionForPhoto({ archiveSuggestionsByPhoto = {}, photoId = '' } = {}) {
@@ -225,14 +221,18 @@ export function getPreviewDisabledReason({ isBusy, selectedIds, selectedHasIgnor
   if (isBusy) return '正在处理，请稍候。';
   if (!Array.isArray(selectedIds) || selectedIds.length === 0) return '请先选择需要预览的照片。';
   if (selectedHasIgnored) return '当前选择包含已忽略照片，请先还原。';
-  if (selectedAssignedCount > 0 && assignedCount > 0) return '';
+  if (selectedAssignedCount === selectedIds.length && assignedCount > 0) return '';
+  if (selectedAssignedCount > 0 && selectedAssignedCount < selectedIds.length) return '已选照片中仍有未确认归档信息的照片。';
   if (suggestion?.missingRequiredFields?.length) return `请先补全归档建议字段：${suggestion.missingRequiredFields.join('、')}`;
   if (suggestion && suggestion.status !== 'confirmed') return '请先确认归档建议。';
   return '请先确认归档建议。';
 }
 
 export function validateSortForm(form = {}) {
-  return requiredFieldLabels.filter(([, key]) => !normalizeValue(form[key])).map(([label]) => label);
+  return requiredFieldLabels.filter(([, key]) => {
+    if (key === 'location') return !normalizeValue(form.location || form.area);
+    return !normalizeValue(form[key]);
+  }).map(([label]) => label);
 }
 
 export function sanitizeArchiveFields(fields = {}, configs = {}) {
@@ -242,8 +242,8 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
   return {
     ...defaultArchiveFields,
     ...fields,
-    photoSource: pickIfValid(fields.photoSource, configs.photoSources),
-    project: pickIfValid(fields.project, configs.projects),
+    photoSource: normalizeValue(fields.photoSource) || '工作照片',
+    project: pickIfValid(fields.project, configs.projects) || normalizeValue(fields.project),
     department: pickIfValid(fields.department, configs.departments),
     watermarkCategory,
     workContent: workOptions.includes(fields.workContent) ? fields.workContent : '',
@@ -286,6 +286,25 @@ function pickIfValid(value, options = []) {
   return options.includes(normalized) ? normalized : '';
 }
 
+function getFieldLabel(key = '') {
+  const labels = {
+    photoSource: '照片来源',
+    project: '项目',
+    department: '部门',
+    watermarkCategory: '归档分类',
+    workContent: '工作内容',
+    date: '日期',
+    area: '位置/区域',
+    location: '位置/区域',
+    itemName: '事项名称',
+    photoStage: '照片阶段',
+    processStatus: '处理状态',
+    keywords: '关键词',
+    remark: '备注'
+  };
+  return labels[key] || key;
+}
+
 function normalizeValue(value) {
   return String(value || '').trim();
 }
@@ -320,12 +339,14 @@ function inferWorkContentLine(lines = []) {
 }
 
 function matchCategory(text = '', categories = {}) {
+  if (!normalizeValue(text)) return { category: '', candidates: [], source: '', confidence: 0 };
   const candidates = Object.keys(categories).filter((category) => normalizeCompareText(text).includes(normalizeCompareText(category)));
   if (candidates.length === 1) return { category: candidates[0], candidates, source: 'watermark.category', confidence: 0.75 };
   return { category: '', candidates, source: '', confidence: 0 };
 }
 
 function matchWorkContent(text = '', categories = {}, preferredCategory = '') {
+  if (!normalizeValue(text)) return { workContent: '', category: '', candidates: [], source: '', confidence: 0 };
   const rows = [];
   Object.entries(categories || {}).forEach(([category, config]) => {
     (config.items || []).forEach((item) => {

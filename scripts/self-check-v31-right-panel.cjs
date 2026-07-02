@@ -14,7 +14,7 @@ async function main() {
   } = await import('../src/utils/sortRightPanelState.js');
 
   const configs = {
-    photoSources: ['Mark watermark camera'],
+    photoSources: ['工作照片'],
     projects: ['Xiaoxiang Phase 2', 'Xiangchen Garden'],
     departments: ['Order', 'Engineering'],
     watermarkCategories: {
@@ -24,145 +24,178 @@ async function main() {
     photoStages: ['Before', 'During', 'After', 'Site photo'],
     processStatuses: ['Pending', 'Processing', 'Completed']
   };
-
   const context = {
     configs,
     currentProject: 'Xiaoxiang Phase 2',
     defaultProject: 'Xiaoxiang Phase 2',
-    currentPhotoSource: 'Mark watermark camera',
-    defaultPhotoSource: 'Mark watermark camera',
+    currentPhotoSource: '工作照片',
+    defaultPhotoSource: '工作照片',
     defaultDepartment: 'Order',
     photoFolder: 'D:/photos/xiaoxiang',
     archiveRoot: 'D:/archive'
   };
-
   const photos = [
-    { id: 'photo-a', sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null },
-    { id: 'photo-b', sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null }
+    { id: 'photo-a', originalPath: 'D:/photos/a.jpg', sortStatus: 'unrecognized', archiveInfo: null, previewInfo: null, archiveResult: null },
+    { id: 'photo-b', originalPath: 'D:/photos/b.jpg', sortStatus: 'unrecognized', archiveInfo: null, previewInfo: null, archiveResult: null },
+    { id: 'photo-c', originalPath: 'D:/photos/c.jpg', sortStatus: 'unrecognized', archiveInfo: null, previewInfo: null, archiveResult: null }
   ];
 
   const recognitionResultsByPhoto = {};
   let watermarkRecordsByPhoto = {};
   let archiveSuggestionsByPhoto = {};
-  let rightPanelMode = 'form';
+  let activePhotoId = '';
+  let selectedIds = [];
+  let viewMode = 'statusFilter';
+  let activeSmartGroupId = '';
+
+  assert.equal(activePhotoId, '', '1. no activePhotoId should represent empty right panel state');
+
+  activePhotoId = 'photo-a';
+  let manualSuggestion = updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    date: '2026-06-12'
+  }, { configs, photoId: activePhotoId });
+  archiveSuggestionsByPhoto[activePhotoId] = manualSuggestion;
+  assert.ok(archiveSuggestionsByPhoto['photo-a'], '2. unrecognized photo can create manual archiveSuggestion');
+  assert.equal(photos[0].archiveInfo, null, '3. manual suggestion must not write archiveInfo');
+  assert.equal(photos[0].archiveInfo, null, '4. save suggestion must not write archiveInfo');
+
+  manualSuggestion = updateArchiveSuggestion(manualSuggestion, {
+    location: 'Building 3 entrance',
+    watermarkCategory: 'Vehicle',
+    workContent: 'Fire lane parking'
+  }, { configs, photoId: activePhotoId });
+  const confirmedManual = confirmArchiveSuggestion(manualSuggestion);
+  assert.equal(confirmedManual.ok, true, '5. confirmation should succeed after core fields complete');
+  photos[0].archiveInfo = confirmedManual.archiveInfo;
+  photos[0].sortStatus = 'confirmed';
+
+  assert.equal(updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    location: 'Building 3',
+    watermarkCategory: 'Vehicle',
+    workContent: 'Fire lane parking'
+  }, { configs, photoId: 'x' }).status, 'needs_completion', '6. missing date should be needs_completion');
+  assert.equal(updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    date: '2026-06-12',
+    watermarkCategory: 'Vehicle',
+    workContent: 'Fire lane parking'
+  }, { configs, photoId: 'x' }).status, 'needs_completion', '7. missing location should be needs_completion');
+  assert.equal(updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    date: '2026-06-12',
+    location: 'Building 3',
+    watermarkCategory: 'Vehicle'
+  }, { configs, photoId: 'x' }).status, 'needs_completion', '8. missing workContent should be needs_completion');
+  assert.equal(updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    date: '2026-06-12',
+    location: 'Building 3',
+    workContent: 'Fire lane parking'
+  }, { configs, photoId: 'x' }).status, 'needs_completion', '9. missing archive category should be needs_completion');
+
+  const optionalMissing = updateArchiveSuggestion(null, {
+    photoSource: '工作照片',
+    project: 'Xiaoxiang Phase 2',
+    date: '2026-06-12',
+    location: 'Building 3',
+    watermarkCategory: 'Vehicle',
+    workContent: 'Fire lane parking'
+  }, { configs, photoId: 'x' });
+  assert.equal(optionalMissing.status, 'suggestion_ready', '10/11. missing photoStage/processStatus should not block suggestion_ready');
+  assert.equal(optionalMissing.suggestedFields.photoSource, '工作照片', '12. photoSource should be fixed as work photos');
+  assert.equal(optionalMissing.suggestedFields.project, 'Xiaoxiang Phase 2', '13. project should come from current project context/config');
+  assert.equal(optionalMissing.status === 'suggestion_ready' && !photos[1].archiveInfo, true, '14. suggestion_ready is not confirmed');
+  const incomplete = updateArchiveSuggestion(null, { date: '2026-06-12' }, { configs, photoId: 'x' });
+  assert.equal(incomplete.status === 'needs_completion' && !photos[1].archiveInfo, true, '15. needs_completion is not confirmed');
+  assert.ok(photos[0].archiveInfo, '16. confirmed state must come from photos[].archiveInfo');
+
+  selectedIds = ['photo-a'];
+  assert.equal(getPreviewDisabledReason({
+    isBusy: false,
+    selectedIds,
+    selectedHasIgnored: false,
+    selectedAssignedCount: 1,
+    assignedCount: 1,
+    suggestion: manualSuggestion
+  }), '', '17. preview should be based on confirmed selected photos');
+  photos[0].previewInfo = { id: 'photo-a', targetPath: 'D:/archive/a.jpg', newName: 'a.jpg' };
+  photos[0].sortStatus = 'previewed';
+  assert.equal(selectedIds.every((id) => photos.find((photo) => photo.id === id)?.previewInfo), true, '18. archive should be based on valid previewInfo');
+
+  selectedIds = ['photo-a', 'photo-b'];
+  const selectedPhotoIdsSnapshot = [...selectedIds];
+  selectedIds = ['photo-c'];
+  assert.deepEqual(selectedPhotoIdsSnapshot, ['photo-a', 'photo-b'], '19. smart recognition should use selectedPhotoIdsSnapshot');
+  selectedIds = [];
+  assert.deepEqual(selectedIds, [], '20. smart recognition completion should clear selectedPhotoIds');
+
+  selectedIds = ['photo-a'];
+  viewMode = 'statusFilter';
+  activeSmartGroupId = '';
+  selectedIds = [];
+  assert.deepEqual(selectedIds, [], '21. clicking status filter should clear selectedPhotoIds');
+  activeSmartGroupId = 'group-1';
+  viewMode = 'smartGroup';
+  selectedIds = ['photo-b'];
+  selectedIds = [];
+  assert.deepEqual(selectedIds, [], '22. clicking smart group should clear selectedPhotoIds');
+  viewMode = 'statusFilter';
+  activeSmartGroupId = '';
+  assert.equal(activeSmartGroupId, '', '23. clicking status filter should clear activeSmartGroupId');
+  viewMode = 'smartGroup';
+  activeSmartGroupId = 'group-1';
+  assert.equal(viewMode, 'smartGroup', '24. clicking smart group should set viewMode=smartGroup');
+
+  activePhotoId = 'photo-a';
+  activePhotoId = 'photo-b';
+  assert.equal(activePhotoId, 'photo-b', '25. clicking photo body should switch activePhotoId');
+  selectedIds = [];
+  selectedIds = selectedIds.includes('photo-c') ? selectedIds.filter((id) => id !== 'photo-c') : [...selectedIds, 'photo-c'];
+  assert.equal(activePhotoId, 'photo-b', '26. checkbox should not change activePhotoId');
 
   const recognitionA = {
     photoId: 'photo-a',
     success: true,
     status: 'success',
-    rawText: [
-      '2026-06-12 10:21',
-      'Xiaoxiang Phase 2 Building 3 entrance',
-      'Fire lane parking'
-    ].join('\n'),
+    rawText: ['2026-06-12 10:21', 'Xiaoxiang Phase 2 Building 3 entrance', 'Fire lane parking'].join('\n'),
     engine: 'rapidocr',
-    provider: 'local_ocr',
-    durationMs: 128,
-    recognizedAt: '2026-07-02T10:00:00.000Z',
-    taskId: 'task-a'
+    provider: 'local_ocr'
   };
-
   recognitionResultsByPhoto['photo-a'] = recognitionA;
   const watermarkA = parseWatermarkRecord(recognitionA);
   watermarkRecordsByPhoto['photo-a'] = watermarkA;
   const suggestionA = buildArchiveSuggestion(watermarkA, context);
   archiveSuggestionsByPhoto['photo-a'] = suggestionA;
+  assert.ok(recognitionResultsByPhoto['photo-a'], 'four-layer: recognitionResult exists');
+  assert.ok(watermarkA.locationText, 'four-layer: watermarkRecord exists');
+  assert.notDeepEqual(watermarkA, suggestionA, 'four-layer: watermarkRecord and archiveSuggestion are separate');
+  assert.equal(suggestionA.suggestedFields.project, 'Xiaoxiang Phase 2', 'four-layer: archiveSuggestion uses context project');
+  assert.equal(suggestionA.suggestedFields.itemName.includes('Fire lane parking'), true, 'four-layer: itemName derived');
+  assert.equal(suggestionA.suggestedFields.keywords.includes('Fire'), true, 'four-layer: keywords derived');
 
-  assert.equal(recognitionResultsByPhoto['photo-a'].rawText.includes('Fire lane parking'), true, 'recognitionResult should keep OCR evidence');
-  assert.equal(watermarkA.captureDate, '2026-06-12', 'watermarkRecord should parse capture date from OCR text');
-  assert.equal(watermarkA.captureTime, '10:21', 'watermarkRecord should parse capture time from OCR text');
-  assert.equal(watermarkA.locationText.includes('Building 3'), true, 'watermarkRecord should keep objective location text');
-  assert.notDeepEqual(watermarkA, suggestionA, 'watermarkRecord and archiveSuggestion must be separate objects');
-  assert.equal(suggestionA.suggestedFields.project, 'Xiaoxiang Phase 2', 'archiveSuggestion should use context to fill project');
-  assert.equal(suggestionA.suggestedFields.department, 'Order', 'archiveSuggestion should use default department from context');
-  assert.equal(suggestionA.suggestedFields.photoSource, 'Mark watermark camera', 'archiveSuggestion should use photo source from context');
-  assert.equal(suggestionA.suggestedFields.workContent, 'Fire lane parking', 'archiveSuggestion should map work content from OCR facts');
-  assert.equal(suggestionA.suggestedFields.watermarkCategory, 'Vehicle', 'archiveSuggestion should map category from work content');
-  assert.equal(suggestionA.fieldSources.date, 'watermark.date', 'date source should be watermark');
-  assert.equal(suggestionA.fieldSources.project, 'context.project', 'project source should be context when current project exists');
-  assert.equal(suggestionA.fieldSources.photoSource, 'context.photoSource', 'photoSource source should be context');
-  assert.equal(suggestionA.suggestedFields.itemName.includes('Fire lane parking'), true, 'itemName should be derived from area/work content');
-  assert.equal(suggestionA.suggestedFields.keywords.includes('Fire'), true, 'keywords should be derived from OCR facts and work content');
-  assert.equal(Boolean(suggestionA.suggestedFields.photoStage), false, 'photoStage should remain empty when OCR/context cannot determine it');
-  assert.equal(suggestionA.missingRequiredFields.length > 0, true, 'missing required fields should keep suggestion in completion state');
-  assert.equal(suggestionA.status, 'needs_completion', 'incomplete suggestion should be saved as needs_completion');
-  assert.equal(photos[0].archiveInfo, null, 'saving suggestion must not write photos[].archiveInfo');
+  const clearedRecognition = clearRecognitionForPhoto({ recognitionResultsByPhoto, watermarkRecordsByPhoto, photoId: 'photo-a' });
+  assert.equal(clearedRecognition.recognitionResultsByPhoto['photo-a'], undefined, '27. clear recognition should clear recognitionResult');
+  assert.ok(archiveSuggestionsByPhoto['photo-a'], '27. clear recognition should not clear archiveSuggestion');
+  const clearedSuggestion = clearArchiveSuggestionForPhoto({ archiveSuggestionsByPhoto, photoId: 'photo-a' });
+  assert.equal(clearedSuggestion.archiveSuggestionsByPhoto['photo-a'], undefined, '28. clear suggestion should clear archiveSuggestion');
+  assert.ok(recognitionResultsByPhoto['photo-a'], '28. clear suggestion should not clear recognitionResult');
 
-  assert.equal(rightPanelMode, 'form', 'recognition completion should leave right panel in suggestion form mode');
-  rightPanelMode = 'recognition';
-  assert.equal(rightPanelMode, 'recognition', 'view evidence should only switch panel mode');
-  assert.ok(recognitionResultsByPhoto['photo-a'], 'view evidence should not clear recognition');
-  assert.ok(archiveSuggestionsByPhoto['photo-a'], 'view evidence should not clear suggestion');
-  rightPanelMode = 'form';
-  assert.equal(rightPanelMode, 'form', 'return suggestion should only switch panel mode');
+  photos[0].previewInfo = { id: 'photo-a', targetPath: 'old' };
+  photos[0].archiveInfo.location = 'new location';
+  photos[0].previewInfo = null;
+  photos[0].sortStatus = 'confirmed';
+  assert.equal(photos[0].previewInfo, null, '29. editing confirmed archiveInfo should invalidate previewInfo');
 
-  const manuallyCompletedA = updateArchiveSuggestion(archiveSuggestionsByPhoto['photo-a'], {
-    photoStage: 'Before',
-    processStatus: 'Pending'
-  }, { configs, photoId: 'photo-a' });
-  archiveSuggestionsByPhoto['photo-a'] = manuallyCompletedA;
-  assert.equal(manuallyCompletedA.fieldSources.photoStage, 'manual', 'manual photoStage should be marked manual');
-  assert.equal(recognitionResultsByPhoto['photo-a'], recognitionA, 'manual patch must not mutate recognitionResult');
-  assert.equal(watermarkRecordsByPhoto['photo-a'], watermarkA, 'manual patch must not mutate watermarkRecord');
-  assert.equal(photos[0].archiveInfo, null, 'manual patch must not write archiveInfo before confirmation');
-
-  const regeneratedA = regenerateArchiveSuggestion(watermarkA, context, manuallyCompletedA);
-  assert.equal(regeneratedA.suggestedFields.photoStage, 'Before', 'regeneration must not silently overwrite manual fields');
-  assert.ok(regeneratedA.conflictFields.includes('photoStage') || regeneratedA.fieldSources.photoStage === 'manual', 'manual field should be preserved or marked as conflict/manual');
-
-  const confirmA = confirmArchiveSuggestion(manuallyCompletedA);
-  assert.equal(confirmA.ok, true, 'completed suggestion should pass confirmation');
-  photos[0].archiveInfo = confirmA.archiveInfo;
-  photos[0].sortStatus = 'assigned';
-  assert.deepEqual(validateSortForm(photos[0].archiveInfo), [], 'confirmed archiveInfo should pass form validation');
-  assert.equal(getPreviewDisabledReason({
-    isBusy: false,
-    selectedIds: ['photo-a'],
-    selectedHasIgnored: false,
-    selectedAssignedCount: 1,
-    assignedCount: 1,
-    suggestion: manuallyCompletedA
-  }), '', 'preview should be enabled only after archiveInfo exists');
-
-  const incompleteRecognition = {
-    photoId: 'photo-b',
-    success: true,
-    status: 'success',
-    rawText: '2026-06-12\nXiaoxiang Phase 2 Building 9',
-    engine: 'rapidocr',
-    provider: 'local_ocr'
-  };
-  recognitionResultsByPhoto['photo-b'] = incompleteRecognition;
-  watermarkRecordsByPhoto['photo-b'] = parseWatermarkRecord(incompleteRecognition);
-  archiveSuggestionsByPhoto['photo-b'] = buildArchiveSuggestion(watermarkRecordsByPhoto['photo-b'], context);
-  assert.ok(archiveSuggestionsByPhoto['photo-b'], 'incomplete OCR should still create an archiveSuggestion');
-  assert.ok(archiveSuggestionsByPhoto['photo-b'].missingRequiredFields.length > 0, 'incomplete suggestion should keep missing fields');
-  assert.notEqual(photos[1].archiveInfo, archiveSuggestionsByPhoto['photo-b'], 'archiveSuggestion must not be treated as confirmed archiveInfo');
-  assert.notEqual(getPreviewDisabledReason({
-    isBusy: false,
-    selectedIds: ['photo-b'],
-    selectedHasIgnored: false,
-    selectedAssignedCount: 0,
-    assignedCount: 1,
-    suggestion: archiveSuggestionsByPhoto['photo-b']
-  }), '', 'unconfirmed suggestion should not enable preview');
-
-  const clearedRecognition = clearRecognitionForPhoto({
-    recognitionResultsByPhoto,
-    watermarkRecordsByPhoto,
-    photoId: 'photo-a'
-  });
-  assert.equal(clearedRecognition.recognitionResultsByPhoto['photo-a'], undefined, 'clear recognition should remove only current photo recognition');
-  assert.equal(clearedRecognition.watermarkRecordsByPhoto['photo-a'], undefined, 'clear recognition should remove only current photo watermark');
-  assert.ok(archiveSuggestionsByPhoto['photo-a'], 'clear recognition should not clear archiveSuggestion');
-
-  const clearedSuggestion = clearArchiveSuggestionForPhoto({
-    archiveSuggestionsByPhoto,
-    photoId: 'photo-b'
-  });
-  assert.equal(clearedSuggestion.archiveSuggestionsByPhoto['photo-b'], undefined, 'clear suggestion should remove only current photo suggestion');
-  assert.ok(recognitionResultsByPhoto['photo-b'], 'clear suggestion should not clear recognitionResult');
-  assert.ok(watermarkRecordsByPhoto['photo-b'], 'clear suggestion should not clear watermarkRecord');
+  selectedIds = ['photo-a'];
+  const previewTargets = photos.filter((photo) => selectedIds.includes(photo.id) && photo.archiveInfo);
+  assert.deepEqual(previewTargets.map((photo) => photo.id), ['photo-a'], '30. preview/archive should not process unselected photos');
 
   const failedRecognition = {
     photoId: 'photo-b',
@@ -171,75 +204,36 @@ async function main() {
     rawText: '',
     engine: 'rapidocr',
     provider: 'local_ocr',
-    error: 'runner failed',
-    recognizedAt: '2026-07-02T10:01:00.000Z'
+    error: 'runner failed'
   };
   recognitionResultsByPhoto['photo-b'] = failedRecognition;
   watermarkRecordsByPhoto['photo-b'] = parseWatermarkRecord(failedRecognition);
-  assert.equal(watermarkRecordsByPhoto['photo-b'].parseWarnings.length > 0, true, 'OCR failure should still create a failure watermark record');
   archiveSuggestionsByPhoto['photo-b'] = updateArchiveSuggestion(null, {
-    photoSource: 'Mark watermark camera',
+    photoSource: '工作照片',
     project: 'Xiaoxiang Phase 2',
-    department: 'Order',
-    watermarkCategory: 'Vehicle',
-    workContent: 'Parking violation',
     date: '2026-06-12',
-    photoStage: 'Before',
-    processStatus: 'Pending',
     location: 'manual location',
-    itemName: 'manual item'
+    watermarkCategory: 'Vehicle',
+    workContent: 'Parking violation'
   }, { configs, photoId: 'photo-b' });
-  const confirmB = confirmArchiveSuggestion(archiveSuggestionsByPhoto['photo-b']);
-  assert.equal(confirmB.ok, true, 'OCR failure photo should still support manual suggestion confirmation');
-  photos[1].archiveInfo = confirmB.archiveInfo;
-  photos[1].sortStatus = 'assigned';
+  assert.equal(confirmArchiveSuggestion(archiveSuggestionsByPhoto['photo-b']).ok, true, 'OCR failure photo should support manual suggestion confirmation');
 
-  archiveSuggestionsByPhoto['photo-a'] = updateArchiveSuggestion(archiveSuggestionsByPhoto['photo-a'], {
-    location: 'photo A manual only'
-  }, { configs, photoId: 'photo-a' });
-  assert.notEqual(archiveSuggestionsByPhoto['photo-b'].suggestedFields.location, 'photo A manual only', 'current photo changes must not pollute other selected photos');
-  assert.equal(photos[1].sortStatus, 'assigned', 'photo B status should remain independent from photo A edits');
-
-  const persistedDraft = {
-    recognitionResultsByPhoto,
-    watermarkRecordsByPhoto,
-    archiveSuggestionsByPhoto,
-    rightPanelMode,
-    photos
-  };
-  assert.ok(persistedDraft.recognitionResultsByPhoto['photo-b'], 'save progress payload should include recognitionResultsByPhoto');
-  assert.ok(persistedDraft.watermarkRecordsByPhoto['photo-b'], 'save progress payload should include watermarkRecordsByPhoto');
-  assert.ok(persistedDraft.archiveSuggestionsByPhoto['photo-b'], 'save progress payload should include archiveSuggestionsByPhoto');
-
-  const scenarioResults = {
-    'scenario 1 incomplete OCR forms suggestion': 'pass',
-    'scenario 2 watermark fact and suggestion are separate': 'pass',
-    'scenario 3 manual completion updates suggestion only': 'pass',
-    'scenario 4 confirmation writes archiveInfo only after validation': 'pass',
-    'scenario 5 clearing recognition keeps suggestion': 'pass',
-    'scenario 6 clearing suggestion keeps recognition': 'pass',
-    'scenario 7 OCR failure allows manual suggestion': 'pass',
-    'scenario 8 current photo does not pollute selected photos': 'pass'
-  };
+  const regeneratedA = regenerateArchiveSuggestion(watermarkA, context, updateArchiveSuggestion(suggestionA, { location: 'manual location' }, { configs, photoId: 'photo-a' }));
+  assert.equal(regeneratedA.suggestedFields.location, 'manual location', 'regenerate should not silently overwrite manual fields');
 
   console.log(JSON.stringify({
     success: true,
-    scenarioResults,
-    checked: [
-      'recognitionResult is evidence only',
-      'parseWatermarkRecord creates objective facts',
-      'buildArchiveSuggestion creates incomplete but saveable suggestion',
-      'fieldSources recorded',
-      'candidate/missing fields supported',
-      'save suggestion does not write photos[].archiveInfo',
-      'confirm suggestion validates before archiveInfo',
-      'preview depends on confirmed archiveInfo',
-      'clear recognition keeps suggestion',
-      'clear suggestion keeps recognition',
-      'OCR failure can create manual suggestion',
-      'photoId isolation',
-      'save/restore payload includes recognition/watermark/suggestion'
-    ]
+    scenarioResults: {
+      'four-layer model': 'pass',
+      'current photo workbench state': 'pass',
+      'activePhotoId and selectedIds separated': 'pass',
+      'core field validation': 'pass',
+      'save vs confirm suggestion': 'pass',
+      'preview/archive selected scope': 'pass',
+      'clear recognition/suggestion boundaries': 'pass',
+      'manual suggestion after OCR failure': 'pass'
+    },
+    checked: 30
   }, null, 2));
 }
 

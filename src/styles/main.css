@@ -5694,6 +5694,16 @@ body,
   box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.14);
 }
 
+.sort-photo-card.active-photo {
+  border-color: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18), 0 10px 24px rgba(21, 53, 90, 0.12);
+}
+
+.sort-photo-card.active-photo.selected {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.2), 0 0 0 6px rgba(245, 158, 11, 0.15);
+}
+
 .sort-photo-card:hover {
   border-color: #9fc4f8;
   background: #fff;
@@ -5764,7 +5774,8 @@ body,
 }
 
 .sort-ext,
-.sort-check {
+.sort-check,
+.sort-select-check {
   position: absolute;
   border-radius: 8px;
   padding: 3px 6px;
@@ -5783,6 +5794,39 @@ body,
   left: 8px;
   top: 8px;
   background: var(--blue);
+}
+
+.sort-select-check {
+  left: 8px;
+  top: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  background: rgba(18, 30, 48, 0.62);
+  cursor: pointer;
+}
+
+.sort-select-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sort-select-check span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--blue);
+  font-size: 13px;
+  line-height: 1;
 }
 
 .sort-photo-card strong,
@@ -14673,4 +14717,154 @@ table tbody tr.selected td {
   .smart-sort-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+.current-photo-workbench .sort-right-fixed-top {
+  flex-shrink: 0;
+}
+
+.current-photo-nav {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #dbe8f6;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 8px 10px;
+}
+
+.current-photo-nav div:first-child {
+  min-width: 0;
+}
+
+.current-photo-nav strong,
+.current-photo-nav small {
+  display: block;
+}
+
+.current-photo-nav small {
+  max-width: 190px;
+  overflow: hidden;
+  color: #5d728a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-photo-nav div:last-child,
+.right-stage-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.current-photo-nav button,
+.right-stage-actions button {
+  min-height: 30px;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+
+.current-photo-workbench-body,
+.sort-recognition-mode {
+  display: grid;
+  gap: 10px;
+}
+
+.right-workbench-empty,
+.confirmed-archive-section,
+.right-preview-panel,
+.right-result-panel,
+.suggestion-editor-section {
+  border: 1px solid #dbe8f6;
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.right-workbench-empty {
+  display: grid;
+  gap: 8px;
+  color: #476176;
+}
+
+.right-workbench-empty.error,
+.right-result-panel.error {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #8a3541;
+}
+
+.right-result-panel.success {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.readonly-system-fields,
+.confirmed-info-list {
+  display: grid;
+  gap: 6px;
+}
+
+.readonly-system-fields {
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 8px;
+}
+
+.readonly-system-fields p,
+.confirmed-info-list div {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #e5eef8;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 7px 8px;
+}
+
+.readonly-system-fields span,
+.confirmed-info-list dt {
+  display: block;
+  color: #6a7f95;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.readonly-system-fields strong,
+.confirmed-info-list dd {
+  margin: 0;
+  overflow: hidden;
+  color: #17324d;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-form-grid.core-fields {
+  grid-template-columns: 1fr;
+}
+
+.sort-more-fields {
+  margin-top: 8px;
+  border: 1px solid #e5eef8;
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 8px;
+}
+
+.sort-more-fields summary {
+  cursor: pointer;
+  color: #123a63;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sort-more-fields .sort-form-grid {
+  margin-top: 8px;
+}
+
+.sort-photo-list tr.active-photo td {
+  background: #fff7e6;
+  box-shadow: inset 3px 0 0 #f59e0b;
 }
