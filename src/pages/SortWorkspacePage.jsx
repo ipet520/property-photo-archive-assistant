@@ -1600,7 +1600,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                         <button type="button" className="primary" title="请先补齐日期、位置/区域、工作内容和归档分类" disabled>补齐核心字段后确认</button>
                       </>
                     )}
-                      <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除当前识别</button>
                     </div>
                   )}
                 </section>
