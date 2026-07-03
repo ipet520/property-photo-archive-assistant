@@ -82,6 +82,7 @@ const viewModes = [
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
+let sortWorkspaceSessionCache = null;
 
 function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
   const defaultPhotoFolder = loadedSettings?.pathStatus?.defaultPhotoFolderExists
@@ -94,62 +95,144 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
   const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
+  const cachedSessionRef = useRef(sortWorkspaceSessionCache);
+  const sessionSnapshotRef = useRef(cachedSessionRef.current);
+  const hasHydratedSessionRef = useRef(false);
+  const cachedSession = cachedSessionRef.current || {};
+  const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [photoFolder, setPhotoFolder] = useState('');
-  const [archiveRoot, setArchiveRoot] = useState('');
-  const [photos, setPhotos] = useState([]);
-  const [form, setForm] = useState(defaultForm);
-  const [filter, setFilter] = useState('all');
-  const [searchText, setSearchText] = useState('');
-  const [viewMode, setViewMode] = useState('grid');
-  const [sortMode, setSortMode] = useState('timeAsc');
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [activePhotoId, setActivePhotoId] = useState('');
-  const [lastClickedId, setLastClickedId] = useState(null);
-  const [editingPhotoId, setEditingPhotoId] = useState('');
-  const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
-  const [hasSavedDraft, setHasSavedDraft] = useState(() => window.localStorage.getItem(sortDraftAvailableKey) === 'true');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [photoFolder, setPhotoFolder] = useState(() => cachedSession.photoFolder || '');
+  const [archiveRoot, setArchiveRoot] = useState(() => cachedSession.archiveRoot || '');
+  const [photos, setPhotos] = useState(() => Array.isArray(cachedSession.photos) ? cachedSession.photos : []);
+  const [form, setForm] = useState(() => cachedSession.form || defaultForm);
+  const [filter, setFilter] = useState(() => cachedSession.filter || 'all');
+  const [searchText, setSearchText] = useState(() => cachedSession.searchText || '');
+  const [viewMode, setViewMode] = useState(() => cachedSession.viewMode || 'grid');
+  const [sortMode, setSortMode] = useState(() => cachedSession.sortMode || 'timeAsc');
+  const [selectedIds, setSelectedIds] = useState(() => Array.isArray(cachedSession.selectedIds) ? cachedSession.selectedIds : []);
+  const [activePhotoId, setActivePhotoId] = useState(() => cachedSession.activePhotoId || '');
+  const [lastClickedId, setLastClickedId] = useState(() => cachedSession.lastClickedId || null);
+  const [editingPhotoId, setEditingPhotoId] = useState(() => cachedSession.editingPhotoId || '');
+  const [lastDraftSavedAt, setLastDraftSavedAt] = useState(() => cachedSession.lastDraftSavedAt || '');
+  const [hasSavedDraft, setHasSavedDraft] = useState(() => typeof cachedSession.hasSavedDraft === 'boolean' ? cachedSession.hasSavedDraft : window.localStorage.getItem(sortDraftAvailableKey) === 'true');
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(() => Boolean(cachedSession.hasUnsavedChanges));
   const [showConfirm, setShowConfirm] = useState(false);
-  const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹并扫描照片。' });
+  const [status, setStatus] = useState(() => cachedSession.status || { type: 'idle', text: '请选择照片文件夹并扫描照片。' });
   const [isBusy, setIsBusy] = useState(false);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  const [smartSortResult, setSmartSortResult] = useState(null);
-  const [smartSortViewMode, setSmartSortViewMode] = useState('statusFilter');
-  const [activeSmartSortGroupId, setActiveSmartSortGroupId] = useState('');
-  const [smartSortMessage, setSmartSortMessage] = useState({ type: 'idle', text: '' });
+  const [page, setPage] = useState(() => Number(cachedSession.page) || 1);
+  const [pageSize, setPageSize] = useState(() => Number(cachedSession.pageSize) || 50);
+  const [smartSortResult, setSmartSortResult] = useState(() => cachedSession.smartSortResult || null);
+  const [smartSortViewMode, setSmartSortViewMode] = useState(() => cachedSession.smartSortViewMode || 'statusFilter');
+  const [activeSmartSortGroupId, setActiveSmartSortGroupId] = useState(() => cachedSession.activeSmartSortGroupId || '');
+  const [smartSortMessage, setSmartSortMessage] = useState(() => cachedSession.smartSortMessage || { type: 'idle', text: '' });
   const [isSmartSortBusy, setIsSmartSortBusy] = useState(false);
-  const [recognitionResultsByPhoto, setRecognitionResultsByPhoto] = useState({});
-  const [watermarkRecordsByPhoto, setWatermarkRecordsByPhoto] = useState({});
-  const [archiveSuggestionsByPhoto, setArchiveSuggestionsByPhoto] = useState({});
+  const [recognitionResultsByPhoto, setRecognitionResultsByPhoto] = useState(() => cachedSession.recognitionResultsByPhoto || {});
+  const [watermarkRecordsByPhoto, setWatermarkRecordsByPhoto] = useState(() => cachedSession.watermarkRecordsByPhoto || {});
+  const [archiveSuggestionsByPhoto, setArchiveSuggestionsByPhoto] = useState(() => cachedSession.archiveSuggestionsByPhoto || {});
   const [isRecognitionBusy, setIsRecognitionBusy] = useState(false);
-  const [recognitionMessage, setRecognitionMessage] = useState({ type: 'idle', text: '' });
-  const [rightPanelMode, setRightPanelMode] = useState('form');
+  const [recognitionMessage, setRecognitionMessage] = useState(() => cachedSession.recognitionMessage || { type: 'idle', text: '' });
+  const [rightPanelMode, setRightPanelMode] = useState(() => ['form', 'recognition'].includes(cachedSession.rightPanelMode) ? cachedSession.rightPanelMode : 'form');
 
   useEffect(() => {
     Promise.all([
       window.archiveAssistant.loadConfigs(),
       window.archiveAssistant.loadSettings()
     ]).then(([loadedConfigs, loadedSettings]) => {
+      const cachedSession = cachedSessionRef.current;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
       const restoredPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
       const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
-      setForm(reconcileForm(defaultForm, safeConfigs));
-      setPhotoFolder(restoredPhotoFolder);
-      if (restoredPhotoFolder) {
+      setForm(reconcileForm(cachedSession?.form || defaultForm, safeConfigs));
+      if (cachedSession?.photoFolder) sessionPhotoFolderRef.current = cachedSession.photoFolder;
+      setPhotoFolder(cachedSession?.photoFolder || restoredPhotoFolder);
+      if (!cachedSession?.status && restoredPhotoFolder) {
         setStatus({ type: 'idle', text: '点击扫描读取当前照片目录。' });
       }
-      if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
+      if (cachedSession?.archiveRoot) setArchiveRoot(cachedSession.archiveRoot);
+      else if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
+      hasHydratedSessionRef.current = true;
+      setIsSessionHydrated(true);
     }).catch((error) => {
       const safeConfigs = withRuntimeConfigFallback(null);
       setConfigs(safeConfigs);
-      setForm(reconcileForm(defaultForm, safeConfigs));
+      setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs));
       setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
+      hasHydratedSessionRef.current = true;
+      setIsSessionHydrated(true);
     });
+  }, []);
+
+  useEffect(() => {
+    if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
+    const snapshot = {
+      photoFolder,
+      archiveRoot,
+      photos,
+      form,
+      filter,
+      searchText,
+      viewMode,
+      sortMode,
+      selectedIds,
+      activePhotoId,
+      lastClickedId,
+      editingPhotoId,
+      lastDraftSavedAt,
+      hasSavedDraft,
+      hasUnsavedChanges,
+      status,
+      page,
+      pageSize,
+      smartSortResult,
+      smartSortViewMode,
+      activeSmartSortGroupId,
+      smartSortMessage,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto,
+      recognitionMessage,
+      rightPanelMode
+    };
+    sessionSnapshotRef.current = snapshot;
+    sortWorkspaceSessionCache = snapshot;
+  }, [
+    photoFolder,
+    archiveRoot,
+    photos,
+    form,
+    filter,
+    searchText,
+    viewMode,
+    sortMode,
+    selectedIds,
+    activePhotoId,
+    lastClickedId,
+    editingPhotoId,
+    lastDraftSavedAt,
+    hasSavedDraft,
+    hasUnsavedChanges,
+    status,
+    page,
+    pageSize,
+    smartSortResult,
+    smartSortViewMode,
+    activeSmartSortGroupId,
+    smartSortMessage,
+    recognitionResultsByPhoto,
+    watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto,
+    recognitionMessage,
+    rightPanelMode,
+    isSessionHydrated
+  ]);
+
+  useEffect(() => () => {
+    if (sessionSnapshotRef.current) {
+      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+    }
   }, []);
 
   useEffect(() => {
@@ -518,6 +601,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   function clearList() {
     if (photos.length === 0) return;
     if (!window.confirm('仅清空当前分拣列表和分拣状态，不会删除原始照片。确定清空吗？')) return;
+    sortWorkspaceSessionCache = null;
+    sessionSnapshotRef.current = null;
     setPhotos([]);
     setSelectedIds([]);
     setActivePhotoId('');
