@@ -14690,3 +14690,372 @@ table tbody tr.selected td {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* V3.1: compact current-photo navigation inside the right sorting panel only. */
+.sort-right-panel .sort-current-photo-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #dbe8f6;
+  border-radius: 10px;
+  margin: 8px 10px;
+  padding: 9px 10px;
+  background: #fff;
+}
+
+.sort-right-panel .sort-current-photo-nav-main {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.sort-right-panel .sort-current-photo-count {
+  color: #17385d;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.sort-right-panel .sort-current-photo-name {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-right-panel .sort-current-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  height: 82px;
+  overflow: hidden;
+  border: 1px solid #dbe8f6;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+
+.sort-right-panel .sort-current-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.sort-right-panel .sort-current-preview-empty {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sort-right-panel .sort-current-preview-nav {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 6px;
+  pointer-events: none;
+}
+
+.sort-right-panel .sort-current-preview-nav-btn {
+  pointer-events: auto;
+  width: 26px;
+  height: 36px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  color: #17406f;
+  box-shadow: 0 5px 14px rgba(15, 23, 42, 0.12);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0;
+}
+
+.sort-right-panel .sort-current-preview-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* V3.1: adaptive compact toolbar for the photo sorting center panel only. */
+.sort-center-panel .sort-toolbar-panel.sort-toolbar-adaptive {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  width: 100%;
+  min-width: 0;
+  overflow: visible;
+}
+
+.sort-center-panel .sort-toolbar-main-row,
+.sort-center-panel .sort-toolbar-view-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  overflow: visible;
+}
+
+.sort-center-panel .sort-toolbar-main-row {
+  justify-content: flex-start;
+}
+
+.sort-center-panel .sort-toolbar-view-row {
+  justify-content: flex-start;
+}
+
+.sort-center-panel .sort-toolbar-group,
+.sort-center-panel .sort-toolbar-view-left,
+.sort-center-panel .sort-toolbar-view-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.sort-center-panel .sort-toolbar-view-left {
+  justify-content: flex-start;
+}
+
+.sort-center-panel .sort-toolbar-view-right {
+  justify-content: flex-end;
+  margin-left: 8px;
+  max-width: none;
+  padding-right: 0;
+  flex: 0 0 auto;
+}
+
+.sort-center-panel .sort-view-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+}
+
+.sort-center-panel .sort-view-tabs button {
+  min-width: 46px;
+  width: auto;
+}
+
+.sort-center-panel .sort-toolbar-panel button,
+.sort-center-panel .sort-toolbar-panel select,
+.sort-center-panel .sort-toolbar-more summary {
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-height: 32px;
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 9px;
+  padding: 5px 8px;
+  color: var(--ui-navy);
+  background: #fff;
+  box-shadow: none;
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.sort-center-panel .sort-toolbar-panel button:hover:not(:disabled),
+.sort-center-panel .sort-toolbar-more summary:hover {
+  border-color: #91b7dc;
+  color: var(--ui-blue);
+  background: #f2f8fe;
+}
+
+.sort-center-panel .sort-toolbar-panel button.active,
+.sort-center-panel .sort-toolbar-panel .sort-view-tabs button.active {
+  border-color: var(--ui-navy);
+  color: #fff;
+  background: var(--ui-navy);
+}
+
+.sort-center-panel .sort-toolbar-panel button.orange {
+  border-color: var(--orange);
+  color: #fff;
+  background: var(--orange);
+}
+
+.sort-center-panel .sort-toolbar-panel button:disabled {
+  cursor: not-allowed;
+  border-color: #d9e1e9;
+  color: #718096;
+  background: #f1f4f7;
+  opacity: 1;
+}
+
+.sort-center-panel .sort-toolbar-panel button.wide {
+  min-width: 86px;
+}
+
+.sort-center-panel .sort-toolbar-panel select {
+  width: 118px;
+  min-width: 118px;
+  max-width: 118px;
+}
+
+.sort-center-panel .sort-toolbar-panel .sort-search {
+  flex: 0 0 180px;
+  width: 180px;
+  min-width: 150px;
+  max-width: 220px;
+}
+
+.sort-center-panel .sort-toolbar-panel .sort-search input {
+  width: 100%;
+  min-width: 0;
+}
+
+.sort-center-panel .sort-toolbar-more {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.sort-center-panel .sort-toolbar-more summary {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+}
+
+.sort-center-panel .sort-toolbar-more summary::-webkit-details-marker {
+  display: none;
+}
+
+.sort-center-panel .sort-toolbar-more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(86px, 1fr));
+  gap: 6px;
+  min-width: 200px;
+  border: 1px solid #d6e2f0;
+  border-radius: 10px;
+  padding: 8px;
+  background: #fff;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14);
+}
+
+.sort-center-panel .sort-toolbar-more-label {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sort-center-panel .sort-toolbar-more-menu button {
+  width: 100%;
+}
+
+@media (max-width: 1400px) {
+  .sort-center-panel .sort-toolbar-panel.sort-toolbar-adaptive {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sort-center-panel .sort-toolbar-main-row,
+  .sort-center-panel .sort-toolbar-view-row {
+    width: 100%;
+  }
+
+  .sort-center-panel .sort-toolbar-view-row {
+    justify-content: flex-start;
+  }
+
+  .sort-center-panel .sort-toolbar-panel .sort-search {
+    flex-basis: 220px;
+    width: 220px;
+    min-width: 180px;
+    max-width: 260px;
+  }
+}
+
+/* V3.1: widen the right archive workspace while keeping the left panel unchanged. */
+.sort-workbench.unified-sort-workbench .sort-main-grid {
+  grid-template-columns: 230px minmax(0, 1fr) 400px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-center-panel {
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-panel {
+  width: 400px;
+  min-width: 380px;
+  max-width: 410px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-actions {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-actions button {
+  min-width: 0;
+  padding-inline: 6px;
+}
+
+/* V3.1: align the three right workspace sections to one shared width. */
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-selected-summary,
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-current-photo-nav,
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-right-scroll,
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-right-actions {
+  width: calc(100% - 8px);
+  margin-left: 4px;
+  margin-right: 4px;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-current-photo-nav {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-right-scroll {
+  padding-right: 0;
+  scrollbar-gutter: auto;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-panel .sort-form-section {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1400px) {
+  .sort-workbench.unified-sort-workbench .sort-main-grid {
+    grid-template-columns: 230px minmax(0, 1fr) 370px;
+  }
+
+  .sort-workbench.unified-sort-workbench .sort-right-panel {
+    width: 370px;
+    min-width: 340px;
+    max-width: 380px;
+  }
+}

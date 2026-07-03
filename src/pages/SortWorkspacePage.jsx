@@ -203,6 +203,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const selectedPreviewCount = selectedPhotos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo && !isIgnoredPhoto(photo)).length;
   const selectedRecognitionCount = selectedPhotos.filter((photo) => recognitionResultsByPhoto[photo.id]).length;
   const currentPanelPhoto = primaryPhoto;
+  const currentPagePhotoIndex = currentPanelPhoto
+    ? pagePhotos.findIndex((photo) => photo.id === currentPanelPhoto.id)
+    : -1;
+  const canShowPreviousPhoto = currentPagePhotoIndex > 0;
+  const canShowNextPhoto = currentPagePhotoIndex >= 0 && currentPagePhotoIndex < pagePhotos.length - 1;
   const currentRecognitionPhoto = currentPanelPhoto;
   const currentRecognitionResult = currentRecognitionPhoto ? recognitionResultsByPhoto[currentRecognitionPhoto.id] : null;
   const currentWatermarkRecord = currentPanelPhoto ? watermarkRecordsByPhoto[currentPanelPhoto.id] : null;
@@ -654,6 +659,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     } else {
       setSmartSortMessage({ type: 'error', text: '清空分组失败，照片和归档信息未受影响。' });
     }
+  }
+
+  function showPreviousPhoto() {
+    if (!canShowPreviousPhoto) return;
+    const previousPhoto = pagePhotos[currentPagePhotoIndex - 1];
+    if (!previousPhoto) return;
+    setActivePhotoId(previousPhoto.id);
+  }
+
+  function showNextPhoto() {
+    if (!canShowNextPhoto) return;
+    const nextPhoto = pagePhotos[currentPagePhotoIndex + 1];
+    if (!nextPhoto) return;
+    setActivePhotoId(nextPhoto.id);
   }
 
   function applyStatusFilter(nextFilter) {
@@ -1218,55 +1237,58 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
         </aside>
 
         <main className="sort-center-panel panel">
-          <div className="sort-workspace-toolbar">
-            <div className="sort-toolbar-row sort-toolbar-row-primary">
-              <div className="sort-toolbar-group">
+          <div className="sort-toolbar-panel sort-toolbar-adaptive">
+            <div className="sort-toolbar-main-row">
+              <div className="sort-toolbar-group sort-toolbar-import-group">
               <button type="button" className="primary orange" title={effectivePhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0}>清空</button>
               </div>
-              <div className="sort-toolbar-group">
+              <div className="sort-toolbar-group sort-toolbar-select-group">
               <button type="button" className="icon-action" title="全选当前照片" aria-label="全选当前照片" onClick={selectCurrentPage}>全选</button>
               <button type="button" className="icon-action" title="反选当前照片" aria-label="反选当前照片" onClick={invertCurrentPage}>反选</button>
               <button type="button" className="icon-action" title="取消选择" aria-label="取消选择" onClick={() => setSelectedIds([])}>取消</button>
               </div>
-              <div className="sort-toolbar-group">
+              <div className="sort-toolbar-group sort-toolbar-state-group">
               <button type="button" className="icon-action" title="忽略选中照片" aria-label="忽略选中照片" onClick={markIgnored}>忽略</button>
               <button type="button" className="icon-action" title="还原选中照片" aria-label="还原选中照片" onClick={cancelIgnored}>还原</button>
               </div>
-              <div className="sort-toolbar-group">
+              <div className="sort-toolbar-group sort-toolbar-smart-group">
               <button type="button" className="primary" title="对已选照片执行水印识别、解析并生成智能分组。" onClick={() => recognizeSelected({ alsoSort: true })} disabled={isRecognitionBusy || isSmartSortBusy || selectedIds.length === 0}>智拣</button>
-              <button type="button" title="清空当前已选照片的识别结果" onClick={clearSelectedRecognitionResults} disabled={isRecognitionBusy || selectedIds.length === 0 || selectedRecognitionCount === 0}>清空识别</button>
-              <button type="button" title="清空全部智能分拣分组结果" onClick={clearSmartGroups} disabled={isSmartSortBusy || smartSortGroups.length === 0}>清空分组</button>
+              <button type="button" title="清空当前已选照片的识别结果" onClick={clearSelectedRecognitionResults} disabled={isRecognitionBusy || selectedIds.length === 0 || selectedRecognitionCount === 0}>清识别</button>
+              <button type="button" title="清空全部智能分拣分组结果" onClick={clearSmartGroups} disabled={isSmartSortBusy || smartSortGroups.length === 0}>清分组</button>
               </div>
-              <div className="sort-toolbar-group sort-view-tools">
-              <div className="sort-view-tabs">
-              {viewModes.map((mode) => (
-                <button type="button" key={mode.key} title={mode.title} className={viewMode === mode.key ? 'active' : ''} onClick={() => setViewMode(mode.key)}>
-                  {mode.label}
-                </button>
-              ))}
-              </div>
-              <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} aria-label="排序方式">
-                <option value="timeAsc">时间升序</option>
-                <option value="timeDesc">时间降序</option>
-                <option value="nameAsc">文件名升序</option>
-                <option value="nameDesc">文件名降序</option>
-              </select>
-              </div>
-              <label className="sort-search">
-                <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => handleSearchTextChange(event.target.value)} />
-              </label>
+              <details className="sort-toolbar-more">
+                <summary>更多</summary>
+                <div className="sort-toolbar-more-menu">
+                  <span className="sort-toolbar-more-label">目录</span>
+                  <button type="button" className="wide" title="更换照片目录" onClick={() => selectPhotoFolder({ scanAfterSelect: true })}>照片目录</button>
+                  <button type="button" className="wide" title="更换归档目录" onClick={selectArchiveRoot}>归档目录</button>
+                  <span className="sort-toolbar-more-label">归档进度</span>
+                  <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || isBusy}>保存</button>
+                  <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || isBusy}>恢复</button>
+                </div>
+              </details>
             </div>
-            <div className="sort-toolbar-row sort-toolbar-row-secondary">
-              <div className="sort-toolbar-group">
-                <span className="sort-toolbar-label">目录</span>
-                <button type="button" className="wide" onClick={() => selectPhotoFolder({ scanAfterSelect: true })}>更换照片目录</button>
-                <button type="button" className="wide" onClick={selectArchiveRoot}>更换归档目录</button>
+            <div className="sort-toolbar-view-row">
+              <div className="sort-toolbar-view-left">
+                <div className="sort-view-tabs">
+                {viewModes.map((mode) => (
+                  <button type="button" key={mode.key} title={mode.title} className={viewMode === mode.key ? 'active' : ''} onClick={() => setViewMode(mode.key)}>
+                    {mode.label}
+                  </button>
+                ))}
+                </div>
+                <select value={sortMode} onChange={(event) => setSortMode(event.target.value)} aria-label="排序方式">
+                  <option value="timeAsc">时间升序</option>
+                  <option value="timeDesc">时间降序</option>
+                  <option value="nameAsc">文件名升序</option>
+                  <option value="nameDesc">文件名降序</option>
+                </select>
               </div>
-              <div className="sort-toolbar-group">
-                <span className="sort-toolbar-label">进度</span>
-                <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || isBusy}>保存</button>
-                <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || isBusy}>恢复</button>
+              <div className="sort-toolbar-view-right">
+                <label className="sort-search">
+                  <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => handleSearchTextChange(event.target.value)} />
+                </label>
               </div>
             </div>
           </div>
@@ -1337,6 +1359,43 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
               <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo || selectedIds.length === 0 || Boolean(editingPhoto)}>编辑</button>
               <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
             </div>
+          </div>
+          <div className="sort-current-photo-nav">
+            <div className="sort-current-photo-nav-main">
+              <span className="sort-current-photo-count">当前照片 {currentPagePhotoIndex >= 0 ? currentPagePhotoIndex + 1 : 0} / {pagePhotos.length}</span>
+              <span className="sort-current-photo-name">{currentPanelPhoto ? currentPanelPhoto.originalName : '暂无当前照片'}</span>
+            </div>
+            {currentPanelPhoto ? (
+              <div className="sort-current-preview">
+                {currentPanelPhoto.previewUrl ? (
+                  <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
+                ) : (
+                  <span className="sort-current-preview-empty">暂无预览</span>
+                )}
+                <div className="sort-current-preview-nav" aria-hidden={false}>
+                  <button
+                    type="button"
+                    className="sort-current-preview-nav-btn sort-current-preview-nav-prev"
+                    onClick={showPreviousPhoto}
+                    disabled={!canShowPreviousPhoto}
+                    aria-label="上一张"
+                    title="上一张"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    type="button"
+                    className="sort-current-preview-nav-btn sort-current-preview-nav-next"
+                    onClick={showNextPhoto}
+                    disabled={!canShowNextPhoto}
+                    aria-label="下一张"
+                    title="下一张"
+                  >
+                    ›
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="sort-right-scroll">
             {rightPanelMode === 'recognition' ? (
