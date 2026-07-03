@@ -5783,6 +5783,22 @@ body,
   left: 8px;
   top: 8px;
   background: var(--blue);
+  min-width: 20px;
+  min-height: 18px;
+  cursor: pointer;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+}
+
+.sort-check.idle {
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--blue);
+  border-color: rgba(47, 128, 237, 0.72);
+}
+
+.sort-check:focus-visible {
+  outline: 2px solid rgba(47, 128, 237, 0.45);
+  outline-offset: 2px;
 }
 
 .sort-photo-card strong,

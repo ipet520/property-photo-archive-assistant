@@ -105,6 +105,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const [viewMode, setViewMode] = useState('grid');
   const [sortMode, setSortMode] = useState('timeAsc');
   const [selectedIds, setSelectedIds] = useState([]);
+  const [activePhotoId, setActivePhotoId] = useState('');
   const [lastClickedId, setLastClickedId] = useState(null);
   const [editingPhotoId, setEditingPhotoId] = useState('');
   const [lastDraftSavedAt, setLastDraftSavedAt] = useState('');
@@ -180,34 +181,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const currentPhotoKeySet = useMemo(() => new Set(photos.flatMap((photo) => [photo.id, photo.originalPath]).filter(Boolean)), [photos]);
 
   const visiblePhotos = useMemo(() => {
-    const keyword = searchText.trim().toLowerCase();
-    return photos
-      .filter((photo) => {
-        if (activeSmartGroupPhotoKeys) return activeSmartGroupPhotoKeys.has(photo.id) || activeSmartGroupPhotoKeys.has(photo.originalPath);
-        if (filter === 'all') return !isIgnoredPhoto(photo);
-        if (filter === 'selected') return selectedIds.includes(photo.id) && !isIgnoredPhoto(photo);
-        if (filter === 'ignored') return isIgnoredPhoto(photo);
-        return photo.sortStatus === filter;
-      })
-      .filter((photo) => {
-        if (!keyword) return true;
-        return [photo.originalName, photo.archiveInfo?.remark, photo.archiveInfo?.workContent, photo.archiveInfo?.itemName]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(keyword));
-      })
-      .sort((a, b) => {
-        if (sortMode === 'nameAsc') return a.originalName.localeCompare(b.originalName, 'zh-CN');
-        if (sortMode === 'nameDesc') return b.originalName.localeCompare(a.originalName, 'zh-CN');
-        if (sortMode === 'timeDesc') return String(b.modifiedAt || '').localeCompare(String(a.modifiedAt || ''));
-        return String(a.modifiedAt || '').localeCompare(String(b.modifiedAt || ''));
-      });
+    return getVisiblePhotosSnapshot({ photos, activeSmartGroupPhotoKeys, filter, searchText, selectedIds, sortMode });
   }, [photos, activeSmartGroupPhotoKeys, filter, searchText, selectedIds, sortMode]);
 
   const totalPages = Math.max(1, Math.ceil(visiblePhotos.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pagePhotos = visiblePhotos.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedPhotos = photos.filter((photo) => selectedIds.includes(photo.id));
-  const primaryPhoto = selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
+  const activePhoto = photos.find((photo) => photo.id === activePhotoId) || null;
+  const primaryPhoto = activePhoto || selectedPhotos[0] || pagePhotos[0] || photos[0] || null;
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const unassignedCount = photos.filter((photo) => photo.sortStatus === 'unassigned').length;
@@ -257,6 +239,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   }, [page, totalPages]);
 
   useEffect(() => {
+    if (activePhotoId && !photos.some((photo) => photo.id === activePhotoId)) {
+      setActivePhotoId('');
+    }
+  }, [activePhotoId, photos]);
+
+  useEffect(() => {
     if (photos.length === 0 && smartSortResult) {
       resetSmartSortState({ type: 'idle', text: '' });
     }
@@ -276,21 +264,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   }, [photos.length, smartSortResult, recognitionResultsByPhoto, watermarkRecordsByPhoto, archiveSuggestionsByPhoto]);
 
   useEffect(() => {
-    if (smartSortResult?.source === 'selected_photos' && selectedIds.length === 0) {
-      resetSmartSortState({ type: 'idle', text: '当前无处理范围，请先选择需要处理的照片。' });
-    }
-  }, [selectedIds.length, smartSortResult]);
-
-  useEffect(() => {
     if (!smartSortGroups.length) return;
     const hasInvalidGroupPhoto = smartSortGroups.some((group) => getSmartSortGroupKeys(group).some((key) => !currentPhotoKeySet.has(key)));
     const groupedPhotoCount = smartSortGroups.reduce((sum, group) => sum + getSmartSortGroupPhotoCount(group), 0);
-    const expectedPhotoCount = smartSortResult?.source === 'selected_photos' ? selectedIds.length : photos.length;
+    const expectedPhotoCount = Number(smartSortResult?.photoCount) || groupedPhotoCount || photos.length;
     const countMismatch = expectedPhotoCount > 0 && groupedPhotoCount > 0 && groupedPhotoCount !== expectedPhotoCount;
     if (photos.length === 0 || hasInvalidGroupPhoto || countMismatch) {
       resetSmartSortState({ type: 'idle', text: '当前照片列表已变化，请重新执行智能分拣。' });
     }
-  }, [currentPhotoKeySet, photos.length, selectedIds.length, smartSortGroups, smartSortResult?.source]);
+  }, [currentPhotoKeySet, photos.length, smartSortGroups, smartSortResult?.photoCount]);
 
   useEffect(() => {
     if (activeSmartSortGroupId && !activeSmartGroup) {
@@ -465,6 +447,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       return;
     }
     setIsBusy(true);
+    setSelectedIds([]);
+    setActivePhotoId('');
     resetSmartSortState({ type: 'idle', text: '' });
     setRecognitionResultsByPhoto({});
     setWatermarkRecordsByPhoto({});
@@ -490,6 +474,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
         originalMissing: false
       })));
       setSelectedIds([]);
+      setActivePhotoId(scanned[0]?.id || '');
       setPage(1);
       setFilter('all');
       setSmartSortViewMode('statusFilter');
@@ -518,6 +503,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     if (!window.confirm('仅清空当前分拣列表和分拣状态，不会删除原始照片。确定清空吗？')) return;
     setPhotos([]);
     setSelectedIds([]);
+    setActivePhotoId('');
     setRecognitionResultsByPhoto({});
     setWatermarkRecordsByPhoto({});
     setArchiveSuggestionsByPhoto({});
@@ -578,7 +564,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       setRecognitionMessage({ type: 'warning', text: '照片扫描、识别或智能分拣正在进行，请稍候。' });
       return;
     }
-    const targets = selectedPhotos.filter((photo) => !isIgnoredPhoto(photo));
+    const selectedPhotoIdsSnapshot = [...selectedIds];
+    const selectedSnapshotSet = new Set(selectedPhotoIdsSnapshot);
+    const targets = photos.filter((photo) => selectedSnapshotSet.has(photo.id) && !isIgnoredPhoto(photo));
     if (targets.length === 0) {
       setRecognitionMessage({ type: 'warning', text: '请先选择需要处理的照片。' });
       return;
@@ -626,6 +614,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       const failedCount = results.length - successCount;
       setRecognitionMessage({ type: failedCount ? 'warning' : 'success', text: `识别完成：成功 ${successCount} 张，待确认/失败 ${failedCount} 张。` });
       setRightPanelMode('form');
+      if (!currentPanelPhoto?.id || !selectedSnapshotSet.has(currentPanelPhoto.id)) {
+        setActivePhotoId(targets[0]?.id || '');
+      }
+      setSelectedIds([]);
       if (alsoSort) {
         const hasExecutedOcr = results.some(hasLocalOcrExecuted);
         if (!hasExecutedOcr && successCount === 0) {
@@ -665,27 +657,73 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   }
 
   function applyStatusFilter(nextFilter) {
+    const nextVisiblePhotos = getVisiblePhotosSnapshot({
+      photos,
+      activeSmartGroupPhotoKeys: null,
+      filter: nextFilter,
+      searchText,
+      selectedIds: [],
+      sortMode
+    });
     setFilter(nextFilter);
     setSmartSortViewMode('statusFilter');
     setActiveSmartSortGroupId('');
+    setSelectedIds([]);
+    setActivePhotoId(nextVisiblePhotos[0]?.id || '');
     setPage(1);
   }
 
   function viewSmartGroup(groupId) {
     if (activeSmartSortGroupId === groupId && smartSortViewMode === 'smartSortGroup') {
+      const nextVisiblePhotos = getVisiblePhotosSnapshot({
+        photos,
+        activeSmartGroupPhotoKeys: null,
+        filter,
+        searchText,
+        selectedIds: [],
+        sortMode
+      });
       setSmartSortViewMode('statusFilter');
       setActiveSmartSortGroupId('');
+      setSelectedIds([]);
+      setActivePhotoId(nextVisiblePhotos[0]?.id || '');
       setPage(1);
       setSmartSortMessage({ type: 'idle', text: '已取消当前分组筛选，恢复按状态筛选查看。' });
       return;
     }
+    const group = smartSortGroups.find((item) => item.id === groupId);
+    const groupKeys = new Set(getSmartSortGroupKeys(group));
+    const nextVisiblePhotos = getVisiblePhotosSnapshot({
+      photos,
+      activeSmartGroupPhotoKeys: groupKeys,
+      filter,
+      searchText,
+      selectedIds: [],
+      sortMode
+    });
     setSmartSortViewMode('smartSortGroup');
     setActiveSmartSortGroupId(groupId);
+    setSelectedIds([]);
+    setActivePhotoId(nextVisiblePhotos[0]?.id || '');
     setPage(1);
-    const group = smartSortGroups.find((item) => item.id === groupId);
     if (group) {
       setSmartSortMessage({ type: 'idle', text: `当前查看“${group.title}”，未自动选择照片、未填表、未归档。` });
     }
+  }
+
+  function handleSearchTextChange(nextSearchText) {
+    const nextVisiblePhotos = getVisiblePhotosSnapshot({
+      photos,
+      activeSmartGroupPhotoKeys,
+      filter,
+      searchText: nextSearchText,
+      selectedIds: [],
+      sortMode
+    });
+    setSearchText(nextSearchText);
+    setSelectedIds([]);
+    setActivePhotoId(nextVisiblePhotos[0]?.id || '');
+    setPage(1);
   }
 
   function handlePhotoClick(photo, event) {
@@ -698,9 +736,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     } else if (event.ctrlKey || event.metaKey) {
       setSelectedIds((current) => current.includes(photo.id) ? current.filter((id) => id !== photo.id) : [...current, photo.id]);
     } else {
-      setSelectedIds((current) => current.includes(photo.id) ? current.filter((id) => id !== photo.id) : [photo.id]);
+      setActivePhotoId(photo.id);
     }
     setLastClickedId(photo.id);
+  }
+
+  function togglePhotoSelection(photoId) {
+    setSelectedIds((current) => current.includes(photoId) ? current.filter((id) => id !== photoId) : [...current, photoId]);
   }
 
   function selectCurrentPage() {
@@ -739,7 +781,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       if (targetIdSet.has(photo.id)) return { ...photo, sortStatus: 'ignored', previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
-    setSelectedIds((current) => current.filter((id) => !targetIdSet.has(id)));
+    setSelectedIds([]);
     setEditingPhotoId((current) => targetIdSet.has(current) ? '' : current);
     markChanged();
     setStatus({ type: invalidTip ? 'warning' : 'success', text: `已标记忽略 ${targetPhotos.length} 张照片，原图未受影响。${invalidTip}` });
@@ -757,7 +799,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       if (targetIdSet.has(photo.id)) return { ...photo, sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
-    setSelectedIds((current) => current.filter((id) => !targetIdSet.has(id)));
+    setSelectedIds([]);
     setEditingPhotoId((current) => targetIdSet.has(current) ? '' : current);
     markChanged();
     setStatus({ type: invalidTip ? 'warning' : 'success', text: `已还原 ${targetPhotos.length} 张已忽略照片，状态恢复为未归档。${invalidTip}` });
@@ -1113,8 +1155,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
         const success = item.status === '归档成功';
         return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item, archiveMethod: '手动分拣', archivedAt: success ? archivedAt : '' };
       }));
+      setSelectedIds([]);
       setShowConfirm(false);
       setFilter('archived');
+      setSmartSortViewMode('statusFilter');
+      setActiveSmartSortGroupId('');
+      setActivePhotoId(result.items[0]?.id || '');
       setPage(1);
       setHasUnsavedChanges(true);
       setStatus({
@@ -1208,7 +1254,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
               </select>
               </div>
               <label className="sort-search">
-                <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => { setSearchText(event.target.value); setPage(1); }} />
+                <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => handleSearchTextChange(event.target.value)} />
               </label>
             </div>
             <div className="sort-toolbar-row sort-toolbar-row-secondary">
@@ -1235,7 +1281,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                 {photos.length === 0 && <button type="button" className="primary orange" disabled={isBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
               </div>
             ) : viewMode === 'grid' ? pagePhotos.map((photo) => (
-              <PhotoCard key={photo.id} photo={photo} selected={selectedIds.includes(photo.id)} onClick={(event) => handlePhotoClick(photo, event)} />
+              <PhotoCard
+                key={photo.id}
+                photo={photo}
+                selected={selectedIds.includes(photo.id)}
+                onClick={(event) => handlePhotoClick(photo, event)}
+                onSelect={() => togglePhotoSelection(photo.id)}
+              />
             )) : (
               <table className="sort-photo-list">
                 <thead>
@@ -1593,15 +1645,35 @@ function SortSection({ title, action, description = '', children, scrollable = f
   );
 }
 
-function PhotoCard({ photo, selected, onClick }) {
+function PhotoCard({ photo, selected, onClick, onSelect }) {
   const gridSummary = buildGridPhotoSummary(photo);
   const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
+  const handleSelectClick = (event) => {
+    event.stopPropagation();
+    onSelect();
+  };
+  const handleSelectKeyDown = (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect();
+  };
   return (
     <button type="button" className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''}`} onClick={onClick} aria-label={photo.originalName || '照片卡片'}>
       <div className="sort-thumb-wrap">
         {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <ThumbnailHoverPreview src={photo.previewUrl} alt={photo.originalName} />}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
-        {selected && <span className="sort-check">✓</span>}
+        <span
+          className={`sort-check ${selected ? 'selected' : 'idle'}`}
+          role="checkbox"
+          aria-checked={selected}
+          tabIndex={0}
+          title={selected ? '取消勾选' : '勾选照片'}
+          onClick={handleSelectClick}
+          onKeyDown={handleSelectKeyDown}
+        >
+          {selected ? '✓' : ''}
+        </span>
       </div>
       <strong>{photo.originalName}</strong>
       <span>{formatDateTime(photo.modifiedAt)}</span>
@@ -1925,6 +1997,37 @@ function getSmartSortGroupPhotoPaths(group) {
 
 function getSmartSortGroupKeys(group) {
   return [...getSmartSortGroupPhotoIds(group), ...getSmartSortGroupPhotoPaths(group)].filter(Boolean);
+}
+
+function getVisiblePhotosSnapshot({
+  photos = [],
+  activeSmartGroupPhotoKeys = null,
+  filter = 'all',
+  searchText = '',
+  selectedIds = [],
+  sortMode = 'timeAsc'
+}) {
+  const keyword = searchText.trim().toLowerCase();
+  return [...photos]
+    .filter((photo) => {
+      if (activeSmartGroupPhotoKeys) return activeSmartGroupPhotoKeys.has(photo.id) || activeSmartGroupPhotoKeys.has(photo.originalPath);
+      if (filter === 'all') return !isIgnoredPhoto(photo);
+      if (filter === 'selected') return selectedIds.includes(photo.id) && !isIgnoredPhoto(photo);
+      if (filter === 'ignored') return isIgnoredPhoto(photo);
+      return photo.sortStatus === filter;
+    })
+    .filter((photo) => {
+      if (!keyword) return true;
+      return [photo.originalName, photo.archiveInfo?.remark, photo.archiveInfo?.workContent, photo.archiveInfo?.itemName]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(keyword));
+    })
+    .sort((a, b) => {
+      if (sortMode === 'nameAsc') return a.originalName.localeCompare(b.originalName, 'zh-CN');
+      if (sortMode === 'nameDesc') return b.originalName.localeCompare(a.originalName, 'zh-CN');
+      if (sortMode === 'timeDesc') return String(b.modifiedAt || '').localeCompare(String(a.modifiedAt || ''));
+      return String(a.modifiedAt || '').localeCompare(String(b.modifiedAt || ''));
+    });
 }
 
 function summarizeRecognitionResults(recognitionMap = {}) {

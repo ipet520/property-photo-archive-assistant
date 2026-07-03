@@ -362,6 +362,130 @@ async function main() {
   assert.equal(Boolean(groupMap['缺少处理状态']), false, 'smart sort must not group by missing processStatus');
   assert.notEqual(smartSortResult.groupCount, 0, 'smart sort should not be empty when archiveSuggestion workContent exists');
 
+  const clickBaseState = {
+    activePhotoId: '',
+    selectedIds: ['photo-b', 'photo-c'],
+    visibleIds: ['photo-a', 'photo-b', 'photo-c', 'photo-d'],
+    lastClickedId: 'photo-b'
+  };
+  const plainClickA = applyPhotoBodyClick(clickBaseState, 'photo-a', {});
+  assert.equal(plainClickA.activePhotoId, 'photo-a', 'plain photo click should switch activePhotoId');
+  assert.deepEqual(plainClickA.selectedIds, ['photo-b', 'photo-c'], 'plain photo click must not change selectedPhotoIds');
+
+  const plainClickSelectedB = applyPhotoBodyClick(clickBaseState, 'photo-b', {});
+  assert.equal(plainClickSelectedB.activePhotoId, 'photo-b', 'plain click selected photo should switch activePhotoId');
+  assert.deepEqual(plainClickSelectedB.selectedIds, ['photo-b', 'photo-c'], 'plain click selected photo must not unselect it');
+
+  const ctrlClickB = applyPhotoBodyClick(clickBaseState, 'photo-b', { ctrlKey: true });
+  assert.deepEqual(ctrlClickB.selectedIds, ['photo-c'], 'Ctrl click should keep existing toggle selection behavior');
+  assert.equal(ctrlClickB.activePhotoId, '', 'Ctrl click should not be treated as plain browse click');
+
+  const shiftClickD = applyPhotoBodyClick(clickBaseState, 'photo-d', { shiftKey: true });
+  assert.deepEqual(shiftClickD.selectedIds, ['photo-b', 'photo-c', 'photo-d'], 'Shift click should keep range selection behavior');
+
+  const checkboxClickA = applyPhotoSelectionAreaClick(clickBaseState, 'photo-a');
+  assert.deepEqual(checkboxClickA.selectedIds, ['photo-b', 'photo-c', 'photo-a'], 'selection area click should toggle selectedPhotoIds');
+  assert.equal(checkboxClickA.activePhotoId, '', 'selection area click should not force activePhotoId');
+  assert.equal(checkboxClickA.propagationStopped, true, 'selection area click should stop propagation to photo body');
+
+  const smartGroupPhotos = [
+    { id: 'photo-a', originalPath: 'D:/photos/photo-a.jpg' },
+    { id: 'photo-b', originalPath: 'D:/photos/photo-b.jpg' },
+    { id: 'photo-c', originalPath: 'D:/photos/photo-c.jpg' }
+  ];
+  const smartGroup = { id: 'group-env', photoIds: ['photo-a', 'photo-b', 'photo-c'] };
+  const beforeSmartGroupVisible = getVisiblePhotoIdsForClickCheck({
+    photos: smartGroupPhotos,
+    selectedIds: ['photo-a', 'photo-b'],
+    filter: 'all',
+    viewMode: 'smartGroup',
+    activeSmartGroup: smartGroup
+  });
+  const afterUnselectInSmartGroup = applyPhotoSelectionAreaClick({
+    activePhotoId: '',
+    selectedIds: ['photo-a', 'photo-b'],
+    visibleIds: beforeSmartGroupVisible,
+    lastClickedId: ''
+  }, 'photo-a');
+  const afterSmartGroupVisible = getVisiblePhotoIdsForClickCheck({
+    photos: smartGroupPhotos,
+    selectedIds: afterUnselectInSmartGroup.selectedIds,
+    filter: 'all',
+    viewMode: 'smartGroup',
+    activeSmartGroup: smartGroup
+  });
+  assert.deepEqual(afterSmartGroupVisible, ['photo-a', 'photo-b', 'photo-c'], 'unselecting in smart group view must not remove photo from visible group');
+  assert.deepEqual(smartGroup.photoIds, ['photo-a', 'photo-b', 'photo-c'], 'unselecting must not mutate smartSortGroups');
+
+  const selectedFilterVisible = getVisiblePhotoIdsForClickCheck({
+    photos: smartGroupPhotos,
+    selectedIds: afterUnselectInSmartGroup.selectedIds,
+    filter: 'selected',
+    viewMode: 'statusFilter',
+    activeSmartGroup: null
+  });
+  assert.deepEqual(selectedFilterVisible, ['photo-b'], 'selected status filter may remove a photo after it is unselected');
+
+  const persistentDataState = {
+    selectedIds: ['photo-a', 'photo-b'],
+    activePhotoId: 'photo-b',
+    viewMode: 'smartGroup',
+    filter: 'all',
+    activeSmartGroupId: 'group-env',
+    recognitionResultsByPhoto: { 'photo-a': { rawText: 'ocr' } },
+    watermarkRecordsByPhoto: { 'photo-a': { locationText: 'area' } },
+    archiveSuggestionsByPhoto: { 'photo-a': { suggestedFields: { workContent: 'work' } } },
+    photos: [
+      { id: 'photo-a', originalPath: 'D:/photos/photo-a.jpg', sortStatus: 'suggestion_ready', archiveInfo: null, previewInfo: null, archiveResult: null },
+      { id: 'photo-b', originalPath: 'D:/photos/photo-b.jpg', sortStatus: 'assigned', archiveInfo: { workContent: 'confirmed' }, previewInfo: { id: 'photo-b' }, archiveResult: { success: true } },
+      { id: 'photo-c', originalPath: 'D:/photos/photo-c.jpg', sortStatus: 'unassigned', archiveInfo: null, previewInfo: null, archiveResult: null }
+    ],
+    smartSortGroups: [{ id: 'group-env', photoIds: ['photo-a', 'photo-b'] }]
+  };
+  const afterStatusFilter = applyStatusFilterForCheck(persistentDataState, 'assigned');
+  assert.deepEqual(afterStatusFilter.selectedIds, [], 'status filter switch should clear selectedPhotoIds');
+  assert.equal(afterStatusFilter.viewMode, 'statusFilter', 'status filter switch should set statusFilter view');
+  assert.equal(afterStatusFilter.activeSmartGroupId, '', 'status filter switch should clear activeSmartGroupId');
+  assert.equal(afterStatusFilter.activePhotoId, 'photo-b', 'status filter switch should focus first visible photo');
+  assertPersistentDataUnchanged(persistentDataState, afterStatusFilter, 'status filter switch');
+
+  const afterSmartGroupSwitch = applySmartGroupForCheck(persistentDataState, persistentDataState.smartSortGroups[0]);
+  assert.deepEqual(afterSmartGroupSwitch.selectedIds, [], 'smart group switch should clear selectedPhotoIds');
+  assert.equal(afterSmartGroupSwitch.viewMode, 'smartGroup', 'smart group switch should set smartGroup view');
+  assert.equal(afterSmartGroupSwitch.activeSmartGroupId, 'group-env', 'smart group switch should set activeSmartGroupId');
+  assert.equal(afterSmartGroupSwitch.activePhotoId, 'photo-a', 'smart group switch should focus first group photo');
+  assertPersistentDataUnchanged(persistentDataState, afterSmartGroupSwitch, 'smart group switch');
+
+  const afterSearchChange = applySearchChangeForCheck(persistentDataState, 'photo-c');
+  assert.deepEqual(afterSearchChange.selectedIds, [], 'search change should clear selectedPhotoIds');
+  assert.equal(afterSearchChange.activePhotoId, '', 'search change should clear activePhotoId when current smart group has no matched photo');
+  assertPersistentDataUnchanged(persistentDataState, afterSearchChange, 'search change');
+
+  const recognitionCompletion = completeRecognitionForCheck(persistentDataState, {
+    selectedPhotoIdsSnapshot: ['photo-a', 'photo-b'],
+    currentPanelPhotoId: 'photo-c',
+    firstTargetId: 'photo-a'
+  });
+  assert.deepEqual(recognitionCompletion.processedIds, ['photo-a', 'photo-b'], 'recognition should process selectedPhotoIdsSnapshot only');
+  assert.deepEqual(recognitionCompletion.selectedIds, [], 'recognition completion should clear selectedPhotoIds');
+  assert.equal(recognitionCompletion.activePhotoId, 'photo-a', 'recognition completion should focus first processed photo when current photo is outside snapshot');
+  assertPersistentDataUnchanged(persistentDataState, recognitionCompletion, 'recognition completion');
+
+  const ignoreCompletion = completeBatchActionForCheck(persistentDataState, 'ignore');
+  assert.deepEqual(ignoreCompletion.selectedIds, [], 'ignore completion should clear selectedPhotoIds');
+  assertPersistentDataUnchanged(persistentDataState, ignoreCompletion, 'ignore completion');
+
+  const restoreCompletion = completeBatchActionForCheck(persistentDataState, 'restore');
+  assert.deepEqual(restoreCompletion.selectedIds, [], 'restore completion should clear selectedPhotoIds');
+  assertPersistentDataUnchanged(persistentDataState, restoreCompletion, 'restore completion');
+
+  const archiveCompletion = completeArchiveForCheck(persistentDataState, [{ id: 'photo-b' }]);
+  assert.deepEqual(archiveCompletion.selectedIds, [], 'archive completion should clear selectedPhotoIds');
+  assert.equal(archiveCompletion.viewMode, 'statusFilter', 'archive completion should return to status filter view');
+  assert.equal(archiveCompletion.activeSmartGroupId, '', 'archive completion should clear activeSmartGroupId');
+  assert.equal(archiveCompletion.activePhotoId, 'photo-b', 'archive completion should focus first archived item');
+  assertPersistentDataUnchanged(persistentDataState, archiveCompletion, 'archive completion');
+
   const scenarioResults = {
     'scenario 1 incomplete OCR forms suggestion': 'pass',
     'scenario 2 watermark fact and suggestion are separate': 'pass',
@@ -379,7 +503,16 @@ async function main() {
     'old non-manual wrong suggestion is corrected during regeneration': 'pass',
     'right recognition suggestion display reads archiveSuggestion first': 'pass',
     'OCR label xiaoqumingcheng is not treated as workContent': 'pass',
-    'smart sort groups by archiveSuggestion workContent/category/status': 'pass'
+    'smart sort groups by archiveSuggestion workContent/category/status': 'pass',
+    'plain photo click browses without changing selectedPhotoIds': 'pass',
+    'Ctrl and Shift selection behavior is preserved': 'pass',
+    'selection area click stops propagation and only changes selection': 'pass',
+    'smart group membership is independent from selectedPhotoIds': 'pass',
+    'status filter switch clears selectedPhotoIds and keeps data': 'pass',
+    'smart group switch clears selectedPhotoIds and keeps data': 'pass',
+    'search change clears selectedPhotoIds and keeps data': 'pass',
+    'recognition uses selectedPhotoIdsSnapshot and clears selectedPhotoIds after completion': 'pass',
+    'ignore restore and archive completion clear selectedPhotoIds only': 'pass'
   };
 
   console.log(JSON.stringify({
@@ -403,7 +536,11 @@ async function main() {
       'right suggestion display shows workContent and area from archiveSuggestion',
       'category missing does not block suggestion creation',
       'optional fields do not block confirmation',
-      'smart sort reads archiveSuggestion before OCR rawText'
+      'smart sort reads archiveSuggestion before OCR rawText',
+      'plain photo click changes activePhotoId only',
+      'smart group visible photos are not driven by selectedPhotoIds',
+      'view range switches clear selectedPhotoIds without clearing recognition/watermark/suggestion/archive data',
+      'recognition range is fixed by selectedPhotoIdsSnapshot'
     ]
   }, null, 2));
 }
@@ -416,6 +553,151 @@ function createSmartSortPhoto(id, patch = {}) {
     index: Number(id.replace(/\D/g, '')) || 0,
     ...patch
   };
+}
+
+function applyPhotoBodyClick(state, photoId, event = {}) {
+  const next = {
+    activePhotoId: state.activePhotoId,
+    selectedIds: [...state.selectedIds],
+    visibleIds: [...state.visibleIds],
+    lastClickedId: photoId
+  };
+  if (event.shiftKey && state.lastClickedId && state.visibleIds.includes(state.lastClickedId)) {
+    const start = state.visibleIds.indexOf(state.lastClickedId);
+    const end = state.visibleIds.indexOf(photoId);
+    const range = state.visibleIds.slice(Math.min(start, end), Math.max(start, end) + 1);
+    next.selectedIds = Array.from(new Set([...state.selectedIds, ...range]));
+    return next;
+  }
+  if (event.ctrlKey || event.metaKey) {
+    next.selectedIds = state.selectedIds.includes(photoId)
+      ? state.selectedIds.filter((id) => id !== photoId)
+      : [...state.selectedIds, photoId];
+    return next;
+  }
+  next.activePhotoId = photoId;
+  return next;
+}
+
+function applyPhotoSelectionAreaClick(state, photoId) {
+  return {
+    activePhotoId: state.activePhotoId,
+    selectedIds: state.selectedIds.includes(photoId)
+      ? state.selectedIds.filter((id) => id !== photoId)
+      : [...state.selectedIds, photoId],
+    visibleIds: [...state.visibleIds],
+    lastClickedId: state.lastClickedId,
+    propagationStopped: true
+  };
+}
+
+function getVisiblePhotoIdsForClickCheck({ photos, selectedIds, filter, viewMode, activeSmartGroup }) {
+  const groupKeys = viewMode === 'smartGroup' && activeSmartGroup
+    ? new Set([
+      ...(activeSmartGroup.photoIds || []),
+      ...(activeSmartGroup.photoPaths || [])
+    ].filter(Boolean))
+    : null;
+  return photos
+    .filter((photo) => {
+      if (groupKeys) return groupKeys.has(photo.id) || groupKeys.has(photo.originalPath);
+      if (filter === 'selected') return selectedIds.includes(photo.id);
+      if (filter && filter !== 'all') return photo.sortStatus === filter;
+      return true;
+    })
+    .map((photo) => photo.id);
+}
+
+function applyStatusFilterForCheck(state, nextFilter) {
+  const visibleIds = getVisiblePhotoIdsForClickCheck({
+    photos: state.photos,
+    selectedIds: [],
+    filter: nextFilter,
+    viewMode: 'statusFilter',
+    activeSmartGroup: null
+  });
+  return {
+    ...state,
+    selectedIds: [],
+    viewMode: 'statusFilter',
+    filter: nextFilter,
+    activeSmartGroupId: '',
+    activePhotoId: visibleIds[0] || ''
+  };
+}
+
+function applySmartGroupForCheck(state, group) {
+  const visibleIds = getVisiblePhotoIdsForClickCheck({
+    photos: state.photos,
+    selectedIds: [],
+    filter: state.filter,
+    viewMode: 'smartGroup',
+    activeSmartGroup: group
+  });
+  return {
+    ...state,
+    selectedIds: [],
+    viewMode: 'smartGroup',
+    activeSmartGroupId: group.id,
+    activePhotoId: visibleIds[0] || ''
+  };
+}
+
+function applySearchChangeForCheck(state, searchText) {
+  const group = state.viewMode === 'smartGroup'
+    ? state.smartSortGroups.find((item) => item.id === state.activeSmartGroupId)
+    : null;
+  const visibleIds = getVisiblePhotoIdsForClickCheck({
+    photos: state.photos.filter((photo) => String(photo.id || '').includes(searchText)),
+    selectedIds: [],
+    filter: state.filter,
+    viewMode: state.viewMode,
+    activeSmartGroup: group
+  });
+  return {
+    ...state,
+    selectedIds: [],
+    searchText,
+    activePhotoId: visibleIds[0] || ''
+  };
+}
+
+function completeRecognitionForCheck(state, { selectedPhotoIdsSnapshot, currentPanelPhotoId, firstTargetId }) {
+  return {
+    ...state,
+    processedIds: [...selectedPhotoIdsSnapshot],
+    selectedIds: [],
+    activePhotoId: selectedPhotoIdsSnapshot.includes(currentPanelPhotoId) ? currentPanelPhotoId : firstTargetId
+  };
+}
+
+function completeBatchActionForCheck(state, action) {
+  return {
+    ...state,
+    lastBatchAction: action,
+    selectedIds: []
+  };
+}
+
+function completeArchiveForCheck(state, resultItems) {
+  return {
+    ...state,
+    selectedIds: [],
+    viewMode: 'statusFilter',
+    filter: 'archived',
+    activeSmartGroupId: '',
+    activePhotoId: resultItems[0]?.id || ''
+  };
+}
+
+function assertPersistentDataUnchanged(before, after, label) {
+  assert.deepEqual(after.recognitionResultsByPhoto, before.recognitionResultsByPhoto, `${label} must not clear recognitionResult`);
+  assert.deepEqual(after.watermarkRecordsByPhoto, before.watermarkRecordsByPhoto, `${label} must not clear watermarkRecord`);
+  assert.deepEqual(after.archiveSuggestionsByPhoto, before.archiveSuggestionsByPhoto, `${label} must not clear archiveSuggestion`);
+  assert.deepEqual(after.photos.map((photo) => photo.archiveInfo), before.photos.map((photo) => photo.archiveInfo), `${label} must not clear archiveInfo`);
+  assert.deepEqual(after.photos.map((photo) => photo.previewInfo), before.photos.map((photo) => photo.previewInfo), `${label} must not clear previewInfo`);
+  assert.deepEqual(after.photos.map((photo) => photo.archiveResult), before.photos.map((photo) => photo.archiveResult), `${label} must not clear archiveResult`);
+  assert.deepEqual(after.smartSortGroups, before.smartSortGroups, `${label} must not clear smartSortGroups`);
 }
 
 main().catch((error) => {
