@@ -217,6 +217,18 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     recognitionResult: currentRecognitionResult,
     watermarkRecord: currentWatermarkRecord
   }), [currentArchiveSuggestion, currentRecognitionResult, currentWatermarkRecord]);
+  const hasCurrentPhoto = Boolean(currentPanelPhoto);
+  const hasRecognitionEvidence = Boolean(currentRecognitionResult || currentWatermarkRecord);
+  const hasArchiveSuggestion = Boolean(currentArchiveSuggestion);
+  const hasConfirmedArchiveInfo = Boolean(currentPanelPhoto?.archiveInfo);
+  const hasPreviewInfo = Boolean(currentPanelPhoto?.previewInfo);
+  const hasArchiveResult = Boolean(currentPanelPhoto?.archiveResult);
+  const rightWorkbenchStage = !hasCurrentPhoto
+    ? 'empty'
+    : (hasRecognitionEvidence || hasArchiveSuggestion || hasConfirmedArchiveInfo || hasPreviewInfo || hasArchiveResult)
+      ? 'smart'
+      : 'scanned';
+  const currentPhotoStatusText = currentPanelPhoto ? (statusLabels[currentPanelPhoto.sortStatus] || currentPanelPhoto.sortStatus || '待确认') : '暂无当前照片';
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
   const previewDisabledReason = getPreviewDisabledReason({
     isBusy,
@@ -1350,107 +1362,150 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
         </main>
 
         <aside className="sort-right-panel panel" ref={rightPanelRef}>
-          <div className="sort-selected-summary sort-right-fixed-top">
-            <div>
-              <strong>已选择 {selectedIds.length} 张</strong>
-              <small>{selectedStateText}</small>
-            </div>
-            <div className="sort-edit-actions">
-              <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo || selectedIds.length === 0 || Boolean(editingPhoto)}>编辑</button>
-              <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
-            </div>
+          <div className="sort-right-summary">
+            <strong>已选 {selectedIds.length} 张</strong>
+            <span>
+              {rightWorkbenchStage === 'empty'
+                ? '暂无当前照片'
+                : rightWorkbenchStage === 'scanned'
+                  ? '当前：未识别｜待智拣'
+                  : `当前：${currentPhotoStatusText}`}
+            </span>
           </div>
-          <div className="sort-current-photo-nav">
-            <div className="sort-current-photo-nav-main">
-              <span className="sort-current-photo-count">当前照片 {currentPagePhotoIndex >= 0 ? currentPagePhotoIndex + 1 : 0} / {pagePhotos.length}</span>
-              <span className="sort-current-photo-name">{currentPanelPhoto ? currentPanelPhoto.originalName : '暂无当前照片'}</span>
-            </div>
-            {currentPanelPhoto ? (
-              <div className="sort-current-preview">
-                {currentPanelPhoto.previewUrl ? (
-                  <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
-                ) : (
-                  <span className="sort-current-preview-empty">暂无预览</span>
-                )}
-                <div className="sort-current-preview-nav" aria-hidden={false}>
-                  <button
-                    type="button"
-                    className="sort-current-preview-nav-btn sort-current-preview-nav-prev"
-                    onClick={showPreviousPhoto}
-                    disabled={!canShowPreviousPhoto}
-                    aria-label="上一张"
-                    title="上一张"
-                  >
-                    ‹
-                  </button>
-                  <button
-                    type="button"
-                    className="sort-current-preview-nav-btn sort-current-preview-nav-next"
-                    onClick={showNextPhoto}
-                    disabled={!canShowNextPhoto}
-                    aria-label="下一张"
-                    title="下一张"
-                  >
-                    ›
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
-          <div className="sort-right-scroll">
-            {rightPanelMode === 'recognition' ? (
-              <div className="sort-recognition-mode">
-                {recognitionMessage.text && <div className={`sort-ocr-message ${recognitionMessage.type}`}>{recognitionMessage.text}</div>}
-                <OcrResultPreview
-                  photo={currentRecognitionPhoto}
-                  result={currentRecognitionResult}
-                  onBackToForm={() => setRightPanelMode('form')}
-                  onOpenRecognitionDetails={() => onNavigate?.(PAGE_KEYS.dataMaintenance)}
-                />
-                <WatermarkRecordPanel record={currentWatermarkRecord} />
-                <RecognitionSuggestionPanel suggestion={recognitionSuggestion} />
-              </div>
-            ) : (
-              <section className="sort-form-section">
-                <header className="sort-draft-header">
-                  <div>
-                    <h2>归档建议确认</h2>
-                    <small>{getSuggestionSourceLabel(currentArchiveSuggestion)}｜{currentArchiveSuggestion?.status || 'none'}</small>
-                  </div>
-                  {currentRecognitionResult && <button type="button" onClick={() => setRightPanelMode('recognition')}>查看识别依据</button>}
-                </header>
-                <DraftStatusSummary draft={currentArchiveSuggestion} />
-                <div className="sort-form-grid">
-                  <SelectField label="照片来源" value={form.photoSource} options={configs.photoSources} onChange={(photoSource) => updateForm({ photoSource })} required />
-                  <SelectField label="项目" value={form.project} options={configs.projects} onChange={(project) => updateForm({ project })} required />
-                  <SelectField label="部门" value={form.department} options={configs.departments} onChange={(department) => updateForm({ department })} required />
-                  <SelectField label="水印分类" value={form.watermarkCategory} options={Object.keys(configs.watermarkCategories)} onChange={(watermarkCategory) => updateForm({ watermarkCategory, workContent: '' })} required />
-                  <SelectField label="工作内容" value={form.workContent} options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []} onChange={(workContent) => updateForm({ workContent })} required disabled={!form.watermarkCategory} />
-                  <InputField label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} required />
-                  <InputField label="位置/区域" value={form.location} placeholder={form.locationPlaceholder || '不填则默认“现场”'} onChange={(location) => updateForm({ location })} />
-                  <InputField label="事项名称" value={form.itemName} placeholder="不填则默认使用工作内容" onChange={(itemName) => updateForm({ itemName })} />
-                  <SelectField label="照片阶段" value={form.photoStage} options={configs.photoStages} onChange={(photoStage) => updateForm({ photoStage })} required />
-                  <SelectField label="处理状态" value={form.processStatus} options={configs.processStatuses} onChange={(processStatus) => updateForm({ processStatus })} />
-                  <InputField label="关键词" value={form.keywords} onChange={(keywords) => updateForm({ keywords }, { preserveKeywords: true })} wide />
-                  <TextAreaField label="备注" value={form.remark} onChange={(remark) => updateForm({ remark })} />
-                </div>
+
+          <div className="sort-right-body">
+            {rightWorkbenchStage === 'empty' ? (
+              <section className="sort-right-card sort-right-empty-state">
+                <h3>暂无当前照片</h3>
+                <p>请先导入照片，并点击照片卡片查看识别结果、归档建议和确认信息。</p>
               </section>
-            )}
-          </div>
-          <div className={`sort-right-actions ${rightPanelMode === 'recognition' ? 'recognition-mode' : 'form-mode'}`}>
-            {rightPanelMode === 'recognition' ? (
+            ) : rightWorkbenchStage === 'scanned' ? (
               <>
-                <button type="button" className="primary" title={currentWatermarkRecord ? '根据当前水印事实重新生成归档建议' : '暂无水印事实记录。'} onClick={applyRecognitionSuggestionToForm} disabled={!currentWatermarkRecord}>重新生成归档建议</button>
-                <button type="button" onClick={() => setRightPanelMode('form')}>返回归档建议</button>
-                <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除识别</button>
+                <section className="sort-right-card sort-current-photo-card">
+                  <div className="sort-current-photo-nav-main">
+                    <span className="sort-current-photo-count">当前照片 {currentPagePhotoIndex >= 0 ? currentPagePhotoIndex + 1 : 0} / {pagePhotos.length}</span>
+                    <span className="sort-current-photo-name">{currentPanelPhoto ? currentPanelPhoto.originalName : '暂无当前照片'}</span>
+                    <small>当前状态：未识别</small>
+                  </div>
+                  {currentPanelPhoto ? (
+                    <div className="sort-current-preview">
+                      {currentPanelPhoto.previewUrl ? (
+                        <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
+                      ) : (
+                        <span className="sort-current-preview-empty">暂无预览</span>
+                      )}
+                      <div className="sort-current-preview-nav" aria-hidden={false}>
+                        <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-prev" onClick={showPreviousPhoto} disabled={!canShowPreviousPhoto} aria-label="上一张" title="上一张">‹</button>
+                        <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-next" onClick={showNextPhoto} disabled={!canShowNextPhoto} aria-label="下一张" title="下一张">›</button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+                <section className="sort-right-card sort-right-guide-card">
+                  <h3>当前照片尚未识别</h3>
+                  <p>请勾选照片后点击“智拣”，系统将自动识别水印并生成归档建议。</p>
+                </section>
               </>
             ) : (
               <>
-                <button type="button" title="保存当前照片归档建议，可不完整" onClick={saveCurrentArchiveSuggestion} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>保存建议</button>
-                <button type="button" className="primary" title="确认当前照片归档建议" onClick={confirmCurrentArchiveDraft} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>确认建议</button>
-                <button type="button" title={previewDisabledReason || '生成分拣归档预览'} onClick={buildSortPreview} disabled={Boolean(previewDisabledReason)}>预览</button>
-                <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedHasIgnored || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
-                <button type="button" className="danger" title="清除当前照片归档建议，保留 OCR 原文" onClick={clearCurrentArchiveDraft} disabled={!currentPanelPhoto || (!currentArchiveSuggestion && !currentPanelPhoto.archiveInfo)}>清除建议</button>
+                <section className="sort-right-card sort-current-photo-card">
+                  <div className="sort-current-photo-nav-main">
+                    <span className="sort-current-photo-count">当前照片 {currentPagePhotoIndex >= 0 ? currentPagePhotoIndex + 1 : 0} / {pagePhotos.length}</span>
+                    <span className="sort-current-photo-name">{currentPanelPhoto ? currentPanelPhoto.originalName : '暂无当前照片'}</span>
+                    <small>当前状态：{currentPhotoStatusText}</small>
+                  </div>
+                  {currentPanelPhoto ? (
+                    <div className="sort-current-preview">
+                      {currentPanelPhoto.previewUrl ? (
+                        <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
+                      ) : (
+                        <span className="sort-current-preview-empty">暂无预览</span>
+                      )}
+                      <div className="sort-current-preview-nav" aria-hidden={false}>
+                        <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-prev" onClick={showPreviousPhoto} disabled={!canShowPreviousPhoto} aria-label="上一张" title="上一张">‹</button>
+                        <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-next" onClick={showNextPhoto} disabled={!canShowNextPhoto} aria-label="下一张" title="下一张">›</button>
+                      </div>
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="sort-right-card sort-evidence-card">
+                  <header className="sort-right-card-header">
+                    <h3>识别证据</h3>
+                    {currentRecognitionResult && rightPanelMode !== 'recognition' && <button type="button" onClick={() => setRightPanelMode('recognition')}>查看识别依据</button>}
+                  </header>
+                  {rightPanelMode === 'recognition' ? (
+                    <div className="sort-recognition-mode">
+                      {recognitionMessage.text && <div className={`sort-ocr-message ${recognitionMessage.type}`}>{recognitionMessage.text}</div>}
+                      <OcrResultPreview
+                        photo={currentRecognitionPhoto}
+                        result={currentRecognitionResult}
+                        onBackToForm={() => setRightPanelMode('form')}
+                        onOpenRecognitionDetails={() => onNavigate?.(PAGE_KEYS.dataMaintenance)}
+                      />
+                      <WatermarkRecordPanel record={currentWatermarkRecord} />
+                      <RecognitionSuggestionPanel suggestion={recognitionSuggestion} />
+                    </div>
+                  ) : (
+                    <>
+                      <WatermarkRecordPanel record={currentWatermarkRecord} />
+                      <RecognitionSuggestionPanel suggestion={recognitionSuggestion} />
+                    </>
+                  )}
+                </section>
+
+                <section className="sort-right-card sort-suggestion-card">
+                  <header className="sort-draft-header">
+                    <div>
+                      <h3>归档建议</h3>
+                      <small>{getSuggestionSourceLabel(currentArchiveSuggestion)}｜{currentArchiveSuggestion?.status || 'none'}</small>
+                    </div>
+                  </header>
+                  <DraftStatusSummary draft={currentArchiveSuggestion} />
+                  <div className="sort-form-grid">
+                    <InputField label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} required />
+                    <InputField label="位置/区域" value={form.location} placeholder={form.locationPlaceholder || '不填则默认“现场”'} onChange={(location) => updateForm({ location })} />
+                    <SelectField label="工作内容" value={form.workContent} options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []} onChange={(workContent) => updateForm({ workContent })} required disabled={!form.watermarkCategory} />
+                    <SelectField label="归档分类" value={form.watermarkCategory} options={Object.keys(configs.watermarkCategories)} onChange={(watermarkCategory) => updateForm({ watermarkCategory, workContent: '' })} required />
+                  </div>
+                </section>
+
+                <details className="sort-right-card sort-more-info-card">
+                  <summary>更多信息</summary>
+                  <div className="sort-form-grid">
+                    <SelectField label="照片来源" value={form.photoSource} options={configs.photoSources} onChange={(photoSource) => updateForm({ photoSource })} required />
+                    <SelectField label="项目" value={form.project} options={configs.projects} onChange={(project) => updateForm({ project })} required />
+                    <SelectField label="部门" value={form.department} options={configs.departments} onChange={(department) => updateForm({ department })} required />
+                    <InputField label="事项名称" value={form.itemName} placeholder="不填则默认使用工作内容" onChange={(itemName) => updateForm({ itemName })} />
+                    <SelectField label="照片阶段" value={form.photoStage} options={configs.photoStages} onChange={(photoStage) => updateForm({ photoStage })} required />
+                    <SelectField label="处理状态" value={form.processStatus} options={configs.processStatuses} onChange={(processStatus) => updateForm({ processStatus })} />
+                    <InputField label="关键词" value={form.keywords} onChange={(keywords) => updateForm({ keywords }, { preserveKeywords: true })} wide />
+                    <TextAreaField label="备注" value={form.remark} onChange={(remark) => updateForm({ remark })} />
+                  </div>
+                </details>
+
+                <section className="sort-right-card sort-stage-actions-card">
+                  <h3>阶段动作</h3>
+                  <div className={`sort-right-actions ${rightPanelMode === 'recognition' ? 'recognition-mode' : 'form-mode'}`}>
+                    {rightPanelMode === 'recognition' ? (
+                      <>
+                        <button type="button" className="primary" title={currentWatermarkRecord ? '根据当前水印事实重新生成归档建议' : '暂无水印事实记录。'} onClick={applyRecognitionSuggestionToForm} disabled={!currentWatermarkRecord}>重新生成归档建议</button>
+                        <button type="button" onClick={() => setRightPanelMode('form')}>返回归档建议</button>
+                        <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除识别</button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" title="保存当前照片归档建议，可不完整" onClick={saveCurrentArchiveSuggestion} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>保存建议</button>
+                        <button type="button" className="primary" title="确认当前照片归档建议" onClick={confirmCurrentArchiveDraft} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>确认建议</button>
+                        <button type="button" title={previewDisabledReason || '生成分拣归档预览'} onClick={buildSortPreview} disabled={Boolean(previewDisabledReason)}>预览</button>
+                        <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedHasIgnored || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
+                        <button type="button" className="danger" title="清除当前照片归档建议，保留 OCR 原文" onClick={clearCurrentArchiveDraft} disabled={!currentPanelPhoto || (!currentArchiveSuggestion && !currentPanelPhoto.archiveInfo)}>清除建议</button>
+                        <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo || selectedIds.length === 0 || Boolean(editingPhoto)}>编辑</button>
+                        <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
+                      </>
+                    )}
+                  </div>
+                </section>
               </>
             )}
           </div>
