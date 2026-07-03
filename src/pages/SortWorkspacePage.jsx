@@ -133,6 +133,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const [isRecognitionBusy, setIsRecognitionBusy] = useState(false);
   const [recognitionMessage, setRecognitionMessage] = useState(() => cachedSession.recognitionMessage || { type: 'idle', text: '' });
   const [rightPanelMode, setRightPanelMode] = useState(() => ['form', 'recognition'].includes(cachedSession.rightPanelMode) ? cachedSession.rightPanelMode : 'form');
+  const [showRecognitionEvidenceDetail, setShowRecognitionEvidenceDetail] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -312,6 +313,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       ? 'smart'
       : 'scanned';
   const currentPhotoStatusText = currentPanelPhoto ? (statusLabels[currentPanelPhoto.sortStatus] || currentPanelPhoto.sortStatus || '待确认') : '暂无当前照片';
+  const currentCoreFieldsComplete = Boolean(form.date && form.location && form.workContent && form.watermarkCategory);
+  const currentPhotoConfirmed = Boolean(currentPanelPhoto?.archiveInfo);
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
   const previewDisabledReason = getPreviewDisabledReason({
     isBusy,
@@ -386,6 +389,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       setRightPanelMode('form');
     }
   }, [currentRecognitionResult, isRecognitionBusy, rightPanelMode]);
+
+  useEffect(() => {
+    setShowRecognitionEvidenceDetail(false);
+  }, [currentPanelPhoto?.id]);
 
   useEffect(() => {
     if (!configs) return;
@@ -1517,19 +1524,26 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                 <section className="sort-right-card sort-evidence-card">
                   <header className="sort-right-card-header">
                     <h3>识别证据</h3>
-                    {currentRecognitionResult && rightPanelMode !== 'recognition' && <button type="button" onClick={() => setRightPanelMode('recognition')}>查看识别依据</button>}
+                    {currentRecognitionResult && (
+                      <button type="button" onClick={() => setShowRecognitionEvidenceDetail((value) => !value)}>
+                        {showRecognitionEvidenceDetail ? '收起识别依据' : '查看识别依据'}
+                      </button>
+                    )}
                   </header>
-                  {rightPanelMode === 'recognition' ? (
-                    <div className="sort-recognition-mode">
+                  {showRecognitionEvidenceDetail ? (
+                    <div className="sort-recognition-mode sort-evidence-detail">
                       {recognitionMessage.text && <div className={`sort-ocr-message ${recognitionMessage.type}`}>{recognitionMessage.text}</div>}
                       <OcrResultPreview
                         photo={currentRecognitionPhoto}
                         result={currentRecognitionResult}
-                        onBackToForm={() => setRightPanelMode('form')}
                         onOpenRecognitionDetails={() => onNavigate?.(PAGE_KEYS.dataMaintenance)}
                       />
                       <WatermarkRecordPanel record={currentWatermarkRecord} />
                       <RecognitionSuggestionPanel suggestion={recognitionSuggestion} />
+                      <div className="sort-evidence-detail-actions">
+                        <button type="button" className="primary" title={currentWatermarkRecord ? '根据当前水印事实重新生成归档建议' : '暂无水印事实记录。'} onClick={applyRecognitionSuggestionToForm} disabled={!currentWatermarkRecord}>重新生成归档建议</button>
+                        <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除当前识别</button>
+                      </div>
                     </div>
                   ) : (
                     <>
@@ -1543,7 +1557,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                   <header className="sort-draft-header">
                     <div>
                       <h3>归档建议</h3>
-                      <small>{getSuggestionSourceLabel(currentArchiveSuggestion)}｜{currentArchiveSuggestion?.status || 'none'}</small>
+                      <small>{getSuggestionSourceLabel(currentArchiveSuggestion)}｜{getArchiveSuggestionStatusLabel(currentArchiveSuggestion)}</small>
                     </div>
                   </header>
                   <DraftStatusSummary draft={currentArchiveSuggestion} />
@@ -1570,26 +1584,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                 </details>
 
                 <section className="sort-right-card sort-stage-actions-card">
-                  <h3>阶段动作</h3>
-                  <div className={`sort-right-actions ${rightPanelMode === 'recognition' ? 'recognition-mode' : 'form-mode'}`}>
-                    {rightPanelMode === 'recognition' ? (
+                  <h3>当前照片操作</h3>
+                  {currentPhotoConfirmed ? (
+                    <p className="sort-current-photo-action-tip">当前照片已确认。请在中间照片区勾选后生成预览。</p>
+                  ) : (
+                    <div className="sort-right-actions sort-current-photo-actions">
+                      {currentCoreFieldsComplete ? (
                       <>
-                        <button type="button" className="primary" title={currentWatermarkRecord ? '根据当前水印事实重新生成归档建议' : '暂无水印事实记录。'} onClick={applyRecognitionSuggestionToForm} disabled={!currentWatermarkRecord}>重新生成归档建议</button>
-                        <button type="button" onClick={() => setRightPanelMode('form')}>返回归档建议</button>
-                        <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除识别</button>
+                        <button type="button" className="primary" title="确认当前照片归档信息" onClick={confirmCurrentArchiveDraft} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>确认当前归档信息</button>
+                        <button type="button" title="保存当前照片归档建议，可不完整" onClick={saveCurrentArchiveSuggestion} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>保存草稿</button>
                       </>
-                    ) : (
+                      ) : (
                       <>
-                        <button type="button" title="保存当前照片归档建议，可不完整" onClick={saveCurrentArchiveSuggestion} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>保存建议</button>
-                        <button type="button" className="primary" title="确认当前照片归档建议" onClick={confirmCurrentArchiveDraft} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>确认建议</button>
-                        <button type="button" title={previewDisabledReason || '生成分拣归档预览'} onClick={buildSortPreview} disabled={Boolean(previewDisabledReason)}>预览</button>
-                        <button type="button" className="primary orange" title={`保存归档（${previewPhotos.length}）`} onClick={requestArchive} disabled={isBusy || selectedHasIgnored || selectedPreviewCount === 0 || previewPhotos.length === 0}>归档</button>
-                        <button type="button" className="danger" title="清除当前照片归档建议，保留 OCR 原文" onClick={clearCurrentArchiveDraft} disabled={!currentPanelPhoto || (!currentArchiveSuggestion && !currentPanelPhoto.archiveInfo)}>清除建议</button>
-                        <button type="button" title="编辑当前照片" onClick={editCurrentPhotoInfo} disabled={!primaryPhoto?.archiveInfo || selectedIds.length === 0 || Boolean(editingPhoto)}>编辑</button>
-                        <button type="button" title="保存到当前照片" onClick={saveCurrentPhotoInfo} disabled={!editingPhoto}>保存</button>
+                        <button type="button" title="保存当前照片归档建议，可不完整" onClick={saveCurrentArchiveSuggestion} disabled={!currentPanelPhoto || isIgnoredPhoto(currentPanelPhoto) || isArchivedPhoto(currentPanelPhoto)}>保存草稿</button>
+                        <button type="button" className="primary" title="请先补齐日期、位置/区域、工作内容和归档分类" disabled>补齐核心字段后确认</button>
                       </>
                     )}
-                  </div>
+                      <button type="button" className="danger" title="仅清除当前照片识别结果，保留归档建议" onClick={clearCurrentRecognitionOnly} disabled={!currentRecognitionPhoto || !currentRecognitionResult}>清除当前识别</button>
+                    </div>
+                  )}
                 </section>
               </>
             )}
@@ -1656,7 +1669,7 @@ function SmartSortGroupNav({ groups, activeGroupId, onSelectGroup }) {
   );
 }
 
-function OcrResultPreview({ photo, result, onBackToForm, onOpenRecognitionDetails }) {
+function OcrResultPreview({ photo, result, onOpenRecognitionDetails }) {
   if (!photo) {
     return (
       <section className="sort-ocr-preview">
@@ -1679,7 +1692,7 @@ function OcrResultPreview({ photo, result, onBackToForm, onOpenRecognitionDetail
     <section className="sort-ocr-preview">
       <header>
         <strong>识别结果</strong>
-        <small>{statusLabel}｜{rawText ? `${rawText.length} 字` : '0 字'}｜<button type="button" onClick={onBackToForm}>返回表单</button></small>
+        <small>{statusLabel}｜{rawText ? `${rawText.length} 字` : '0 字'}</small>
       </header>
       {result.cropResult?.croppedPreviewUrl && (
         <a href={result.cropResult.croppedPreviewUrl} target="_blank" rel="noreferrer" title="点击放大查看裁剪后的水印区域">
@@ -1793,6 +1806,14 @@ function DraftStatusSummary({ draft }) {
       {!missing.length && !(draft.conflictFields || []).length && <small>字段已具备确认条件，请核对后点击“确认建议”。</small>}
     </section>
   );
+}
+
+function getArchiveSuggestionStatusLabel(suggestion) {
+  if (!suggestion) return '暂无建议';
+  if (suggestion.status === 'confirmed') return '已确认';
+  if (suggestion.status === 'failed') return '待人工处理';
+  const missing = suggestion.missingRequiredFields || suggestion.missingFields || [];
+  return missing.length ? '待补充' : '待确认';
 }
 
 function getRecognitionStatusLabel(result = {}) {
