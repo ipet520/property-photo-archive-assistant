@@ -1,4 +1,8 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
 
 async function main() {
   const {
@@ -293,6 +297,71 @@ async function main() {
   assert.ok(persistedDraft.watermarkRecordsByPhoto['photo-b'], 'save progress payload should include watermarkRecordsByPhoto');
   assert.ok(persistedDraft.archiveSuggestionsByPhoto['photo-b'], 'save progress payload should include archiveSuggestionsByPhoto');
 
+  const smartSortDir = await fs.mkdtemp(path.join(os.tmpdir(), 'v31-smart-sort-'));
+  const smartSortResult = await generateSmartSortGroups(smartSortDir, {
+    photos: [
+      createSmartSortPhoto('p-env-1', {
+        archiveSuggestion: {
+          status: 'suggestion_ready',
+          suggestedFields: { workContent: '环境卫生巡查', area: '潇湘新区二期', watermarkCategory: '巡查检查类' }
+        },
+        recognition: { status: 'success', rawText: '小区名称：潇湘新区二期\n工作内容文本：环境卫生巡查' }
+      }),
+      createSmartSortPhoto('p-env-2', {
+        archiveSuggestion: {
+          status: 'suggestion_ready',
+          suggestedFields: { workContent: '环境卫生巡查', area: '潇湘新区二期', watermarkCategory: '巡查检查类' }
+        },
+        recognition: { status: 'success', rawText: '小区名称：潇湘新区二期\n工作内容文本：环境卫生巡查' }
+      }),
+      createSmartSortPhoto('p-solar', {
+        archiveSuggestion: {
+          status: 'suggestion_ready',
+          suggestedFields: { workContent: '太阳能巡查', area: '潇湘新区二期', watermarkCategory: '公共设施设备' }
+        },
+        recognition: { status: 'success', rawText: '工作内容文本：太阳能巡查' }
+      }),
+      createSmartSortPhoto('p-category', {
+        archiveSuggestion: {
+          status: 'needs_completion',
+          suggestedFields: { watermarkCategory: '巡查检查类', area: '潇湘新区二期' }
+        },
+        recognition: { status: 'success', rawText: '小区名称：潇湘新区二期' }
+      }),
+      createSmartSortPhoto('p-confirmed', {
+        sortStatus: 'assigned',
+        archiveInfo: { workContent: '已确认内容' }
+      }),
+      createSmartSortPhoto('p-previewed', {
+        sortStatus: 'previewed',
+        previewInfo: { targetPath: 'D:/archive/p-previewed.jpg' }
+      }),
+      createSmartSortPhoto('p-archive-failed', {
+        sortStatus: 'archive_failed',
+        archiveResult: { success: false, error: 'copy failed' }
+      }),
+      createSmartSortPhoto('p-archived', {
+        sortStatus: 'archived',
+        archiveResult: { success: true, targetPath: 'D:/archive/p-archived.jpg' }
+      })
+    ],
+    options: { source: 'selected_photos' }
+  });
+  const groupMap = Object.fromEntries((smartSortResult.groups || []).map((group) => [group.title, group]));
+  assert.ok(groupMap['环境卫生巡查'], 'smart sort should group by archiveSuggestion workContent');
+  assert.equal(groupMap['环境卫生巡查'].photoCount, 2, 'smart sort group count should equal actual photo count');
+  assert.ok(groupMap['太阳能巡查'], 'smart sort should group solar patrol by workContent');
+  assert.ok(groupMap['巡查检查类'], 'smart sort should fallback to category when workContent is empty');
+  assert.ok(groupMap['已确认待预览'], 'confirmed photos should be grouped as waiting preview');
+  assert.ok(groupMap['已预览待归档'], 'previewed photos should be grouped as waiting archive');
+  assert.ok(groupMap['归档失败'], 'archive failed photos should be grouped as archive failed');
+  assert.ok(groupMap['已归档'], 'archived photos should be grouped as archived');
+  assert.equal(Boolean(groupMap['小区名称']), false, 'smart sort must not create xiaoqumingcheng group');
+  assert.equal(Boolean(groupMap['时间段']), false, 'smart sort must not create time-window label group when suggestions exist');
+  assert.equal(Boolean(groupMap['缺少照片阶段']), false, 'smart sort must not group by missing photoStage');
+  assert.equal(Boolean(groupMap['缺少处理状态']), false, 'smart sort must not group by missing processStatus');
+  assert.notEqual(smartSortResult.groupCount, 0, 'smart sort should not be empty when archiveSuggestion workContent exists');
+
   const scenarioResults = {
     'scenario 1 incomplete OCR forms suggestion': 'pass',
     'scenario 2 watermark fact and suggestion are separate': 'pass',
@@ -309,7 +378,8 @@ async function main() {
     'manual field is preserved during regeneration': 'pass',
     'old non-manual wrong suggestion is corrected during regeneration': 'pass',
     'right recognition suggestion display reads archiveSuggestion first': 'pass',
-    'OCR label xiaoqumingcheng is not treated as workContent': 'pass'
+    'OCR label xiaoqumingcheng is not treated as workContent': 'pass',
+    'smart sort groups by archiveSuggestion workContent/category/status': 'pass'
   };
 
   console.log(JSON.stringify({
@@ -332,9 +402,20 @@ async function main() {
       'solar patrol OCR fact enters archiveSuggestion.workContent',
       'right suggestion display shows workContent and area from archiveSuggestion',
       'category missing does not block suggestion creation',
-      'optional fields do not block confirmation'
+      'optional fields do not block confirmation',
+      'smart sort reads archiveSuggestion before OCR rawText'
     ]
   }, null, 2));
+}
+
+function createSmartSortPhoto(id, patch = {}) {
+  return {
+    photoId: id,
+    filePath: `D:/photos/${id}.jpg`,
+    fileName: `${id}.jpg`,
+    index: Number(id.replace(/\D/g, '')) || 0,
+    ...patch
+  };
 }
 
 main().catch((error) => {

@@ -532,7 +532,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     setStatus({ type: 'success', text: '已清空当前分拣列表，原始照片未受影响。' });
   }
 
-  async function generateSmartGroups(targetPhotos = photos, recognitionMap = recognitionResultsByPhoto, options = {}) {
+  async function generateSmartGroups(
+    targetPhotos = photos,
+    recognitionMap = recognitionResultsByPhoto,
+    options = {},
+    suggestionMap = archiveSuggestionsByPhoto,
+    watermarkMap = watermarkRecordsByPhoto
+  ) {
     if (isBusy || isSmartSortBusy) {
       setSmartSortMessage({ type: 'warning', text: '照片扫描或智能分拣正在进行，请稍候。' });
       return;
@@ -544,7 +550,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     setIsSmartSortBusy(true);
     setSmartSortMessage({ type: 'idle', text: '正在整理智能分拣分组...' });
     try {
-      const result = await generateSmartSortGroups(normalizePhotosForSmartSort(targetPhotos, recognitionMap), {
+      const result = await generateSmartSortGroups(normalizePhotosForSmartSort(targetPhotos, recognitionMap, suggestionMap, watermarkMap), {
         timeWindowMinutes: 30,
         maxPhotosPerGroup: 10,
         source: options.source || 'selected_photos'
@@ -626,7 +632,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
           setSmartSortMessage({ type: 'error', text: '未检测到可用 OCR 引擎，无法执行智能识别分拣。' });
           return;
         }
-        await generateSmartGroups(targets, nextMap, { source: 'selected_photos' });
+        await generateSmartGroups(targets, nextMap, { source: 'selected_photos' }, suggestionEntries, watermarkEntries);
       }
     } catch (error) {
       setRecognitionMessage({ type: 'error', text: `识别失败：${error.message || '未知错误'}` });
@@ -1827,7 +1833,7 @@ function formatDateTime(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function normalizePhotosForSmartSort(photos, recognitionMap = {}) {
+function normalizePhotosForSmartSort(photos, recognitionMap = {}, suggestionMap = {}, watermarkMap = {}) {
   return photos.map((photo, index) => ({
     photoId: photo.id,
     filePath: photo.originalPath,
@@ -1835,6 +1841,12 @@ function normalizePhotosForSmartSort(photos, recognitionMap = {}) {
     index,
     capturedAt: photo.capturedAt || null,
     modifiedAt: photo.modifiedAt || null,
+    sortStatus: photo.sortStatus || '',
+    archiveInfo: photo.archiveInfo || null,
+    previewInfo: photo.previewInfo || null,
+    archiveResult: photo.archiveResult || null,
+    archiveSuggestion: suggestionMap[photo.id] || null,
+    watermarkRecord: watermarkMap[photo.id] || null,
     recognition: recognitionMap[photo.id] || null
   }));
 }

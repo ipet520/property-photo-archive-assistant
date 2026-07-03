@@ -227,19 +227,10 @@ async function buildSelectionOrderGroups(userDataDir, photos, options = {}) {
 
 async function buildRecognitionGroups(userDataDir, photos) {
   const buckets = new Map();
-  const hasRecognitionInput = photos.some((photo) => photo.recognition);
+  const hasRecognitionInput = photos.some((photo) => photo.recognition || photo.archiveSuggestion || photo.archiveInfo || photo.previewInfo || photo.archiveResult);
   photos.forEach((photo) => {
-    const parsed = photo.recognition?.parsedWatermark || photo.recognition?.parsedFields || photo.parsedWatermark || {};
-    const text = [
-      parsed.workContent,
-      parsed.watermarkCategory,
-      parsed.category,
-      parsed.location,
-      parsed.remark
-    ].map((value) => String(value || '').trim()).filter(Boolean);
-    const rawText = String(photo.recognition?.rawText || photo.recognition?.adoptedOcrText || '').trim();
-    const key = text[0] || inferWorkContentFromText(rawText) || '';
-    const bucketKey = key || getPendingRecognitionBucket(photo.recognition);
+    const bucket = resolveSmartGroupBucket(photo);
+    const bucketKey = bucket.title;
     if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
     buckets.get(bucketKey).push(photo);
   });
@@ -247,11 +238,11 @@ async function buildRecognitionGroups(userDataDir, photos) {
   const entries = Array.from(buckets.entries());
   return Promise.all(entries.map(([title, bucket], index) => buildGroup(userDataDir, bucket, {
     index,
-    titlePrefix: title.startsWith('待确认') ? title : title,
+    titlePrefix: title,
     fixedTitle: title,
-    basis: title.startsWith('待确认') ? 'recognition_pending' : 'watermark_ocr',
-    basisLabel: title.startsWith('待确认') ? getPendingRecognitionBasisLabel(title) : `来自水印识别：${title}`,
-    confidenceLabel: title.startsWith('待确认') ? 'low' : 'medium'
+    basis: resolveSmartGroupBucket(bucket[0]).basis,
+    basisLabel: resolveSmartGroupBucket(bucket[0]).basisLabel,
+    confidenceLabel: resolveSmartGroupBucket(bucket[0]).confidenceLabel
   })));
 }
 
@@ -324,11 +315,90 @@ function normalizePhoto(photo = {}, index = 0) {
     capturedAt,
     modifiedAt,
     sortTimestamp: sortDate ? Date.parse(sortDate) : null,
+    sortStatus: String(photo.sortStatus || ''),
+    archiveInfo: normalizePlainObject(photo.archiveInfo),
+    previewInfo: normalizePlainObject(photo.previewInfo),
+    archiveResult: normalizePlainObject(photo.archiveResult),
+    archiveSuggestion: normalizeArchiveSuggestionForGrouping(photo.archiveSuggestion),
+    watermarkRecord: normalizePlainObject(photo.watermarkRecord),
     source: 'photo_list',
     recognition: normalizeRecognitionForGrouping(photo.recognition || photo.ocrResult || null),
     createdAt: new Date().toISOString(),
     schemaVersion: SCHEMA_VERSION
   };
+}
+
+function resolveSmartGroupBucket(photo = {}) {
+  if (photo.archiveResult?.success === true || photo.sortStatus === 'archived') {
+    return createBucket('已归档', 'archive_result', '已归档照片。', 'high');
+  }
+  if (photo.archiveResult?.success === false || photo.sortStatus === 'archive_failed') {
+    return createBucket('归档失败', 'archive_failed', '归档失败照片，需修正后重新预览/归档。', 'high');
+  }
+  if (photo.previewInfo && photo.sortStatus !== 'archived') {
+    return createBucket('已预览待归档', 'preview_ready', '已生成预览，等待正式归档。', 'high');
+  }
+  if (photo.archiveInfo || ['assigned', 'confirmed'].includes(photo.sortStatus)) {
+    return createBucket('已确认待预览', 'confirmed', '已确认归档信息，等待生成预览。', 'high');
+  }
+
+  const fields = photo.archiveSuggestion?.suggestedFields || {};
+  const workContent = sanitizeGroupTitle(fields.workContent);
+  if (workContent) return createBucket(workContent, 'archive_suggestion_work_content', `来自归档建议：${workContent}`, 'high');
+
+  const category = sanitizeGroupTitle(fields.category || fields.watermarkCategory);
+  if (category) return createBucket(category, 'archive_suggestion_category', `来自归档建议分类：${category}`, 'medium');
+
+  if (photo.archiveSuggestion) {
+    return createBucket('无法判断工作内容', 'archive_suggestion_pending', '已有归档建议，但无法判断工作内容。', 'low');
+  }
+
+  if (isRecognitionFailed(photo.recognition)) {
+    return createBucket('识别失败', 'recognition_failed', 'OCR 识别失败，需人工确认。', 'low');
+  }
+
+  return createBucket(getPendingRecognitionBucket(photo.recognition), 'recognition_pending', getPendingRecognitionBasisLabel(getPendingRecognitionBucket(photo.recognition)), 'low');
+}
+
+function createBucket(title, basis, basisLabel, confidenceLabel) {
+  return { title, basis, basisLabel, confidenceLabel };
+}
+
+function isRecognitionFailed(recognition = {}) {
+  return Boolean(recognition && ['failed', 'error', 'provider_unavailable', 'not_configured', 'disabled'].includes(recognition.status));
+}
+
+function sanitizeGroupTitle(value = '') {
+  const title = String(value || '').trim();
+  const blocked = new Set([
+    '小区名称',
+    '项目文本',
+    '地点文本',
+    '拍摄日期',
+    '拍摄时间',
+    '时间段',
+    '上午',
+    '下午',
+    '晚上',
+    '缺少照片阶段',
+    '缺少处理状态',
+    '待补充｜缺少照片阶段',
+    '待补充｜缺少处理状态'
+  ]);
+  return blocked.has(title) ? '' : title;
+}
+
+function normalizeArchiveSuggestionForGrouping(suggestion = null) {
+  if (!suggestion || typeof suggestion !== 'object') return null;
+  return {
+    status: String(suggestion.status || ''),
+    suggestedFields: normalizePlainObject(suggestion.suggestedFields),
+    missingRequiredFields: Array.isArray(suggestion.missingRequiredFields) ? suggestion.missingRequiredFields.map(String) : []
+  };
+}
+
+function normalizePlainObject(value = null) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : null;
 }
 
 function normalizeRecognitionForGrouping(recognition) {
