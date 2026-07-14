@@ -129,7 +129,14 @@ export function normalizeRecognitionResult(result = {}) {
     reviewDraftId: String(result.reviewDraftId || ''),
     reviewDraft: result.reviewDraft && typeof result.reviewDraft === 'object' ? normalizeRecognitionReviewDraft(result.reviewDraft) : undefined,
     candidateReviewError: result.candidateReviewError && typeof result.candidateReviewError === 'object' ? result.candidateReviewError : undefined,
-    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined
+    stagingError: result.stagingError && typeof result.stagingError === 'object' ? result.stagingError : undefined,
+    cropResult: result.cropResult && typeof result.cropResult === 'object' ? result.cropResult : undefined,
+    localResult: result.localResult && typeof result.localResult === 'object' ? result.localResult : undefined,
+    cloudResult: result.cloudResult && typeof result.cloudResult === 'object' ? result.cloudResult : undefined,
+    compareResults: result.compareResults && typeof result.compareResults === 'object' ? result.compareResults : undefined,
+    engineResult: result.engineResult && typeof result.engineResult === 'object' ? result.engineResult : undefined,
+    adoptedOcrText: String(result.adoptedOcrText || result.rawText || ''),
+    parsedWatermark: result.parsedWatermark && typeof result.parsedWatermark === 'object' ? result.parsedWatermark : undefined
   };
 }
 

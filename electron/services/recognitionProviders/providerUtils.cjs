@@ -29,6 +29,10 @@ function createProviderStatus(provider = {}, patch = {}) {
     requiresUserConsent: Boolean(patch.requiresUserConsent),
     configStatus: patch.configStatus || undefined,
     safeConfig: patch.safeConfig || undefined,
+    engine: patch.engine || undefined,
+    engineName: patch.engineName || undefined,
+    source: patch.source || undefined,
+    executablePath: patch.executablePath || undefined,
     checkedAt: patch.checkedAt || new Date().toISOString()
   };
 }
@@ -87,7 +91,14 @@ function normalizeRecognitionResult(result = {}) {
     candidateFieldSet: result.candidateFieldSet && typeof result.candidateFieldSet === 'object' ? result.candidateFieldSet : undefined,
     reviewDraftId: String(result.reviewDraftId || ''),
     reviewDraft: result.reviewDraft && typeof result.reviewDraft === 'object' ? result.reviewDraft : undefined,
-    candidateReviewError: result.candidateReviewError && typeof result.candidateReviewError === 'object' ? result.candidateReviewError : undefined
+    candidateReviewError: result.candidateReviewError && typeof result.candidateReviewError === 'object' ? result.candidateReviewError : undefined,
+    cropResult: result.cropResult && typeof result.cropResult === 'object' ? result.cropResult : undefined,
+    localResult: result.localResult && typeof result.localResult === 'object' ? result.localResult : undefined,
+    cloudResult: result.cloudResult && typeof result.cloudResult === 'object' ? result.cloudResult : undefined,
+    compareResults: result.compareResults && typeof result.compareResults === 'object' ? result.compareResults : undefined,
+    engineResult: result.engineResult && typeof result.engineResult === 'object' ? result.engineResult : undefined,
+    adoptedOcrText: String(result.adoptedOcrText || result.rawText || ''),
+    parsedWatermark: result.parsedWatermark && typeof result.parsedWatermark === 'object' ? result.parsedWatermark : undefined
   };
 }
 

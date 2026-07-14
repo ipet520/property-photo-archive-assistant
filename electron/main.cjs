@@ -102,10 +102,13 @@ const {
   validatePathExists
 } = require('./services/settingsService.cjs');
 
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, shell } = electron;
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appDataFolderName = '物业工作照片归档助手';
 const runtimeDir = resolveRuntimeDir();
+const WINDOW_STATE_FILE = 'window-state.json';
+const MIN_WINDOW_WIDTH = 1280;
+const MIN_WINDOW_HEIGHT = 800;
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu');
@@ -133,11 +136,12 @@ function resolveRuntimeDir() {
 }
 
 function createWindow() {
+  const windowState = loadWindowState();
+  const safeBounds = normalizeWindowBounds(windowState.bounds);
   const mainWindow = new BrowserWindow({
-    width: 1320,
-    height: 860,
-    minWidth: 1100,
-    minHeight: 720,
+    ...safeBounds,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     title: '物业工作照片归档助手',
     backgroundColor: '#f6f7fb',
     webPreferences: {
@@ -148,11 +152,96 @@ function createWindow() {
     }
   });
 
+  if (!windowState.hasSavedState || windowState.isMaximized) {
+    mainWindow.maximize();
+  }
+  installWindowStatePersistence(mainWindow);
+
   if (isDev) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
+}
+
+function getWindowStatePath() {
+  return path.join(app.getPath('userData'), WINDOW_STATE_FILE);
+}
+
+function loadWindowState() {
+  try {
+    const statePath = getWindowStatePath();
+    if (!fs.existsSync(statePath)) {
+      return { hasSavedState: false, isMaximized: true, bounds: defaultWindowBounds() };
+    }
+    const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    return {
+      hasSavedState: true,
+      isMaximized: Boolean(parsed.isMaximized),
+      bounds: normalizeWindowBounds(parsed.bounds)
+    };
+  } catch {
+    return { hasSavedState: false, isMaximized: true, bounds: defaultWindowBounds() };
+  }
+}
+
+function defaultWindowBounds() {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = Math.max(MIN_WINDOW_WIDTH, Math.min(1400, workArea.width));
+  const height = Math.max(MIN_WINDOW_HEIGHT, Math.min(900, workArea.height));
+  return {
+    width,
+    height,
+    x: Math.round(workArea.x + Math.max(0, (workArea.width - width) / 2)),
+    y: Math.round(workArea.y + Math.max(0, (workArea.height - height) / 2))
+  };
+}
+
+function normalizeWindowBounds(bounds = {}) {
+  const fallback = defaultWindowBounds();
+  const width = Math.max(MIN_WINDOW_WIDTH, Number(bounds.width) || fallback.width);
+  const height = Math.max(MIN_WINDOW_HEIGHT, Number(bounds.height) || fallback.height);
+  let x = Number.isFinite(Number(bounds.x)) ? Number(bounds.x) : fallback.x;
+  let y = Number.isFinite(Number(bounds.y)) ? Number(bounds.y) : fallback.y;
+  const candidate = { x, y, width, height };
+  const visible = screen.getAllDisplays().some((display) => intersects(candidate, display.workArea));
+  if (!visible) {
+    x = fallback.x;
+    y = fallback.y;
+  }
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+}
+
+function intersects(rect, area) {
+  return rect.x < area.x + area.width
+    && rect.x + rect.width > area.x
+    && rect.y < area.y + area.height
+    && rect.y + rect.height > area.y;
+}
+
+function installWindowStatePersistence(mainWindow) {
+  let lastNormalBounds = normalizeWindowBounds(mainWindow.getBounds());
+  const rememberBounds = () => {
+    if (mainWindow.isDestroyed() || mainWindow.isMinimized() || mainWindow.isFullScreen()) return;
+    if (!mainWindow.isMaximized()) lastNormalBounds = normalizeWindowBounds(mainWindow.getBounds());
+  };
+  mainWindow.on('resize', rememberBounds);
+  mainWindow.on('move', rememberBounds);
+  mainWindow.on('maximize', rememberBounds);
+  mainWindow.on('unmaximize', rememberBounds);
+  mainWindow.on('close', () => {
+    if (mainWindow.isMinimized() || mainWindow.isFullScreen()) return;
+    const state = {
+      isMaximized: mainWindow.isMaximized(),
+      bounds: normalizeWindowBounds(mainWindow.isMaximized() ? lastNormalBounds : mainWindow.getBounds())
+    };
+    try {
+      fs.mkdirSync(app.getPath('userData'), { recursive: true });
+      fs.writeFileSync(getWindowStatePath(), JSON.stringify(state, null, 2), 'utf8');
+    } catch {
+      // Window state is convenience data. Failing to save it must not block exit.
+    }
+  });
 }
 
 function getWritableDocumentsPath() {
