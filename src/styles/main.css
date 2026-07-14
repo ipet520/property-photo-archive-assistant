@@ -15162,20 +15162,6 @@ table tbody tr.selected td {
   margin-top: 10px;
 }
 
-.sort-workbench.unified-sort-workbench .sort-stage-actions-card {
-  margin-bottom: 0;
-}
-
-.sort-workbench.unified-sort-workbench .sort-stage-actions-card .sort-right-actions {
-  width: 100%;
-  margin: 0;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-}
-
-.sort-workbench.unified-sort-workbench .sort-stage-actions-card .sort-right-actions.recognition-mode {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .sort-workbench.unified-sort-workbench .sort-evidence-detail {
   display: grid;
   gap: 8px;
@@ -15187,16 +15173,787 @@ table tbody tr.selected td {
   gap: 6px;
 }
 
-.sort-workbench.unified-sort-workbench .sort-current-photo-actions {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.sort-workbench.unified-sort-workbench .sort-core-fields-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  width: 100%;
 }
 
-.sort-workbench.unified-sort-workbench .sort-current-photo-action-tip {
+.sort-workbench.unified-sort-workbench .sort-field-section {
+  display: grid;
+  gap: 7px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-field-section + .sort-field-section {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed #d8e6f5;
+}
+
+.sort-workbench.unified-sort-workbench .sort-field-section h4 {
   margin: 0;
-  padding: 8px 10px;
+  color: #143f6d;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.sort-workbench.unified-sort-workbench .sort-core-fields-grid .field,
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid .field {
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-core-fields-grid input,
+.sort-workbench.unified-sort-workbench .sort-core-fields-grid select,
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid input,
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-optional-fields-section h4,
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid .field span {
+  color: #5e7695;
+}
+
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 9px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid .field.wide,
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid .field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-optional-fields-grid textarea {
+  width: 100%;
+  min-height: 56px;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-correction-tip {
+  margin: 0 0 8px;
+  padding: 7px 9px;
   border: 1px solid #d8e6f5;
   border-radius: 8px;
   background: #f6faff;
   color: #31567f;
   font-size: 13px;
+  line-height: 1.45;
+}
+
+.sort-workbench.unified-sort-workbench .sort-correction-tip.warning {
+  border-color: #f6d79b;
+  background: #fff8eb;
+  color: #8a5a0a;
+}
+
+.sort-workbench.unified-sort-workbench .sort-correction-tip.success {
+  border-color: #b8e3c7;
+  background: #f0fbf4;
+  color: #1f6b3b;
+}
+
+/* V3.0.1: make batch preparation choices and archive execution visibly distinct. */
+.sort-workbench.unified-sort-workbench {
+  grid-template-rows: auto minmax(0, 1fr) 72px;
+}
+
+.sort-bottom-bar.sort-batch-action-bar {
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+  min-height: 72px;
+  max-height: 72px;
+  padding: 7px 10px;
+  border-color: #cbd9e8;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.sort-batch-action-bar .sort-bottom-status {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 6px;
+  min-width: 0;
+  padding-right: 10px;
+}
+
+.sort-batch-action-bar .sort-bottom-status span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 26px;
+  border: 1px solid #d7e1ec;
+  border-radius: 6px;
+  padding: 3px 8px;
+  color: #40566f;
+  background: #fff;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.sort-batch-action-bar .sort-bottom-status small {
+  min-width: 0;
+  overflow: hidden;
+  color: #63778d;
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+}
+
+.sort-batch-action-bar .sort-bottom-status strong {
+  flex: 0 0 auto;
+  color: #173f68;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.sort-bottom-feedback {
+  display: grid;
+  grid-template-rows: 25px minmax(0, 1fr);
+  min-width: 0;
+  border-left: 1px solid #d5e0eb;
+  padding-left: 12px;
+  text-align: left;
+}
+
+.sort-bottom-feedback-main {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.sort-bottom-feedback-main > span,
+.sort-bottom-feedback-detail span {
+  color: #738398;
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-bottom-feedback .sort-bottom-message,
+.sort-bottom-feedback-detail strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-bottom-feedback .sort-bottom-message {
+  justify-self: start;
+  width: 100%;
+  font-size: 12px;
+  font-weight: 750;
+  text-align: left;
+}
+
+.sort-bottom-feedback-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.05fr) minmax(0, 1.45fr);
+  align-items: stretch;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.sort-bottom-feedback-detail > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.sort-bottom-feedback-detail > div:first-child {
+  padding-left: 0;
+}
+
+.sort-bottom-feedback-detail > div + div {
+  border-left: 1px solid #d5e0eb;
+}
+
+.sort-bottom-feedback-detail strong {
+  color: #536b84;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.sort-batch-action-bar .sort-bottom-actions,
+.sort-batch-action-bar .sort-bottom-action-group {
+  min-width: 0;
+}
+
+.sort-batch-action-bar .sort-bottom-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  justify-self: end;
+}
+
+.sort-batch-action-bar .sort-bottom-action-group {
+  display: grid;
+  grid-template-rows: 16px 38px;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.sort-batch-action-bar .sort-bottom-action-group > span {
+  color: #66788c;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-batch-action-bar .sort-bottom-action-group.batch {
+  margin-left: 0;
+  border-left: 1px solid #cbd9e8;
+  padding-left: 12px;
+}
+
+.sort-batch-action-bar .sort-bottom-action-buttons {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 132px;
+  min-height: 38px;
+  height: 38px;
+  border-radius: 7px;
+  padding: 5px 10px;
+  border-color: #b8c9da;
+  color: #17385d;
+  background: #fff;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button > b {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  padding: 0 5px;
+  background: rgba(23, 63, 104, 0.09);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sort-batch-action-bar .sort-bottom-action-group.prepare .suggestion-action:not(:disabled) {
+  border-color: #9bbbd8;
+  color: #214d77;
+  background: #edf5fc;
+}
+
+.sort-batch-action-bar .sort-bottom-action-group.prepare .overwrite-action:not(:disabled) {
+  border-color: #d8b36f;
+  color: #7b4d08;
+  background: #fffaf0;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button.primary:not(:disabled) {
+  border-color: #173f68;
+  color: #fff;
+  background: #173f68;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button.primary:not(:disabled) > b,
+.sort-batch-action-bar .sort-bottom-actions button.orange:not(:disabled) > b {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sort-batch-action-bar .sort-bottom-actions button.orange:not(:disabled) {
+  border-color: #d97706;
+  color: #fff;
+  background: #d97706;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button:hover:not(:disabled) {
+  border-color: #4d83b5;
+  transform: none;
+}
+
+.sort-batch-action-bar .sort-bottom-actions button:disabled {
+  cursor: not-allowed;
+  border-color: #dce3ea;
+  color: #8794a3;
+  background: #eef1f4;
+  opacity: 1;
+}
+
+@media (max-width: 1400px) {
+  .sort-bottom-bar.sort-batch-action-bar {
+    grid-template-columns: auto minmax(80px, 1fr);
+    gap: 7px;
+    padding-inline: 8px;
+  }
+
+  .sort-batch-action-bar .sort-bottom-status span:nth-child(2) {
+    display: none;
+  }
+
+  .sort-batch-action-bar .sort-bottom-action-group > span {
+    display: none;
+  }
+
+  .sort-batch-action-bar .sort-bottom-actions button {
+    min-width: 124px;
+    padding-inline: 8px;
+  }
+}
+
+/* V3.0.1: keep the four batch actions fixed below the right-panel scroller. */
+.sort-workbench.unified-sort-workbench .sort-right-fixed-actions {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 5px;
+  width: calc(100% - 8px);
+  margin: 6px 4px 0;
+  border: 1px solid #cbd9e8;
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: #f8fafc;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-fixed-actions > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-fixed-actions > header strong {
+  color: #17385d;
+  font-size: 13px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-fixed-actions-title {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-fixed-actions-title span,
+.sort-workbench.unified-sort-workbench .sort-right-action-group > span {
+  color: #66788c;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-group-heading > span {
+  color: #66788c;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-undo-action {
+  min-width: 0;
+  min-height: 22px;
+  border: 1px solid #bfd0e0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  overflow: hidden;
+  color: #294d72;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-undo-action:hover:not(:disabled) {
+  border-color: #7fa7cb;
+  background: #f2f8fe;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-undo-action:disabled {
+  cursor: not-allowed;
+  border-color: #dce3ea;
+  color: #8794a3;
+  background: #eef1f4;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-group.archive {
+  border-top: 1px solid #d7e1ec;
+  padding-top: 7px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons.compact button {
+  min-height: 32px;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons.compact button > b {
+  min-width: 20px;
+  height: 20px;
+  padding-inline: 4px;
+  font-size: 10px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #b8c9da;
+  border-radius: 7px;
+  padding: 5px 8px;
+  color: #17385d;
+  background: #fff;
+  box-shadow: none;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons button > b {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  padding: 0 5px;
+  background: rgba(23, 63, 104, 0.09);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .suggestion-action:not(:disabled) {
+  border-color: #9bbbd8;
+  color: #214d77;
+  background: #edf5fc;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .apply-form-action:not(:disabled) {
+  border-color: #9bbbd8;
+  color: #214d77;
+  background: #edf5fc;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .overwrite-action:not(:disabled) {
+  border-color: #d8b36f;
+  color: #7b4d08;
+  background: #fffaf0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .primary:not(:disabled) {
+  border-color: #173f68;
+  color: #fff;
+  background: #173f68;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .cancel-preview-action:not(:disabled) {
+  border-color: #9fb2c6;
+  color: #294d72;
+  background: #fff;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .orange:not(:disabled) {
+  border-color: #d97706;
+  color: #fff;
+  background: #d97706;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .primary:not(:disabled) > b,
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons .orange:not(:disabled) > b {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons button:hover:not(:disabled) {
+  border-color: #4d83b5;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-action-buttons button:disabled {
+  cursor: not-allowed;
+  border-color: #dce3ea;
+  color: #8794a3;
+  background: #eef1f4;
+  opacity: 1;
+}
+
+@media (max-width: 1180px) {
+  .sort-bottom-bar.sort-batch-action-bar {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .sort-bottom-feedback {
+    display: grid;
+  }
+
+  .sort-batch-action-bar .sort-bottom-status span:nth-child(3) {
+    display: flex;
+  }
+
+  .sort-bottom-feedback-detail {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* V3.0.1: right workbench form hierarchy and photo preview. */
+.sort-workbench.unified-sort-workbench .sort-current-photo-card .sort-current-preview {
+  width: 100%;
+  height: auto;
+  min-height: 180px;
+  max-height: 220px;
+  aspect-ratio: 16 / 9;
+  border-color: #cad8e6;
+  border-radius: 8px;
+  background: #eef2f6;
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-preview-media {
+  position: relative;
+  display: block;
+  flex: 0 1 auto;
+  width: auto;
+  max-width: 100%;
+  height: 100%;
+  min-width: 0;
+  aspect-ratio: var(--photo-aspect, 1 / 1);
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-photo-card .sort-current-preview-media img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #eef2f6;
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-preview-nav {
+  inset: 0;
+  top: 0;
+  transform: none;
+  padding: 0 8px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-preview-nav-btn {
+  width: 32px;
+  min-width: 32px;
+  height: 46px;
+  min-height: 46px;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 8px;
+  padding: 0;
+  color: #123a63;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(5px);
+  opacity: 0.78;
+  transition: opacity 140ms ease, background-color 140ms ease, border-color 140ms ease;
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-preview:hover .sort-current-preview-nav-btn:not(:disabled),
+.sort-workbench.unified-sort-workbench .sort-current-preview-nav-btn:focus-visible {
+  border-color: rgba(255, 255, 255, 0.96);
+  background: rgba(255, 255, 255, 0.92);
+  opacity: 1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-current-preview-nav-btn:disabled {
+  border-color: rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.62);
+  box-shadow: none;
+  opacity: 0.24;
+}
+
+.sort-workbench.unified-sort-workbench .sort-required-fields-section,
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-section {
+  border-left: 3px solid transparent;
+  padding-left: 9px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-required-fields-section {
+  border-left-color: #d97706;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-section {
+  border-left-color: #9db8d3;
+}
+
+.sort-workbench.unified-sort-workbench .sort-required-fields-section h4 {
+  color: #8a4f0a;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-section h4,
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid .field span {
+  color: #5e7695;
+}
+
+.sort-workbench.unified-sort-workbench .sort-core-fields-grid .field.wide {
+  grid-column: 1 / -1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 9px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid .field {
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid .field.wide,
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid .field:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid input,
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-suggested-fields-grid textarea {
+  width: 100%;
+  min-height: 56px;
+  box-sizing: border-box;
+}
+
+/* V3.0.1: smart-sort progress inside the right workbench. */
+.sort-workbench.unified-sort-workbench .sort-right-progress {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 7px;
+  width: calc(100% - 8px);
+  margin: 0 4px 8px;
+  border: 1px solid #c9d9e8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #f5f9fd;
+  box-sizing: border-box;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress strong,
+.sort-workbench.unified-sort-workbench .sort-right-progress header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress strong {
+  color: #173f68;
+  font-size: 13px;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress header span {
+  color: #5e7695;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress-track {
+  position: relative;
+  width: 100%;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #dfe8f1;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress-track > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #1f67a8;
+  transition: width 180ms ease;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress.grouping {
+  border-color: #ead0a5;
+  background: #fff9ef;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress.grouping strong {
+  color: #8a5200;
+}
+
+.sort-workbench.unified-sort-workbench .sort-right-progress.grouping .sort-right-progress-track > span {
+  background: #d97706;
+  animation: sort-smart-progress-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes sort-smart-progress-pulse {
+  from { opacity: 0.68; }
+  to { opacity: 1; }
 }
