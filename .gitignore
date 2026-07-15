@@ -19,5 +19,12 @@ tools/rapidocr-runner/.venv/
 tools/rapidocr-runner/build/
 tools/rapidocr-runner/dist/
 tools/rapidocr-runner/*.spec
+vendor/ocr/rapidocr/rapidocr-runner.exe
+vendor/ocr/rapidocr/rapidocr-runner-backup.exe
+vendor/ocr/rapidocr/_internal/
+build/
+ocr-out.json
+ocr-log.txt
+rapidocr-runner.spec
 __pycache__/
 *.pyc
