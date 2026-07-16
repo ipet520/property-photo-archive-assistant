@@ -262,7 +262,8 @@ export default function RectificationCenterPage({ archiveState, navigationReques
     const selected = await window.archiveAssistant.selectArchiveRoot();
     if (selected) {
       setLedgerArchiveRoot(selected);
-      await window.archiveAssistant.updateLastArchiveRoot(selected);
+      const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
+      archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
     }
   }
 
@@ -301,12 +302,12 @@ export default function RectificationCenterPage({ archiveState, navigationReques
     setForm({
       ...defaultForm,
       project: first.project || '',
-      responsibleDepartment: first.department || '',
+      responsibleDepartment: '',
       watermarkCategory: first.watermarkCategory || '',
       workContent: first.workContent || '',
       location: first.location || '',
       title: first.workContent ? `${first.workContent}整改` : '现场问题整改',
-      description: first.remark || first.itemName || '',
+      description: first.remark || '',
       requirement: '请责任部门核实现问题并按要求完成整改。',
       keywords: first.keywords || '',
       photos: {
@@ -509,7 +510,7 @@ function RectificationForm({ form, setForm, configOptions, workContentOptions, o
       <div className="rectification-form-grid">
         <FormSelect label="项目 *" value={form.project} onChange={(value) => update('project', value)} options={configOptions.projects} />
         <FormSelect label="责任部门 *" value={form.responsibleDepartment} onChange={(value) => update('responsibleDepartment', value)} options={configOptions.departments} />
-        <FormSelect label="水印分类" value={form.watermarkCategory} onChange={updateCategory} options={configOptions.watermarkCategories} />
+        <FormSelect label="归档分类" value={form.watermarkCategory} onChange={updateCategory} options={configOptions.watermarkCategories} />
         <FormSelect label="工作内容" value={form.workContent} onChange={(value) => update('workContent', value)} options={workContentOptions} />
         <FormInput label="问题位置 / 区域 *" value={form.location} onChange={(value) => update('location', value)} />
         <FormInput label="截止日期 *" type="date" value={form.deadline} onChange={(value) => update('deadline', value)} />
@@ -785,7 +786,6 @@ function matchesLedgerFilters(record, filters) {
   if (keyword) {
     const haystack = [
       record.project,
-      record.department,
       record.watermarkCategory,
       record.workContent,
       record.location,

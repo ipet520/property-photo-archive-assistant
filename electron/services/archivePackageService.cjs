@@ -6,14 +6,9 @@ const CATALOG_HEADERS = [
   ['index', '序号'],
   ['date', '日期'],
   ['project', '项目'],
-  ['department', '部门'],
-  ['photoSource', '照片来源'],
-  ['watermarkCategory', '水印分类'],
+  ['watermarkCategory', '归档分类'],
   ['workContent', '工作内容'],
   ['location', '位置 / 区域'],
-  ['itemName', '事项名称'],
-  ['photoStage', '照片阶段'],
-  ['processStatus', '处理状态'],
   ['keywords', '关键词'],
   ['remark', '备注'],
   ['originalName', '原文件名'],
@@ -178,10 +173,10 @@ function getGroupSegments(record, rule) {
 
 function getGroupingRuleLabel(rule) {
   const labels = {
-    'project/category/workContent': '项目 / 水印分类 / 工作内容',
-    'category/workContent': '水印分类 / 工作内容',
+    'project/category/workContent': '项目 / 归档分类 / 工作内容',
+    'category/workContent': '归档分类 / 工作内容',
     'project/workContent': '项目 / 工作内容',
-    'date/category': '日期 / 水印分类',
+    'date/category': '日期 / 归档分类',
     none: '不分组'
   };
   return labels[rule] || labels[DEFAULT_PACKAGE_OPTIONS.groupingRule];

@@ -129,7 +129,7 @@ async function exportSummaryWorkbook(filePath, payload = {}) {
   appendSheet(workbook, '汇总总览', payload.overviewRows || []);
   appendObjectSheet(workbook, '分类汇总', payload.categorySummary || []);
   appendObjectSheet(workbook, '项目汇总', payload.projectSummary || []);
-  appendObjectSheet(workbook, '部门汇总', payload.departmentSummary || []);
+  appendObjectSheet(workbook, '责任部门汇总', payload.departmentSummary || []);
   appendObjectSheet(workbook, '整改汇总', payload.rectificationSummary || []);
   appendObjectSheet(workbook, '照片明细', payload.photoDetails || []);
   appendObjectSheet(workbook, '整改明细', payload.rectificationDetails || []);

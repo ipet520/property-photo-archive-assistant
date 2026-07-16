@@ -112,11 +112,8 @@ async function inspectConfigStatus(configPaths) {
   let stats = {
     enabledProjects: 0,
     enabledDepartments: 0,
-    enabledPhotoSources: 0,
     enabledCategories: 0,
     enabledWorkItems: 0,
-    enabledPhotoStages: 0,
-    enabledProcessStatuses: 0,
     enabledKeywords: 0,
     enabledScenes: 0
   };
@@ -134,13 +131,10 @@ async function inspectConfigStatus(configPaths) {
     stats = {
       enabledProjects: countEnabled(editableConfigs.projects),
       enabledDepartments: countEnabled(editableConfigs.departments),
-      enabledPhotoSources: countEnabled(editableConfigs.photoSources),
       enabledCategories: countEnabled(editableConfigs.watermarkCategories),
       enabledWorkItems: editableConfigs.watermarkCategories.reduce((total, category) => total + countEnabled(category.items), 0),
-      enabledPhotoStages: countEnabled(editableConfigs.photoStages),
-      enabledProcessStatuses: countEnabled(editableConfigs.processStatuses),
       enabledKeywords: countEnabled(editableConfigs.keywords),
-      enabledScenes: countEnabled(editableConfigs.sceneExamples)
+      enabledScenes: 0
     };
   } catch (statsError) {
     error = statsError.message;
@@ -163,31 +157,38 @@ async function inspectDirectories({ settings, configPaths, appDataDir }) {
       key: 'defaultPhotoFolder',
       label: '默认照片导入目录',
       path: settings?.defaultPhotoFolder || settings?.lastPhotoFolder || '',
-      source: settings?.defaultPhotoFolder ? '默认目录' : '上次照片目录'
+      source: settings?.defaultPhotoFolder ? '默认目录' : '上次照片目录',
+      writeRequired: false
     },
     {
       key: 'defaultArchiveRoot',
       label: '默认归档根目录',
       path: settings?.defaultArchiveRoot || settings?.lastArchiveRoot || '',
-      source: settings?.defaultArchiveRoot ? '默认目录' : '上次归档目录'
+      source: settings?.defaultArchiveRoot ? '默认目录' : '上次归档目录',
+      writeRequired: true
     },
     {
       key: 'defaultArchivePackageRoot',
       label: '默认资料包导出目录',
       path: settings?.defaultArchivePackageRoot || '',
-      source: '系统设置'
+      source: '系统设置',
+      writeRequired: true
     },
     {
       key: 'sortDrafts',
       label: '分拣进度保存目录',
       path: path.join(appDataDir, 'sort-drafts'),
-      source: '本地草稿目录'
+      source: '本地草稿目录',
+      writeRequired: true,
+      lazyCreate: true
     },
     {
       key: 'configBackup',
       label: '设置备份目录',
       path: configPaths.backupDir,
-      source: '系统配置'
+      source: '系统配置',
+      writeRequired: true,
+      lazyCreate: true
     }
   ];
 
@@ -296,13 +297,15 @@ async function inspectSortProgressStatus(appDataDir) {
   const dirStatus = await inspectPath(draftsDir, 'directory');
   if (!dirStatus.exists) {
     return {
-      status: 'warning',
+      status: 'info',
       draftsDir,
+      directoryExists: false,
+      directoryReadable: false,
       count: 0,
       latestFile: '',
       latestTime: '',
       staleCount: 0,
-      message: '暂未发现本地分拣草稿目录。'
+      message: '尚未生成分拣草稿；首次保存或加载草稿时会自动创建目录。'
     };
   }
 
@@ -310,13 +313,15 @@ async function inspectSortProgressStatus(appDataDir) {
   const sorted = files.sort((a, b) => b.mtimeMs - a.mtimeMs);
   const staleBorder = Date.now() - 30 * 24 * 60 * 60 * 1000;
   return {
-    status: sorted.length > 0 ? 'normal' : 'warning',
+    status: sorted.length > 0 ? 'normal' : 'info',
     draftsDir,
+    directoryExists: true,
+    directoryReadable: dirStatus.readable,
     count: sorted.length,
     latestFile: sorted[0]?.name || '',
     latestTime: sorted[0] ? new Date(sorted[0].mtimeMs).toISOString() : '',
     staleCount: sorted.filter((file) => file.mtimeMs < staleBorder).length,
-    message: sorted.length > 0 ? `发现 ${sorted.length} 个分拣草稿文件。` : '未发现已保存的分拣草稿。'
+    message: sorted.length > 0 ? `发现 ${sorted.length} 个分拣草稿文件。` : '目录可用，尚未保存分拣草稿。'
   };
 }
 
@@ -327,20 +332,28 @@ async function inspectArchivePackageStatus(settings) {
     return {
       status: 'unset',
       root: '',
+      exists: false,
+      readable: false,
+      writable: false,
       packageCount: 0,
       latestPackage: '',
       latestTime: '',
       message: '未配置默认资料包导出目录。'
     };
   }
-  if (!rootStatus.exists) {
+  if (!rootStatus.exists || !rootStatus.readable || !rootStatus.writable) {
     return {
       status: 'warning',
       root,
+      exists: rootStatus.exists,
+      readable: rootStatus.readable,
+      writable: rootStatus.writable,
       packageCount: 0,
       latestPackage: '',
       latestTime: '',
-      message: '默认资料包导出目录不可用。'
+      message: !rootStatus.exists
+        ? '默认资料包导出目录不可用。'
+        : (!rootStatus.readable ? '默认资料包导出目录不可读取。' : '默认资料包导出目录不可写入。')
     };
   }
 
@@ -354,12 +367,15 @@ async function inspectArchivePackageStatus(settings) {
   }
   packages.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return {
-    status: packages.length > 0 ? 'normal' : 'warning',
+    status: 'normal',
     root,
+    exists: true,
+    readable: true,
+    writable: true,
     packageCount: packages.length,
     latestPackage: packages[0]?.name || '',
     latestTime: packages[0] ? new Date(packages[0].mtimeMs).toISOString() : '',
-    message: packages.length > 0 ? `发现 ${packages.length} 个疑似资料包目录。` : '该目录下暂未发现资料包结构。'
+    message: packages.length > 0 ? `发现 ${packages.length} 个疑似资料包目录。` : '目录可用，尚未生成资料包。'
   };
 }
 
@@ -419,50 +435,60 @@ function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatu
     suggestions.push({
       level: 'warning',
       title: '配置文件需要检查',
-      text: '建议进入系统设置，核对基础数据或使用设置备份恢复。'
+      text: '建议进入系统设置核对基础数据；如需恢复，可在“设置备份与导入”中导入此前导出的设置 JSON。',
+      action: 'settings-base-data'
     });
   }
   if (!settings?.defaultArchiveRoot) {
     suggestions.push({
       level: 'warning',
       title: '未配置默认归档根目录',
-      text: '建议在系统设置中配置默认归档根目录，便于归档记录查询和资料包导出使用。'
+      text: '建议在系统设置中配置默认归档根目录，便于归档记录查询和资料包导出使用。',
+      action: 'settings-default-archive'
     });
   }
   const invalidDirectories = directoryStatus.items.filter((item) => item.status === 'error');
   invalidDirectories.forEach((item) => {
-    suggestions.push({
-      level: 'warning',
-      title: `${item.label}不可用`,
-      text: '建议到系统设置中重新选择可访问的目录。'
-    });
+    suggestions.push(buildDirectorySuggestion(item));
   });
-  if (ledgerStatus.status === 'warning' && ledgerStatus.total === 0) {
+  const archiveDirectory = directoryStatus.items.find((item) => item.key === 'defaultArchiveRoot');
+  if (archiveDirectory?.status === 'normal' && ledgerStatus.status === 'warning' && ledgerStatus.total === 0) {
     suggestions.push({
       level: 'info',
       title: '未发现归档台账',
-      text: '当前归档根目录下未发现照片归档台账。请先完成一次归档，或检查默认归档根目录是否正确。'
+      text: '当前归档根目录下未发现照片归档台账。请先完成一次归档，或检查默认归档根目录是否正确。',
+      action: 'ledger'
     });
   }
   if (ledgerStatus.missingCount > 0) {
     suggestions.push({
       level: 'warning',
       title: '台账中存在文件缺失记录',
-      text: `当前台账有 ${ledgerStatus.missingCount} 条文件缺失记录，可能是归档照片被移动或目录发生变化。建议先核对路径，不建议直接删除台账记录。`
+      text: `当前台账有 ${ledgerStatus.missingCount} 条文件缺失记录，可能是归档照片被移动或目录发生变化。建议先核对路径，不建议直接删除台账记录。`,
+      action: 'missing-files'
     });
   }
   if (sortProgressStatus.staleCount > 0) {
     suggestions.push({
       level: 'info',
       title: '存在较早的分拣草稿',
-      text: `发现 ${sortProgressStatus.staleCount} 个超过 30 天未更新的草稿。本版仅提示，不提供自动清理。`
+      text: `发现 ${sortProgressStatus.staleCount} 个超过 30 天未更新的草稿。本版仅提示，不提供自动清理。`,
+      action: 'sort-workspace'
     });
   }
-  if (packageStatus.status !== 'normal') {
+  if (packageStatus.status === 'unset') {
     suggestions.push({
       level: 'info',
-      title: '资料包导出目录需要确认',
-      text: '如需长期导出资料包，建议在系统设置中配置默认资料包导出目录。'
+      title: '资料包导出目录未配置（可选）',
+      text: '仅在需要生成资料包时配置；不影响照片扫描、智拣、预览和归档。',
+      action: 'settings-package'
+    });
+  } else if (packageStatus.status === 'warning' || packageStatus.status === 'error') {
+    suggestions.push({
+      level: 'warning',
+      title: '资料包导出目录不可用',
+      text: packageStatus.message || '建议在系统设置中重新选择可读写的资料包导出目录。',
+      action: 'settings-package'
     });
   }
   if (suggestions.length === 0) {
@@ -473,6 +499,29 @@ function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatu
     });
   }
   return suggestions;
+}
+
+function buildDirectorySuggestion(item) {
+  const actionMap = {
+    defaultPhotoFolder: 'settings-default-photo',
+    defaultArchiveRoot: 'settings-default-archive',
+    defaultArchivePackageRoot: 'settings-package',
+    sortDrafts: 'sort-workspace',
+    configBackup: 'settings-backup'
+  };
+  const reason = !item.exists
+    ? '目录不存在'
+    : (!item.readable ? '目录不可读取' : '目录不可写入');
+  const textMap = {
+    sortDrafts: `本地分拣草稿目录${reason}，请打开分拣工作台重新保存一次草稿；如仍失败，请检查目录权限。`,
+    configBackup: `设置备份目录${reason}，请进入系统设置重新生成一次备份；如仍失败，请检查目录权限。`
+  };
+  return {
+    level: 'warning',
+    title: `${item.label}${reason === '目录不可写入' ? '不可写入' : '不可用'}`,
+    text: textMap[item.key] || `当前${item.label}${reason}，建议到系统设置中重新选择可访问的目录。`,
+    action: actionMap[item.key] || 'settings-default-paths'
+  };
 }
 
 async function inspectPath(targetPath, type) {
@@ -516,17 +565,20 @@ async function canAccess(targetPath, mode) {
 
 function getDirectoryHealth(directory, status) {
   if (!directory.path) return 'unset';
+  if (directory.lazyCreate && !status.exists) return 'info';
   if (!status.exists || !status.readable) {
     return 'error';
   }
+  if (directory.writeRequired && !status.writable) return 'error';
   return 'normal';
 }
 
 function getDirectoryMessage(directory, status) {
   if (!directory.path) return '未配置';
+  if (directory.lazyCreate && !status.exists) return '尚未生成，首次使用时自动创建';
   if (!status.exists) return '目录不可用';
   if (!status.readable) return '目录不可读取';
-  if (!status.writable) return '可读取，但写入权限需要确认';
+  if (directory.writeRequired && !status.writable) return '目录可读取，但不可写入';
   return '目录可访问';
 }
 

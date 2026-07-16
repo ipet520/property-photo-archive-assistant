@@ -1,19 +1,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const XLSX = require('xlsx');
-const { getLedgerPath } = require('./excelService.cjs');
+const { getLedgerPath, normalizeExistingLedgerRows } = require('./excelService.cjs');
 
 const FIELD_ALIASES = {
   date: ['日期', '归档日期', '拍摄日期', '时间'],
   project: ['项目', '项目名称'],
-  department: ['部门'],
-  photoSource: ['照片来源', '来源'],
-  watermarkCategory: ['水印分类', '分类'],
+  watermarkCategory: ['归档分类', '水印分类', '分类'],
   workContent: ['工作内容', '标准工作项'],
   location: ['位置/区域', '具体位置', '位置', '区域'],
-  itemName: ['事项名称', '工作事项', '事项'],
-  photoStage: ['照片阶段', '阶段'],
-  processStatus: ['处理状态', '状态'],
   newFileName: ['新文件名', '归档文件名', '文件名'],
   originalName: ['原文件名', '原始文件名'],
   keywords: ['关键词', '关键字'],
@@ -26,14 +21,9 @@ const FIELD_ALIASES = {
 const EXPORT_HEADERS = [
   ['date', '日期'],
   ['project', '项目'],
-  ['department', '部门'],
-  ['photoSource', '照片来源'],
-  ['watermarkCategory', '水印分类'],
+  ['watermarkCategory', '归档分类'],
   ['workContent', '工作内容'],
   ['location', '位置/区域'],
-  ['itemName', '事项名称'],
-  ['photoStage', '照片阶段'],
-  ['processStatus', '处理状态'],
   ['keywords', '关键词'],
   ['remark', '备注'],
   ['originalName', '原文件名'],
@@ -82,9 +72,10 @@ async function loadLedgerRecords(archiveRoot) {
 }
 
 function normalizeLedgerRow(row, index, archiveRoot) {
+  const sourceRow = repairCurrentRowUnderLegacyHeaders(row);
   const record = {};
   Object.entries(FIELD_ALIASES).forEach(([field, aliases]) => {
-    record[field] = pickField(row, aliases);
+    record[field] = pickField(sourceRow, aliases);
   });
 
   const archivePath = record.archivePath || inferArchivePath(archiveRoot, record.newFileName);
@@ -100,6 +91,28 @@ function normalizeLedgerRow(row, index, archiveRoot) {
     fileStatus: archivePath ? (fileExists ? '文件存在' : '文件缺失') : '文件缺失',
     previewUrl: fileExists ? `local-photo://image/${encodeURIComponent(archivePath)}` : ''
   };
+}
+
+function repairCurrentRowUnderLegacyHeaders(row = {}) {
+  if (String(row['归档路径'] || '').trim() || !looksLikeArchivePath(row['处理状态'])) return row;
+  return {
+    日期: row['日期'],
+    项目: row['项目'],
+    归档分类: row['部门'],
+    工作内容: row['照片来源'],
+    具体位置: row['水印分类'],
+    新文件名: row['工作内容'],
+    原文件名: row['具体位置'],
+    关键词: row['工作事项'],
+    备注: row['照片阶段'],
+    归档路径: row['处理状态'],
+    归档时间: row['新文件名']
+  };
+}
+
+function looksLikeArchivePath(value = '') {
+  const text = String(value || '').trim();
+  return path.isAbsolute(text) && SAFE_ARCHIVE_IMAGE_EXTENSIONS.has(path.extname(text).toLowerCase());
 }
 
 function pickField(row, aliases) {
@@ -156,10 +169,11 @@ async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
   const removedIndexes = new Set(selectedRecords.map((record) => record.rowNumber - 1));
-  const nextRows = rows.filter((_row, index) => !removedIndexes.has(index));
+  const nextRows = normalizeExistingLedgerRows(
+    rows.filter((_row, index) => !removedIndexes.has(index))
+  );
   const nextSheet = XLSX.utils.aoa_to_sheet(nextRows);
-  if (sheet['!cols']) nextSheet['!cols'] = sheet['!cols'];
-  if (sheet['!autofilter']) nextSheet['!autofilter'] = sheet['!autofilter'];
+  nextSheet['!cols'] = nextRows[0].map((header) => ({ wch: Math.max(String(header).length + 8, 16) }));
   workbook.Sheets[sheetName] = nextSheet;
 
   const temporaryPath = `${ledgerPath}.delete-${Date.now()}.tmp`;

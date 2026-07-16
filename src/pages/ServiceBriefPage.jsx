@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PAGE_KEYS } from '../constants/app.js';
 import { resolveProjectInfo } from '../utils/projectResolver.js';
 import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
@@ -19,7 +19,6 @@ const IMAGE_TEMPLATE = {
 const defaultFilters = {
   date: formatDateInput(new Date()),
   project: '',
-  department: '',
   watermarkCategory: '',
   workContent: '',
   keyword: ''
@@ -63,10 +62,14 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
 
   const options = useMemo(() => ({
     project: unique(records.map((record) => record.project || '未识别项目')),
-    department: unique(records.map((record) => record.department)),
     watermarkCategory: unique(records.map((record) => record.watermarkCategory)),
     workContent: unique(records.map((record) => record.workContent))
   }), [records]);
+  const archivedDateCounts = useMemo(() => records.reduce((counts, record) => {
+    const date = normalizeRecordDate(record);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(date)) counts.set(date, (counts.get(date) || 0) + 1);
+    return counts;
+  }, new Map()), [records]);
 
   const filteredRecords = useMemo(() => {
     try {
@@ -290,12 +293,11 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
       </section>
 
       <section className="service-brief-filterbar">
-        <label>日期<input type="date" value={filters.date} onChange={(event) => updateFilter('date', event.target.value)} /></label>
+        <ArchiveDatePicker value={filters.date} archivedDateCounts={archivedDateCounts} onChange={(date) => updateFilter('date', date)} />
         <label>项目<select value={filters.project} onChange={(event) => updateFilter('project', event.target.value)}><option value="">全部项目</option>{options.project.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-        <label>部门<select value={filters.department} onChange={(event) => updateFilter('department', event.target.value)}><option value="">全部部门</option>{options.department.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-        <label>水印分类<select value={filters.watermarkCategory} onChange={(event) => updateFilter('watermarkCategory', event.target.value)}><option value="">全部分类</option>{options.watermarkCategory.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+        <label>归档分类<select value={filters.watermarkCategory} onChange={(event) => updateFilter('watermarkCategory', event.target.value)}><option value="">全部分类</option>{options.watermarkCategory.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
         <label>工作内容<select value={filters.workContent} onChange={(event) => updateFilter('workContent', event.target.value)}><option value="">全部工作内容</option>{options.workContent.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-        <label className="service-brief-keyword">关键词<input type="search" value={filters.keyword} placeholder="搜索关键词、位置、事项名称" onChange={(event) => updateFilter('keyword', event.target.value)} /></label>
+        <label className="service-brief-keyword">关键词<input type="search" value={filters.keyword} placeholder="搜索关键词、位置、工作内容、备注" onChange={(event) => updateFilter('keyword', event.target.value)} /></label>
       </section>
 
       <section className="service-brief-statusbar">
@@ -349,7 +351,7 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
                       </span>
                     </label>
                     <div className="service-item-tags">
-                      {[item.project, item.department, item.watermarkCategory, item.workContent, item.processStatus, item.photoStage].filter(Boolean).slice(0, 6).map((tag) => <span key={tag}>{tag}</span>)}
+                      {[item.project, item.watermarkCategory, item.workContent].filter(Boolean).map((tag) => <span key={tag}>{tag}</span>)}
                     </div>
                     <button type="button" className="text-button" onClick={() => toggleExpanded(item.id)}>{expanded ? '收起照片' : '展开照片'}</button>
                     {expanded ? (
@@ -365,7 +367,7 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
                               </span>
                               <span className="service-photo-copy">
                                 <strong title={record.newFileName || record.originalName}>{record.newFileName || record.originalName || '未记录文件名'}</strong>
-                                <small>{[record.photoStage, record.processStatus, sanitizePublicLocation(record.location)].filter(Boolean).join(' · ') || '未填写阶段 / 状态 / 位置'}</small>
+                                <small>{[sanitizePublicLocation(record.location), record.keywords].filter(Boolean).join(' · ') || '未填写位置或关键词'}</small>
                               </span>
                             </label>
                           );
@@ -426,17 +428,121 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
   );
 }
 
+function ArchiveDatePicker({ value, archivedDateCounts, onChange }) {
+  const rootRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(() => getDateMonth(value));
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  function openCalendar() {
+    setVisibleMonth(getDateMonth(value));
+    setOpen((current) => !current);
+  }
+
+  function changeMonth(offset) {
+    setVisibleMonth((current) => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  }
+
+  function selectDate(date) {
+    onChange(formatDateInput(date));
+    setOpen(false);
+  }
+
+  const calendarDays = buildCalendarDays(visibleMonth);
+  const today = formatDateInput(new Date());
+  const monthTitle = `${visibleMonth.getFullYear()}年${visibleMonth.getMonth() + 1}月`;
+
+  return (
+    <div className={`service-brief-date-field ${open ? 'open' : ''}`} ref={rootRef}>
+      <span>日期</span>
+      <button type="button" className="service-brief-date-trigger" aria-haspopup="dialog" aria-expanded={open} onClick={openCalendar}>
+        <strong>{value || '选择日期'}</strong>
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open ? (
+        <div className="service-brief-calendar" role="dialog" aria-label="选择简报日期">
+          <header>
+            <button type="button" aria-label="上个月" title="上个月" onClick={() => changeMonth(-1)}>‹</button>
+            <strong>{monthTitle}</strong>
+            <button type="button" aria-label="下个月" title="下个月" onClick={() => changeMonth(1)}>›</button>
+          </header>
+          <div className="service-brief-calendar-weekdays" aria-hidden="true">
+            {['日', '一', '二', '三', '四', '五', '六'].map((day) => <span key={day}>{day}</span>)}
+          </div>
+          <div className="service-brief-calendar-days">
+            {calendarDays.map((date, index) => {
+              if (!date) return <span className="empty" key={`empty-${index}`} />;
+              const dateKey = formatDateInput(date);
+              const archiveCount = archivedDateCounts.get(dateKey) || 0;
+              const selected = dateKey === value;
+              return (
+                <button
+                  type="button"
+                  key={dateKey}
+                  className={`${selected ? 'selected ' : ''}${dateKey === today ? 'today' : ''}`.trim()}
+                  title={archiveCount ? `${dateKey}，有 ${archiveCount} 条归档照片记录` : `${dateKey}，暂无归档照片记录`}
+                  aria-label={archiveCount ? `${dateKey}，有归档记录` : dateKey}
+                  onClick={() => selectDate(date)}
+                >
+                  <span>{date.getDate()}</span>
+                  {archiveCount > 0 ? <i className="archive-date-dot" aria-hidden="true" /> : null}
+                </button>
+              );
+            })}
+          </div>
+          <footer>
+            <span><i className="archive-date-dot" aria-hidden="true" />有归档</span>
+            <button type="button" onClick={() => selectDate(new Date())}>今天</button>
+          </footer>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function getDateMonth(value) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), 1);
+  }
+  return new Date(Number(match[1]), Number(match[2]) - 1, 1);
+}
+
+function buildCalendarDays(month) {
+  const firstWeekday = new Date(month.getFullYear(), month.getMonth(), 1).getDay();
+  const dayCount = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = index - firstWeekday + 1;
+    return day > 0 && day <= dayCount ? new Date(month.getFullYear(), month.getMonth(), day) : null;
+  });
+}
+
 function matchesFilters(record, filters) {
   const recordDate = normalizeRecordDate(record);
   if (filters.date && recordDate !== filters.date) return false;
   const project = record.project || '未识别项目';
   if (filters.project && project !== filters.project) return false;
-  if (filters.department && record.department !== filters.department) return false;
   if (filters.watermarkCategory && record.watermarkCategory !== filters.watermarkCategory) return false;
   if (filters.workContent && record.workContent !== filters.workContent) return false;
   const keyword = normalizeText(filters.keyword);
   if (keyword) {
-    const haystack = normalizeText([record.keywords, record.location, record.itemName, record.workContent, record.watermarkCategory, record.remark, record.newFileName].join(' '));
+    const haystack = normalizeText([record.keywords, record.location, record.workContent, record.watermarkCategory, record.remark, record.newFileName].join(' '));
     if (!haystack.includes(keyword)) return false;
   }
   return true;
@@ -452,7 +558,6 @@ function summarizeServiceItems(records) {
       normalizeRecordDate(record),
       record.watermarkCategory || '',
       record.workContent || '',
-      record.itemName || '',
       record.location || ''
     ];
     const key = keyParts.map((value) => value || '-').join('|');
@@ -461,13 +566,9 @@ function summarizeServiceItems(records) {
         id: `item-${groups.size + 1}-${hashKey(key)}`,
         title,
         project,
-        department: record.department || '',
         watermarkCategory: record.watermarkCategory || '',
         workContent: record.workContent || '',
         location: sanitizePublicLocation(record.location || ''),
-        itemName: record.itemName || '',
-        photoStage: record.photoStage || '',
-        processStatus: record.processStatus || '',
         keywords: new Set(),
         records: []
       });
@@ -475,14 +576,11 @@ function summarizeServiceItems(records) {
     const item = groups.get(key);
     item.records.push(record);
     splitKeywords(record.keywords).forEach((keyword) => item.keywords.add(keyword));
-    if (!item.department && record.department) item.department = record.department;
-    if (!item.photoStage && record.photoStage) item.photoStage = record.photoStage;
-    if (!item.processStatus && record.processStatus) item.processStatus = record.processStatus;
   });
   return Array.from(groups.values()).map((item) => ({
     ...item,
     keywords: Array.from(item.keywords).join('、'),
-    subtitle: [item.location, item.watermarkCategory, item.workContent, item.processStatus].filter(Boolean).join(' · ') || '未分类服务事项'
+    subtitle: [item.location, item.watermarkCategory, item.workContent].filter(Boolean).join(' · ') || '未分类服务事项'
   }));
 }
 
@@ -610,15 +708,8 @@ function buildExportFolderName(items, filters) {
 }
 
 function buildItemSentence(item) {
-  const title = item.workContent || item.itemName || item.watermarkCategory || item.title;
+  const title = item.workContent || item.watermarkCategory || item.title;
   const location = item.location ? `在${item.location}` : '';
-  const status = item.processStatus;
-  if (status && /完成|已处理|已归档/.test(status)) {
-    return `工作人员${location}开展${title}相关服务，保障园区公共环境和日常秩序。`;
-  }
-  if (status) {
-    return `工作人员${location}开展${title}相关服务，事项已记录并持续跟进。`;
-  }
   return `工作人员${location}开展${title}相关服务，做好现场记录和后续维护。`;
 }
 
@@ -665,7 +756,7 @@ function getProjectTitle(items, filters) {
 }
 
 function getItemTitle(record) {
-  return record.itemName || record.workContent || record.watermarkCategory || '未分类服务事项';
+  return record.workContent || record.watermarkCategory || '未分类服务事项';
 }
 
 function normalizeRecordDate(record) {

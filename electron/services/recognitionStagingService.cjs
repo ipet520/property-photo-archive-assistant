@@ -8,6 +8,7 @@ const STAGE_STATUSES = new Set([
   'staged',
   'pending_review',
   'reviewed',
+  'superseded',
   'dismissed',
   'cleared',
   'expired'
@@ -92,7 +93,10 @@ async function updateStagedRecognitionStatus(userDataDir, id = '', stageStatus =
         ...item,
         stageStatus: normalizedStatus,
         updatedAt,
-        reviewedAt: ['reviewed', 'dismissed'].includes(normalizedStatus) ? updatedAt : item.reviewedAt,
+        reviewedAt: ['reviewed', 'dismissed'].includes(normalizedStatus)
+          ? updatedAt
+          : ['staged', 'pending_review'].includes(normalizedStatus) ? '' : item.reviewedAt,
+        supersededAt: normalizedStatus === 'superseded' ? updatedAt : item.supersededAt,
         clearedAt: normalizedStatus === 'cleared' ? updatedAt : item.clearedAt
       };
       return updatedResult;
@@ -164,12 +168,16 @@ function createRecognitionStagedResult(result = {}) {
     providerId: String(result.providerId || ''),
     providerKey: String(result.providerKey || result.providerId || ''),
     providerType: String(result.providerType || ''),
+    ocrEngine: String(result.engineResult?.ocrEngine || ''),
+    engineSource: String(result.engineResult?.source || ''),
+    componentVersion: String(result.engineResult?.componentVersion || ''),
+    durationMs: Number.isFinite(Number(result.engineResult?.durationMs)) ? Number(result.engineResult.durationMs) : null,
     recognitionStatus: String(result.status || 'pending'),
     stageStatus: 'staged',
     rawText: String(result.rawText || ''),
     parsedFields: clonePlainObject(result.parsedFields || result.fields || {}),
     proposedFields: clonePlainObject(result.proposedFields || {}),
-    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    confidence: normalizeNullableNumber(result.confidence),
     warnings: normalizeStringArray(result.warnings),
     errors: normalizeErrors(result.errors, result.errorCode, result.errorMessage),
     message: String(result.message || result.reason || ''),
@@ -177,6 +185,7 @@ function createRecognitionStagedResult(result = {}) {
     createdAt: now,
     updatedAt: now,
     reviewedAt: '',
+    supersededAt: '',
     clearedAt: '',
     schemaVersion: STAGING_SCHEMA_VERSION
   };
@@ -216,12 +225,16 @@ function normalizeStagedResult(result = {}) {
     providerId: String(result.providerId || ''),
     providerKey: String(result.providerKey || result.providerId || ''),
     providerType: String(result.providerType || ''),
+    ocrEngine: String(result.ocrEngine || ''),
+    engineSource: String(result.engineSource || ''),
+    componentVersion: String(result.componentVersion || ''),
+    durationMs: Number.isFinite(Number(result.durationMs)) ? Number(result.durationMs) : null,
     recognitionStatus: String(result.recognitionStatus || result.status || 'pending'),
     stageStatus: normalizeStageStatus(result.stageStatus),
     rawText: String(result.rawText || ''),
     parsedFields: clonePlainObject(result.parsedFields || {}),
     proposedFields: clonePlainObject(result.proposedFields || {}),
-    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    confidence: normalizeNullableNumber(result.confidence),
     warnings: normalizeStringArray(result.warnings),
     errors: normalizeErrors(result.errors),
     message: String(result.message || ''),
@@ -229,6 +242,7 @@ function normalizeStagedResult(result = {}) {
     createdAt,
     updatedAt,
     reviewedAt: String(result.reviewedAt || ''),
+    supersededAt: String(result.supersededAt || ''),
     clearedAt: String(result.clearedAt || ''),
     schemaVersion: STAGING_SCHEMA_VERSION
   };
@@ -251,6 +265,12 @@ function normalizeLimit(limit) {
   const value = Number(limit);
   if (!Number.isFinite(value) || value <= 0) return MAX_STAGED_RESULTS;
   return Math.min(Math.floor(value), MAX_STAGED_RESULTS);
+}
+
+function normalizeNullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function createStagedResultId(result = {}, createdAt = new Date().toISOString()) {

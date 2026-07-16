@@ -34,7 +34,7 @@ async function runCustomCloudOcr(imagePath, providerConfig = {}, options = {}) {
     const parsed = parseJson(raw);
     const textPath = String(providerConfig.extraOptions?.textPath || 'data.text');
     const text = extractByPath(parsed, textPath) || rawTextFallback(parsed);
-    if (!String(text || '').trim()) return createCloudResult(false, '', started, 'custom_ocr 返回中未解析到文本。', raw);
+    if (!String(text || '').trim()) return createCloudResult(true, '', started, null, raw);
     return createCloudResult(true, String(text).trim(), started, null, raw);
   } catch (error) {
     return createCloudResult(false, '', started, error.name === 'AbortError' ? 'custom_ocr 请求超时。' : (error.message || 'custom_ocr 请求失败。'));

@@ -27,11 +27,15 @@ export function parseWatermarkText(rawText = '', options = {}) {
     const labeledWorkContent = extractLabeledValue(cleanedText, ['工作内容', '事项', '事项名称']);
     const labeledRemark = extractLabeledValue(cleanedText, ['备注', '说明']);
     const labeledCategory = extractLabeledValue(cleanedText, ['水印分类', '分类']);
+    const projectName = extractLabeledValue(cleanedText, ['项目', '项目名称', '小区']);
     const workRule = extractWorkContent(cleanedText);
     const parsedFields = normalizeRecognitionFields({
       ...extractDateTime(cleanedText),
-      projectName: extractLabeledValue(cleanedText, ['项目', '项目名称', '小区']),
-      location: extractLabeledValue(cleanedText, ['地点', '地址', '位置']) || extractLocation(cleanedText),
+      projectName,
+      location: sanitizeLocationForProject(
+        extractLabeledValue(cleanedText, ['地点', '地址', '位置']) || extractLocation(cleanedText),
+        projectName
+      ),
       watermarkCategory: labeledCategory || workRule.watermarkCategory,
       workContent: labeledWorkContent || workRule.workContent,
       keywords: unique([...workRule.keywords, ...extractKeywords(cleanedText)]),
@@ -104,6 +108,16 @@ export function extractLocation(text = '') {
   const value = String(text || '');
   const locationPattern = /((?:\d+\s*[栋幢号#][^\s，,。；;]{0,12})|(?:\d+\s*单元[^\s，,。；;]{0,8})|(?:楼层|楼道|通道|车库|门岗|道路|绿化带|设备房|消防通道|公共区域|地下室|电梯厅)[^\s，,。；;]{0,12})/;
   return value.match(locationPattern)?.[1]?.trim() || null;
+}
+
+function sanitizeLocationForProject(location = '', project = '') {
+  const cleaned = String(location || '').trim();
+  const projectName = String(project || '').trim();
+  if (!cleaned) return null;
+  const withoutProject = projectName ? cleaned.replace(projectName, '') : cleaned;
+  return withoutProject
+    .replace(/^[\s·•,，、;；:：/\\|_-]+|[\s·•,，、;；:：/\\|_-]+$/g, '')
+    .trim() || null;
 }
 
 export function extractWorkContent(text = '') {

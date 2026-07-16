@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { PAGE_KEYS } from './constants/app.js';
 import RuntimeErrorBoundary from './components/RuntimeErrorBoundary.jsx';
 import AppLayout from './layout/AppLayout.jsx';
-import { useArchiveWorkspace } from './hooks/useArchiveWorkspace.js';
+import { useAppWorkspace } from './hooks/useAppWorkspace.js';
 import MainRouter from './pages/MainRouter.jsx';
 import { installGlobalRuntimeLoggers } from './utils/runtimeLogger.js';
 
 export default function App() {
-  const archiveState = useArchiveWorkspace();
+  const archiveState = useAppWorkspace();
   const [currentPage, setCurrentPage] = useState(PAGE_KEYS.dashboard);
   const [navigationRequest, setNavigationRequest] = useState({ page: PAGE_KEYS.dashboard, action: '', payload: null, nonce: 0 });
 

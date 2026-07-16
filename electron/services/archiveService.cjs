@@ -2,6 +2,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const dayjs = require('dayjs');
 const { appendLedgerRows } = require('./excelService.cjs');
+const { recordArchivedPhotoFingerprints } = require('./archiveFingerprintService.cjs');
 
 const ILLEGAL_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
 
@@ -9,26 +10,32 @@ async function buildArchivePreview(payload) {
   const { form, photos, archiveRoot } = payload;
   validatePreviewPayload(form, photos, archiveRoot);
 
-  return photos.map((photo, index) => {
+  const previewItems = [];
+  const reservedPaths = new Set();
+  for (let index = 0; index < photos.length; index += 1) {
+    const photo = photos[index];
     const item = mergePhotoOverrides(form, photo);
     const targetDirectory = buildTargetDirectory(archiveRoot, item);
     const newFileName = buildFileName(item, photo.extension, index + 1);
+    const targetPath = await resolveUniquePath(path.join(targetDirectory, newFileName), reservedPaths);
+    reservedPaths.add(normalizePathKey(targetPath));
 
-    return {
+    previewItems.push({
       id: photo.id,
       index: index + 1,
       sourcePath: photo.path || photo.sourcePath,
       originalName: photo.name || photo.originalName,
       previewUrl: photo.previewUrl,
       extension: photo.extension,
-      newFileName,
+      newFileName: path.basename(targetPath),
       targetDirectory,
-      targetPath: path.join(targetDirectory, newFileName),
+      targetPath,
       status: '待归档',
       error: '',
       ...item
-    };
-  });
+    });
+  }
+  return previewItems;
 }
 
 async function archivePhotos(archivePlan) {
@@ -67,13 +74,24 @@ async function archivePhotos(archivePlan) {
     }
   }
 
-  await appendLedgerRows(archivePlan.archiveRoot, results);
+  const successfulResults = results.filter((item) => item.status === '归档成功');
+  let fingerprintIndexWarning = '';
+  if (successfulResults.length > 0) {
+    await appendLedgerRows(archivePlan.archiveRoot, successfulResults);
+    try {
+      await recordArchivedPhotoFingerprints(archivePlan.archiveRoot, successfulResults);
+    } catch (error) {
+      fingerprintIndexWarning = `照片已归档，但内容指纹索引更新失败：${error.message}`;
+      console.warn(`[archive-fingerprint] ${fingerprintIndexWarning}`);
+    }
+  }
 
   return {
     success: results.every((item) => item.status === '归档成功'),
     total: results.length,
     successCount: results.filter((item) => item.status === '归档成功').length,
     failedCount: results.filter((item) => item.status === '归档失败').length,
+    fingerprintIndexWarning,
     items: results
   };
 }
@@ -82,27 +100,19 @@ function validatePreviewPayload(form, photos, archiveRoot) {
   if (!String(archiveRoot || '').trim()) throw new Error('请先选择归档根目录');
   if (!Array.isArray(photos) || photos.length === 0) throw new Error('请先扫描照片');
   if (!String(form?.project || '').trim()) throw new Error('请选择项目');
-  if (!String(form?.department || '').trim()) throw new Error('请选择部门');
-  if (!String(form?.photoSource || '').trim()) throw new Error('请选择照片来源');
-  if (!String(form?.watermarkCategory || '').trim()) throw new Error('请选择水印分类');
+  if (!String(form?.watermarkCategory || '').trim()) throw new Error('请选择归档分类');
   if (!String(form?.workContent || '').trim()) throw new Error('请选择工作内容');
   if (!String(form?.date || '').trim()) throw new Error('请选择日期');
-  if (!String(form?.photoStage || '').trim()) throw new Error('请选择照片阶段');
 }
 
 function mergePhotoOverrides(form, photo) {
   const item = {
     ...form,
-    photoSource: photo.photoSource || form.photoSource,
     project: photo.project || form.project,
-    department: photo.department || form.department,
     watermarkCategory: photo.watermarkCategory || form.watermarkCategory,
     workContent: photo.workContent || form.workContent,
-    workItem: photo.workItem ?? form.workItem,
     location: photo.location ?? form.location,
     date: photo.date || form.date,
-    processStatus: photo.processStatus || form.processStatus,
-    photoStage: photo.photoStage || form.photoStage,
     keywords: photo.keywords ?? form.keywords,
     remark: photo.remark ?? form.remark
   };
@@ -110,12 +120,9 @@ function mergePhotoOverrides(form, photo) {
 }
 
 function normalizeArchiveItem(item) {
-  const workContent = String(item.workContent || '').trim();
-  const workItem = String(item.workItem || '').trim() || workContent;
   const location = String(item.location || '').trim() || '现场';
   return {
     ...item,
-    workItem,
     location
   };
 }
@@ -127,26 +134,20 @@ function buildTargetDirectory(archiveRoot, item) {
     sanitizeSegment(item.project, 40),
     date.format('YYYY'),
     `${date.format('MM')}月`,
-    sanitizeSegment(item.department, 20),
     sanitizeSegment(item.watermarkCategory, 40),
     sanitizeSegment(item.workContent, 50),
-    sanitizeSegment(`${item.date}_${item.location}_${item.workItem}`, 90),
-    sanitizeSegment(item.photoStage, 30)
+    sanitizeSegment(`${item.date}_${item.location}`, 90)
   );
 }
 
 function buildFileName(item, extension, index) {
   const parts = [
     item.date,
-    item.project,
-    item.watermarkCategory,
     item.workContent,
     item.location,
-    item.workItem,
-    item.photoStage,
     String(index).padStart(3, '0')
   ];
-  const baseName = truncateFileName(parts.map((part) => sanitizeSegment(part, 45)).join('_'), 150);
+  const baseName = truncateFileName(parts.map((part) => sanitizeSegment(part, 45)).join('_'), 120);
   return `${baseName}${extension}`;
 }
 
@@ -159,17 +160,21 @@ function truncateFileName(value, maxLength) {
   return value.length > maxLength ? value.slice(0, maxLength).trim() : value;
 }
 
-async function resolveUniquePath(targetPath) {
+async function resolveUniquePath(targetPath, reservedPaths = new Set()) {
   const parsed = path.parse(targetPath);
   let candidate = targetPath;
   let counter = 1;
 
-  while (await exists(candidate)) {
+  while (reservedPaths.has(normalizePathKey(candidate)) || await exists(candidate)) {
     candidate = path.join(parsed.dir, `${parsed.name}_${String(counter).padStart(2, '0')}${parsed.ext}`);
     counter += 1;
   }
 
   return candidate;
+}
+
+function normalizePathKey(targetPath) {
+  return path.resolve(targetPath).toLowerCase();
 }
 
 async function exists(targetPath) {

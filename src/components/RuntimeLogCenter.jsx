@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const PAGE_OPTIONS = ['首页总览', '照片分拣工作台', '归档记录', '整改闭环中心', '资料汇总中心', '数据维护中心', '系统设置', '其它'];
-const TYPE_OPTIONS = ['界面显示', '文件目录', '扫描照片', '生成预览', '确认归档', '台账记录', '查询筛选', '删除记录', '打开文件', '数据异常', '配置读取', '配置保存', '资料包生成', '页面异常', 'IPC 调用失败', '其它'];
+const TYPE_OPTIONS = ['界面显示', '文件目录', '扫描照片', 'OCR 识别', '生成预览', '确认归档', '台账记录', '查询筛选', '删除记录', '打开文件', '数据异常', '配置读取', '配置保存', '资料包生成', '页面异常', 'IPC 调用失败', '其它'];
 const LEVEL_OPTIONS = [
   ['info', '信息'],
   ['warn', '警告'],

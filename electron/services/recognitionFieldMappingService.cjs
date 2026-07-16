@@ -28,10 +28,9 @@ const DEFAULT_FIELD_MAPPING_RULES = [
   createMappingRule('projectName', 'project', '项目', 'string'),
   createMappingRule('communityName', 'project', '项目', 'string'),
   createMappingRule('project', 'project', '项目', 'string'),
-  createMappingRule('department', 'department', '部门', 'string'),
-  createMappingRule('category', 'watermarkCategory', '水印分类', 'string'),
-  createMappingRule('workCategory', 'watermarkCategory', '水印分类', 'string'),
-  createMappingRule('watermarkCategory', 'watermarkCategory', '水印分类', 'string'),
+  createMappingRule('category', 'watermarkCategory', '归档分类', 'string'),
+  createMappingRule('workCategory', 'watermarkCategory', '归档分类', 'string'),
+  createMappingRule('watermarkCategory', 'watermarkCategory', '归档分类', 'string'),
   createMappingRule('workContent', 'workContent', '工作内容', 'string'),
   createMappingRule('location', 'location', '位置/区域', 'string'),
   createMappingRule('building', 'location', '位置/区域', 'string'),
@@ -42,11 +41,7 @@ const DEFAULT_FIELD_MAPPING_RULES = [
   createMappingRule('datetime', 'date', '日期', 'datetime'),
   createMappingRule('keywords', 'keywords', '关键词', 'array'),
   createMappingRule('remark', 'remark', '备注', 'string'),
-  createMappingRule('description', 'remark', '备注', 'string'),
-  createMappingRule('stage', 'photoStage', '照片阶段', 'string'),
-  createMappingRule('photoStage', 'photoStage', '照片阶段', 'string'),
-  createMappingRule('processStatus', 'processStatus', '处理状态', 'string'),
-  createMappingRule('itemName', 'itemName', '事项名称', 'string')
+  createMappingRule('description', 'remark', '备注', 'string')
 ];
 
 async function getRecognitionFieldMappingRules() {
@@ -75,7 +70,24 @@ async function buildCandidateFieldSetFromStagedResult(userDataDir, stagedResult 
 
 async function normalizeProposedFields(proposedFields = {}) {
   if (!isPlainObject(proposedFields)) return {};
-  return Object.fromEntries(Object.entries(proposedFields).map(([key, value]) => [normalizeKey(key), value]).filter(([key]) => Boolean(key)));
+  const normalized = Object.fromEntries(Object.entries(proposedFields).map(([key, value]) => [normalizeKey(key), value]).filter(([key]) => Boolean(key)));
+  const project = normalized.projectName || normalized.communityName || normalized.project || '';
+  if (Object.prototype.hasOwnProperty.call(normalized, 'location')) {
+    const location = sanitizeLocationForProject(normalized.location, project);
+    if (location) normalized.location = location;
+    else delete normalized.location;
+  }
+  return normalized;
+}
+
+function sanitizeLocationForProject(location = '', project = '') {
+  const cleaned = String(location || '').trim();
+  const projectName = String(project || '').trim();
+  if (!cleaned) return '';
+  const withoutProject = projectName ? cleaned.replace(projectName, '') : cleaned;
+  return withoutProject
+    .replace(/^[\s·•,，、;；:：/\\|_-]+|[\s·•,，、;；:：/\\|_-]+$/g, '')
+    .trim();
 }
 
 async function mapProposedFieldsToCandidates(input = {}) {
@@ -209,7 +221,7 @@ function createCandidateField({ stagedResult = {}, sourceFieldKey = '', value = 
     label: mappingRule?.label || sourceFieldKey,
     value,
     normalizedValue: normalized.value,
-    confidence: Number.isFinite(Number(stagedResult.confidence)) ? Number(stagedResult.confidence) : null,
+    confidence: normalizeNullableNumber(stagedResult.confidence),
     status: normalized.warning ? 'invalid' : 'pending_review',
     source: 'recognition_proposed_fields',
     reason: mappingRule ? '候选字段来自识别 proposedFields，需人工确认后才可应用。' : '未找到安全映射规则，当前不可应用。',
@@ -327,7 +339,7 @@ function normalizeCandidateField(field = {}) {
     label: String(field.label || field.sourceFieldKey || ''),
     value: cloneJsonValue(field.value),
     normalizedValue: cloneJsonValue(field.normalizedValue),
-    confidence: Number.isFinite(Number(field.confidence)) ? Number(field.confidence) : null,
+    confidence: normalizeNullableNumber(field.confidence),
     status: normalizeFieldStatus(field.status),
     source: 'recognition_proposed_fields',
     reason: String(field.reason || ''),
@@ -391,6 +403,12 @@ function normalizeLimit(limit) {
   const value = Number(limit);
   if (!Number.isFinite(value) || value <= 0) return MAX_CANDIDATE_FIELD_SETS;
   return Math.min(Math.floor(value), MAX_CANDIDATE_FIELD_SETS);
+}
+
+function normalizeNullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function normalizeKey(key = '') {

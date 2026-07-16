@@ -4,12 +4,8 @@ import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
   project: '',
-  department: '',
-  photoSource: '',
   watermarkCategory: '',
   workContent: '',
-  photoStage: '',
-  processStatus: '',
   startDate: '',
   endDate: '',
   keyword: '',
@@ -82,12 +78,8 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
 
   const options = useMemo(() => ({
     project: unique(records.map((record) => record.project)),
-    department: unique(records.map((record) => record.department)),
-    photoSource: unique(records.map((record) => record.photoSource)),
     watermarkCategory: unique(records.map((record) => record.watermarkCategory)),
-    workContent: unique(records.map((record) => record.workContent)),
-    photoStage: unique(records.map((record) => record.photoStage)),
-    processStatus: unique(records.map((record) => record.processStatus))
+    workContent: unique(records.map((record) => record.workContent))
   }), [records]);
 
   const filteredRecords = useMemo(() => {
@@ -127,7 +119,9 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     const selected = await window.archiveAssistant.selectArchiveRoot();
     if (!selected) return;
     setArchiveRoot(selected);
-    await window.archiveAssistant.updateLastArchiveRoot(selected);
+    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
+    setSystemSettings(nextSettings);
+    archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
     await loadLedger(selected);
   }
 
@@ -265,12 +259,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     const summary = [
       `日期：${record.date || '-'}`,
       `项目：${record.project || '-'}`,
-      `水印分类：${record.watermarkCategory || '-'}`,
+      `归档分类：${record.watermarkCategory || '-'}`,
       `工作内容：${record.workContent || '-'}`,
       `位置/区域：${record.location || '-'}`,
-      `照片阶段：${record.photoStage || '-'}`,
-      `处理状态：${record.processStatus || '-'}`,
       `关键词：${record.keywords || '-'}`,
+      `备注：${record.remark || '-'}`,
       `新文件名：${record.newFileName || '-'}`,
       `文件路径：${record.archivePath || '-'}`
     ].join('\n');
@@ -396,7 +389,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
             </header>
             <div className="archive-filter-grid common">
               <FilterSelect label="项目" value={filters.project} options={options.project} onChange={(value) => updateFilter('project', value)} />
-              <FilterSelect label="水印分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
+              <FilterSelect label="归档分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
               <FilterSelect label="工作内容" value={filters.workContent} options={options.workContent} onChange={(value) => updateFilter('workContent', value)} />
               <InputFilter label="开始日期" type="date" value={filters.startDate} onChange={(value) => updateFilter('startDate', value)} />
               <InputFilter label="结束日期" type="date" value={filters.endDate} onChange={(value) => updateFilter('endDate', value)} />
@@ -405,10 +398,6 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
             </div>
             {showMoreFilters && (
               <div className="archive-filter-grid more">
-                <FilterSelect label="部门" value={filters.department} options={options.department} onChange={(value) => updateFilter('department', value)} />
-                <FilterSelect label="照片来源" value={filters.photoSource} options={options.photoSource} onChange={(value) => updateFilter('photoSource', value)} />
-                <FilterSelect label="照片阶段" value={filters.photoStage} options={options.photoStage} onChange={(value) => updateFilter('photoStage', value)} />
-                <FilterSelect label="处理状态" value={filters.processStatus} options={options.processStatus} onChange={(value) => updateFilter('processStatus', value)} />
                 <FilterSelect label="文件状态" value={filters.fileStatus} options={['文件存在', '文件缺失']} onChange={(value) => updateFilter('fileStatus', value === '文件缺失' ? 'missing' : value === '文件存在' ? 'exists' : '')} displayValue={filters.fileStatus === 'missing' ? '文件缺失' : filters.fileStatus === 'exists' ? '文件存在' : ''} />
                 <InputFilter label="位置/区域" value={filters.location} onChange={(value) => updateFilter('location', value)} />
                 <InputFilter label="备注" value={filters.remark} onChange={(value) => updateFilter('remark', value)} />
@@ -439,12 +428,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
                   <th className="archive-check-column">选择</th>
                   <th><button type="button" onClick={() => setSortDirection((value) => value === 'desc' ? 'asc' : 'desc')}>日期 {sortDirection === 'desc' ? '↓' : '↑'}</button></th>
                   <th>项目</th>
-                  <th>水印分类</th>
+                  <th>归档分类</th>
                   <th>工作内容</th>
                   <th>位置/区域</th>
-                  <th>照片阶段</th>
-                  <th>处理状态</th>
                   <th>关键词</th>
+                  <th>备注</th>
                   <th>新文件名</th>
                   <th>文件状态</th>
                 </tr>
@@ -466,15 +454,14 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
                     <Cell value={record.watermarkCategory} />
                     <Cell value={record.workContent} />
                     <Cell value={record.location} />
-                    <Cell value={record.photoStage} />
-                    <Cell value={record.processStatus} />
                     <Cell value={record.keywords} />
+                    <Cell value={record.remark} />
                     <Cell value={record.newFileName} />
                     <td><span className={`archive-file-status ${record.fileExists ? 'exists' : 'missing'}`}>{record.fileStatus}</span></td>
                   </tr>
                 ))}
                 {pageRecords.length === 0 && (
-                  <tr><td colSpan="11" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
+                  <tr><td colSpan="10" className="archive-empty-cell">当前没有匹配的归档记录。</td></tr>
                 )}
               </tbody>
             </table>
@@ -561,14 +548,9 @@ function ArchiveRecordDetail({ record, onOpen, onShowFolder, onCopy, onCopySumma
           ['新文件名', record.newFileName],
           ['归档日期', record.date],
           ['项目', record.project],
-          ['部门', record.department],
-          ['照片来源', record.photoSource],
-          ['水印分类', record.watermarkCategory],
+          ['归档分类', record.watermarkCategory],
           ['工作内容', record.workContent],
           ['位置/区域', record.location],
-          ['事项名称', record.itemName],
-          ['照片阶段', record.photoStage],
-          ['处理状态', record.processStatus],
           ['关键词', record.keywords],
           ['备注', record.remark],
           ['归档文件路径', record.archivePath],
@@ -745,7 +727,7 @@ function Cell({ value }) {
 }
 
 function matchesFilters(record, filters) {
-  const exactKeys = ['project', 'department', 'photoSource', 'watermarkCategory', 'workContent', 'photoStage', 'processStatus'];
+  const exactKeys = ['project', 'watermarkCategory', 'workContent'];
   if (exactKeys.some((key) => filters[key] && record[key] !== filters[key])) return false;
   if (filters.startDate && String(record.date || '') < filters.startDate) return false;
   if (filters.endDate && String(record.date || '') > filters.endDate) return false;

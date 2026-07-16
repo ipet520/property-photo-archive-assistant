@@ -1,22 +1,33 @@
 import { useEffect, useRef, useState } from 'react';
-import { buildArchiveSuggestion, createEmptyArchiveSuggestion } from '../utils/archiveSuggestionRules.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
-const CONFIG_TABS = [
-  { key: 'projects', label: '项目管理', type: 'simple', defaultable: true },
-  { key: 'departments', label: '部门管理', type: 'simple', defaultable: true },
-  { key: 'photoSources', label: '照片来源', type: 'simple' },
-  { key: 'watermarkCategories', label: '水印分类与工作内容', type: 'watermark' },
-  { key: 'photoStages', label: '照片阶段', type: 'simple', defaultable: true },
-  { key: 'processStatuses', label: '处理状态', type: 'simple', defaultable: true },
-  { key: 'keywords', label: '关键词', type: 'keywords' },
-  { key: 'sceneExamples', label: '常见场景', type: 'scenes' }
+const CONFIG_GROUPS = [
+  {
+    label: '当前归档表单',
+    tabs: [
+      { key: 'watermarkCategories', label: '归档分类与工作内容', type: 'watermark' },
+      { key: 'keywords', label: '关键词', type: 'keywords' }
+    ]
+  },
+  {
+    label: '归档默认项',
+    tabs: [
+      { key: 'projects', label: '默认项目', type: 'simple', defaultable: true }
+    ]
+  },
+  {
+    label: '整改基础数据',
+    tabs: [
+      { key: 'departments', label: '责任部门', type: 'simple' }
+    ]
+  }
 ];
+const CONFIG_TABS = CONFIG_GROUPS.flatMap((group) => group.tabs);
 
 const CONFIG_LABELS = Object.fromEntries(CONFIG_TABS.map((tab) => [tab.key, tab.label]));
 
 export default function ConfigManager({ open, embedded = false, onClose, onSaved }) {
-  const [activeTab, setActiveTab] = useState('projects');
+  const [activeTab, setActiveTab] = useState('watermarkCategories');
   const [configs, setConfigs] = useState(null);
   const [paths, setPaths] = useState(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState('');
@@ -57,24 +68,6 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
   }
 
   async function saveAll() {
-    const invalidSceneName = configs?.sceneExamples?.find((scene) => !String(scene.title || scene.name || '').trim());
-    if (invalidSceneName) {
-      setActiveTab('sceneExamples');
-      setMessage({ type: 'error', text: '常见场景名称不能为空。' });
-      return;
-    }
-    const missingSceneCategory = configs?.sceneExamples?.find((scene) => !String(scene.watermarkCategory || '').trim());
-    if (missingSceneCategory) {
-      setActiveTab('sceneExamples');
-      setMessage({ type: 'error', text: '请选择水印分类。' });
-      return;
-    }
-    const missingSceneWorkContent = configs?.sceneExamples?.find((scene) => !String(scene.workContent || '').trim());
-    if (missingSceneWorkContent) {
-      setActiveTab('sceneExamples');
-      setMessage({ type: 'error', text: '请选择工作内容。' });
-      return;
-    }
     setIsSaving(true);
     try {
       const result = await window.archiveAssistant.saveAllUserConfigs(configs);
@@ -151,7 +144,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
           <div>
             <p className="eyebrow">基础数据管理</p>
             <h2>配置数据管理</h2>
-            <p>维护项目、部门、分类、关键词和常见场景。暂时不用的配置，建议停用而不是删除。</p>
+            <p>当前表单使用归档分类、工作内容和关键词；项目作为归档上下文，部门仅用于整改责任归属。</p>
           </div>
           <div className="config-header-actions">
             <button className="ghost" onClick={loadConfigs} disabled={isSaving}>重新加载</button>
@@ -164,15 +157,20 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
 
         <div className="config-layout">
           <nav className="config-nav">
-            {CONFIG_TABS.map((tab) => (
-              <button
-                type="button"
-                key={tab.key}
-                className={activeTab === tab.key ? 'active' : ''}
-                onClick={() => setActiveTab(tab.key)}
-              >
-                {tab.label}
-              </button>
+            {CONFIG_GROUPS.map((group) => (
+              <div className="config-nav-group" key={group.label}>
+                <span>{group.label}</span>
+                {group.tabs.map((tab) => (
+                  <button
+                    type="button"
+                    key={tab.key}
+                    className={activeTab === tab.key ? 'active' : ''}
+                    onClick={() => setActiveTab(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
 
@@ -195,13 +193,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
                 onSelectCategory={setSelectedCategoryId}
                 onChange={(items) => updateConfig('watermarkCategories', items)}
               />
-            ) : (
-              <SceneEditor
-                scenes={configs.sceneExamples}
-                configs={configs}
-                onChange={(items) => updateConfig('sceneExamples', items)}
-              />
-            )}
+            ) : null}
           </div>
         </div>
       </section>
@@ -218,7 +210,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
 
 function SimpleConfigEditor({ title, items, onChange, defaultable = false }) {
   const [focusItemId, setFocusItemId] = useState('');
-  const nameSize = title === '部门管理' || title === '照片阶段' || title === '处理状态' ? 'short' : 'medium';
+  const nameSize = title === '责任部门' ? 'short' : 'medium';
   function addItem() {
     const item = createTopItem(items, createSimpleItem(`新${title}`));
     setFocusItemId(item.id);
@@ -334,7 +326,7 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
   }
 
   function addCategory() {
-    const nextCategory = createTopItem(categories, createCategory('新水印分类'));
+    const nextCategory = createTopItem(categories, createCategory('新归档分类'));
     onChange([nextCategory, ...categories]);
     onSelectCategory(nextCategory.id);
     setFocusCategoryId(nextCategory.id);
@@ -362,11 +354,11 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
   }
 
   return (
-    <ConfigSection title="水印分类与工作内容" onAdd={addCategory}>
+    <ConfigSection title="归档分类与工作内容" onAdd={addCategory}>
       <div className="watermark-tree-editor">
         <aside className="category-side-list">
           <div className="category-side-title">
-            <strong>水印分类</strong>
+            <strong>归档分类</strong>
             <span>工作内容必须归属于某个分类</span>
           </div>
           {sortItems(categories).map((category) => (
@@ -384,7 +376,7 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
 
         <section className="category-detail-panel">
           {!selectedCategory ? (
-            <p className="muted">请先新增水印分类。</p>
+            <p className="muted">请先新增归档分类。</p>
           ) : (
             <>
               <div className="category-edit-card">
@@ -438,72 +430,6 @@ function WatermarkCategoryEditor({ categories, selectedCategoryId, onSelectCateg
   );
 }
 
-function SceneEditor({ scenes, configs, onChange }) {
-  const [focusSceneId, setFocusSceneId] = useState('');
-  const sceneRefs = useRef(new Map());
-  const autoSuggestionsRef = useRef(new Map());
-  const categories = configs.watermarkCategories.filter((item) => item.enabled !== false);
-  const categoryNames = categories.map((item) => item.name);
-  const currentCategory = (scene) => categories.find((item) => item.name === scene.watermarkCategory);
-
-  useEffect(() => {
-    if (!focusSceneId) return;
-    const card = sceneRefs.current.get(focusSceneId);
-    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    const input = card?.querySelector('input');
-    input?.focus();
-    input?.select();
-    setFocusSceneId('');
-  }, [focusSceneId, scenes]);
-
-  function addScene() {
-    const scene = createTopItem(scenes, createScene());
-    setFocusSceneId(scene.id);
-    onChange([scene, ...scenes]);
-  }
-
-  function updateSceneSelection(scene, selectionPatch) {
-    const nextScene = { ...scene, ...selectionPatch };
-    const suggestions = buildSceneSuggestions(nextScene.watermarkCategory, nextScene.workContent, configs);
-    const previousSuggestions = autoSuggestionsRef.current.get(scene.id)
-      || buildSceneSuggestions(scene.watermarkCategory, scene.workContent, configs);
-    const suggestionPatch = {};
-    Object.entries(suggestions).forEach(([key, value]) => {
-      const currentValue = sceneValue(scene, key);
-      const previousValue = previousSuggestions[key];
-      if (isEmptySceneValue(currentValue) || sameSceneValue(currentValue, previousValue)) suggestionPatch[key] = value;
-    });
-    autoSuggestionsRef.current.set(scene.id, suggestions);
-    updateScene(scenes, scene.id, normalizeSceneSuggestionPatch({ ...selectionPatch, ...suggestionPatch }), onChange);
-  }
-
-  return (
-    <ConfigSection title="常见场景" onAdd={addScene}>
-      <div className="scene-config-list">
-        {sortItems(scenes).map((scene, index) => (
-          <article className="scene-config-card" key={scene.id} ref={(node) => node ? sceneRefs.current.set(scene.id, node) : sceneRefs.current.delete(scene.id)}>
-            <div className="config-row-actions">
-              <strong>场景 {index + 1}</strong>
-              <RowActions items={scenes} item={scene} onChange={onChange} />
-            </div>
-            <div className="config-form-grid">
-              <Field label="名称" value={scene.title} onChange={(title) => updateScene(scenes, scene.id, { title, name: title }, onChange)} />
-              <SelectField label="水印分类" value={scene.watermarkCategory} options={categoryNames} placeholder="请选择水印分类" onChange={(watermarkCategory) => updateSceneSelection(scene, { watermarkCategory, workContent: '' })} />
-              <SelectField label="工作内容" value={scene.workContent} options={(currentCategory(scene)?.items || []).map((item) => item.name)} placeholder="请选择工作内容" disabled={!scene.watermarkCategory} onChange={(workContent) => updateSceneSelection(scene, { workContent })} />
-              <Field label="事项名称建议" value={scene.itemName} onChange={(itemName) => updateScene(scenes, scene.id, { itemName, workItemSuggestion: itemName }, onChange)} />
-              <Field label="位置/区域提示" value={scene.locationPlaceholder} onChange={(locationPlaceholder) => updateScene(scenes, scene.id, { locationPlaceholder }, onChange)} />
-              <SelectField label="处理状态建议" value={scene.processStatus || scene.processStatusSuggestion} options={configs.processStatuses.map((item) => item.name)} placeholder="请选择处理状态" onChange={(processStatus) => updateScene(scenes, scene.id, { processStatus, processStatusSuggestion: processStatus }, onChange)} />
-              <SelectField label="照片阶段建议" value={scene.photoStage || scene.photoStageSuggestion} options={configs.photoStages.map((item) => item.name)} placeholder="请选择照片阶段" onChange={(photoStage) => updateScene(scenes, scene.id, { photoStage, photoStageSuggestion: photoStage }, onChange)} />
-              <Field label="推荐关键词" value={(scene.keywords || []).join('、')} onChange={(value) => updateScene(scenes, scene.id, { keywords: splitKeywords(value) }, onChange)} />
-              <Field label="备注模板" value={scene.remarkTemplate} onChange={(remarkTemplate) => updateScene(scenes, scene.id, { remarkTemplate }, onChange)} wide />
-            </div>
-          </article>
-        ))}
-      </div>
-    </ConfigSection>
-  );
-}
-
 function ConfigSection({ title, onAdd, children }) {
   return (
     <section className="config-section">
@@ -511,7 +437,6 @@ function ConfigSection({ title, onAdd, children }) {
         <div>
           <h3>{title}</h3>
           <p className="muted">名称不能为空，同类名称不能重复；排序数字越小越靠前。</p>
-          {title === '常见场景' && <p className="muted">事项名称建议可为空；位置/区域提示只用于提醒，不会自动填入位置。</p>}
         </div>
         <button onClick={onAdd}>新增</button>
       </div>
@@ -631,60 +556,12 @@ function Field({ label, value, onChange, wide = false, inputRef }) {
   );
 }
 
-function SelectField({ label, value, options, onChange, placeholder = '', disabled = false }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      <select value={value || ''} disabled={disabled} onChange={(event) => onChange(event.target.value)}>
-        {placeholder && <option value="">{placeholder}</option>}
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
-      </select>
-    </label>
-  );
-}
-
-function updateScene(scenes, id, patch, onChange) {
-  onChange(scenes.map((scene) => scene.id === id ? { ...scene, ...patch } : scene));
-}
-
 function createTopItem(items, item) {
   return { ...item, sort: getTopSort(items) - 1 };
 }
 
 function getTopSort(items) {
   return Math.min(0, ...(items || []).map((item) => Number(item.sort || 0)));
-}
-
-function buildSceneSuggestions(categoryName, workContent, configs) {
-  return buildArchiveSuggestion({ watermarkCategory: categoryName, workContent }, configs);
-}
-
-function createEmptySceneSuggestions() {
-  return createEmptyArchiveSuggestion();
-}
-
-function sceneValue(scene, key) {
-  if (key === 'processStatus') return scene.processStatus || scene.processStatusSuggestion || '';
-  if (key === 'photoStage') return scene.photoStage || scene.photoStageSuggestion || '';
-  return scene[key];
-}
-
-function isEmptySceneValue(value) {
-  return Array.isArray(value) ? value.length === 0 : !String(value || '').trim();
-}
-
-function sameSceneValue(current, previous) {
-  if (previous === undefined) return false;
-  if (Array.isArray(current) || Array.isArray(previous)) return JSON.stringify(current || []) === JSON.stringify(previous || []);
-  return String(current || '') === String(previous || '');
-}
-
-function normalizeSceneSuggestionPatch(patch) {
-  const next = { ...patch };
-  if (Object.hasOwn(next, 'itemName')) next.workItemSuggestion = next.itemName;
-  if (Object.hasOwn(next, 'processStatus')) next.processStatusSuggestion = next.processStatus;
-  if (Object.hasOwn(next, 'photoStage')) next.photoStageSuggestion = next.photoStage;
-  return next;
 }
 
 function createSimpleItem(name) {
@@ -711,21 +588,6 @@ function createCategory(name) {
 function createWorkItem(name) {
   return {
     ...createSimpleItem(name),
-    keywords: [],
-    remarkTemplate: ''
-  };
-}
-
-function createScene() {
-  return {
-    ...createSimpleItem('新常见场景'),
-    title: '新常见场景',
-    watermarkCategory: '',
-    workContent: '',
-    itemName: '',
-    locationPlaceholder: '',
-    processStatus: '',
-    photoStage: '',
     keywords: [],
     remarkTemplate: ''
   };

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import ConfigManager from '../components/ConfigManager.jsx';
-import { APP_NAME, APP_VERSION } from '../constants/app.js';
+import { APP_NAME, APP_VERSION, OCR_COMPONENT_VERSION } from '../constants/app.js';
 import {
   diagnoseRecognitionConfig,
   getRecognitionProviders,
@@ -15,7 +15,7 @@ const SETTING_TABS = [
   { key: 'defaultPaths', label: '默认目录' },
   { key: 'packageSettings', label: '资料包设置' },
   { key: 'recognition', label: '识别服务配置' },
-  { key: 'backup', label: '设置备份与恢复' },
+  { key: 'backup', label: '设置备份与导入' },
   { key: 'systemInfo', label: '系统信息' }
 ];
 
@@ -31,10 +31,10 @@ const RECOGNITION_MODE_OPTIONS = [
 const MASKED_SECRET_PATTERN = /^(\*{4}.+|已配置)$/;
 
 const PACKAGE_GROUPING_OPTIONS = [
-  { value: 'project/category/workContent', label: '项目 / 水印分类 / 工作内容' },
-  { value: 'category/workContent', label: '水印分类 / 工作内容' },
+  { value: 'project/category/workContent', label: '项目 / 归档分类 / 工作内容' },
+  { value: 'category/workContent', label: '归档分类 / 工作内容' },
   { value: 'project/workContent', label: '项目 / 工作内容' },
-  { value: 'date/category', label: '日期 / 水印分类' },
+  { value: 'date/category', label: '日期 / 归档分类' },
   { value: 'none', label: '不分组' }
 ];
 
@@ -216,6 +216,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     try {
       const saved = await window.archiveAssistant.saveSettings(settings);
       setSettings(saved);
+      archiveState?.applySavedSettings?.(saved);
       setMessage({ type: 'success', text: '系统设置已保存到本地。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '保存系统设置', errorType: '配置保存失败', summary: error.message, error });
@@ -297,14 +298,14 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
         <div>
           <p className="eyebrow">系统设置</p>
           <h1>系统设置</h1>
-          <p>统一维护基础数据、默认目录、资料包设置、设置备份与恢复、系统信息等本地配置。</p>
+          <p>统一维护基础数据、默认目录、资料包设置、设置备份与导入、系统信息等本地配置。</p>
         </div>
         <button className="primary" type="button" onClick={saveSettings} disabled={!settings}>保存设置</button>
       </section>
 
       {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
       <div className="settings-impact-note">
-        基础数据会影响照片分拣工作台的下拉选项；关键词库和常见场景会影响分拣工作台辅助填写；默认目录会影响分拣工作台、归档记录和资料包导出；资料包设置会影响后续资料包默认选项。历史台账和已归档照片不会因为设置修改而改变。
+        归档分类、工作内容和关键词会影响照片分拣工作台；项目作为归档上下文写入目录与台账；责任部门仅供整改闭环使用。默认目录会影响分拣工作台、归档记录和资料包导出。
       </div>
 
       <section className="settings-center-layout">
@@ -326,8 +327,8 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
             <div className="settings-module">
               <header>
                 <p className="eyebrow">基础数据</p>
-                <h2>项目、部门、来源、分类、工作内容、关键词和常见场景</h2>
-                <p>这里集中维护基础配置，支持新增、编辑、停用和排序；配置备份、导入导出与恢复默认统一在“设置备份与恢复”中操作。</p>
+                <h2>当前归档表单与归档默认项</h2>
+                <p>表单字段与照片分拣工作台保持一致；项目作为归档默认项维护，责任部门作为整改基础数据维护。</p>
               </header>
               <ConfigManager open embedded onClose={() => {}} onSaved={archiveState.handleConfigsSaved} />
             </div>
@@ -423,12 +424,12 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
           {activeTab === 'backup' && (
             <div className="settings-module">
               <header>
-                <p className="eyebrow">设置备份与恢复</p>
-                <h2>导出、导入、备份与恢复默认</h2>
-                <p>只处理基础配置和设置数据，不导出照片、不导出台账、不导出资料包文件。</p>
+                <p className="eyebrow">设置备份与导入</p>
+                <h2>内部备份、导出与导入</h2>
+                <p>内部备份固定保存在软件数据目录；导出和导入设置 JSON 可自行选择文件。恢复默认仅重置为出厂配置，不会恢复历史备份。</p>
               </header>
               <div className="settings-action-grid">
-                <button type="button" onClick={backupConfigs}>立即备份当前配置</button>
+                <button type="button" onClick={backupConfigs}>生成内部备份</button>
                 <button type="button" onClick={exportConfigs}>导出设置 JSON</button>
                 <button type="button" onClick={importConfigs}>导入设置 JSON</button>
                 <button type="button" className="danger" onClick={resetConfigs}>恢复默认配置</button>
@@ -450,7 +451,8 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
               </header>
               <div className="settings-info-list">
                 <InfoRow label="软件名称" value={APP_NAME} onCopy={copyText} />
-                <InfoRow label="当前版本" value={APP_VERSION} onCopy={copyText} />
+                <InfoRow label="软件版本" value={APP_VERSION} onCopy={copyText} />
+                <InfoRow label="RapidOCR 版本" value={OCR_COMPONENT_VERSION} onCopy={copyText} />
                 <InfoRow label="当前运行环境" value={import.meta.env.DEV ? '开发环境' : '打包环境'} onCopy={copyText} />
                 <InfoRow label="配置文件位置" value={configPaths.userConfigDir} onCopy={copyText} onOpen={openDirectory} />
                 <InfoRow label="分拣进度保存位置" value="用户选择的本地 JSON 文件；默认建议保存到本地文档目录。" onCopy={copyText} />

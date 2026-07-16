@@ -14,16 +14,11 @@ const FORM_PATCH_DRAFT_STATUSES = new Set(['draft', 'valid', 'invalid', 'partial
 const PATCHABLE_DECISION_ACTIONS = new Set(['accept', 'edit']);
 
 const ALLOWED_FORM_PATCH_FIELDS = [
-  'photoSource',
   'project',
-  'department',
   'watermarkCategory',
   'workContent',
   'date',
   'location',
-  'itemName',
-  'photoStage',
-  'processStatus',
   'keywords',
   'remark'
 ];

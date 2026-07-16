@@ -32,7 +32,7 @@ export default function ArchiveForm({ configs, form, updateForm, compact = false
         <Input
           label="位置/区域"
           value={form.location}
-          placeholder={form.locationPlaceholder || '如：3栋1单元、负一层车库、北门岗；不填写则默认“现场”'}
+          placeholder="不填则默认现场"
           hint="建议填写，便于后期检索；不填写则默认“现场”。"
           onChange={(location) => updateForm({ location })}
         />

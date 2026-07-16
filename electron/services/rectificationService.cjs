@@ -15,7 +15,7 @@ const EXPORT_HEADERS = [
   ['createdDate', '创建日期'],
   ['project', '项目'],
   ['responsibleDepartment', '责任部门'],
-  ['watermarkCategory', '水印分类'],
+  ['watermarkCategory', '归档分类'],
   ['workContent', '工作内容'],
   ['location', '问题位置 / 区域'],
   ['title', '问题标题'],

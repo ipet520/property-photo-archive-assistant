@@ -2,8 +2,10 @@ const electron = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { ocrComponentVersion } = require('../package.json');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
+const { matchArchivedPhotos } = require('./services/archiveFingerprintService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs');
 const {
@@ -329,6 +331,47 @@ function createRecognitionErrorResult(error = {}, options = {}) {
   };
 }
 
+async function recordOcrRuntimeLog(photo = {}, result = {}) {
+  try {
+    const engine = result.engineResult || result.localResult?.engineResult || {};
+    const fileName = result.fileName || photo.fileName || photo.name || path.basename(result.filePath || photo.originalPath || photo.path || '') || '未命名照片';
+    const textLength = String(result.rawText || result.adoptedOcrText || '').length;
+    const status = String(result.status || 'failed');
+    const succeeded = status === 'success' && textLength > 0;
+    const empty = status === 'empty' || (status === 'success' && textLength === 0);
+    const level = succeeded ? 'info' : (empty ? 'warn' : 'error');
+    const summary = succeeded
+      ? `OCR 识别成功：${fileName}（${textLength} 字）`
+      : `${empty ? 'OCR 未识别到有效文字' : 'OCR 识别失败'}：${fileName}`;
+    const technicalDetail = JSON.stringify({
+      fileName,
+      status,
+      providerId: result.providerId || '',
+      ocrEngine: engine.ocrEngine || '',
+      engineSource: engine.source || '',
+      componentVersion: engine.componentVersion || '',
+      durationMs: Number.isFinite(Number(engine.durationMs)) ? Number(engine.durationMs) : null,
+      textLength,
+      warnings: result.warnings || [],
+      errors: result.errors || []
+    }, null, 2);
+    await saveTrialIssue(getWritableDocumentsPath(), {
+      logType: 'auto',
+      level,
+      page: '照片分拣工作台',
+      operation: 'OCR 识别',
+      errorType: 'OCR 识别',
+      summary,
+      suggestion: succeeded ? '识别已完成，无需处理。' : '请在 OCR 识别记录中核对引擎、耗时与错误信息后重试。',
+      technicalDetail,
+      status: succeeded ? 'handled' : 'open',
+      occurredAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.warn('[OCR] runtime log write failed:', error.message || error);
+  }
+}
+
 function createChineseMenu() {
   const template = [
     {
@@ -393,7 +436,7 @@ function createChineseMenu() {
             type: 'info',
             title: '关于',
             message: '物业工作照片归档助手',
-            detail: `本地照片归档整理工具。\n当前版本：${app.getVersion()}`
+            detail: `本地照片归档整理工具。\n软件版本 ${app.getVersion()}\nRapidOCR 版本 ${ocrComponentVersion}`
           })
         }
       ]
@@ -444,6 +487,7 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
+ipcMain.handle('photos:matchArchived', async (_event, archiveRoot, photos) => matchArchivedPhotos(archiveRoot, photos));
 ipcMain.handle('recognition:getStatus', async () => safeRecognitionCall(() => getRecognitionStatus(app.getPath('userData')), createRecognitionErrorStatus));
 ipcMain.handle('recognition:getProviders', async () => safeRecognitionCall(() => getRecognitionProviders(app.getPath('userData')), () => []));
 ipcMain.handle('recognition:getConfig', async () => safeRecognitionCall(() => getRecognitionConfig(app.getPath('userData')), createRecognitionConfigError));
@@ -460,14 +504,25 @@ ipcMain.handle('recognition:parseText', async (_event, rawText, options) => safe
   () => parseRecognitionText(rawText, options),
   (error) => createRecognitionErrorResult(error, options)
 ));
-ipcMain.handle('recognition:recognizePhoto', async (_event, photo, options) => safeRecognitionCall(
-  () => recognizePhoto(photo, { ...options, userDataDir: app.getPath('userData') }),
-  (error) => createRecognitionErrorResult(error, { ...options, photo })
-));
-ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => safeRecognitionCall(
-  () => recognizePhotos(photos, { ...options, userDataDir: app.getPath('userData') }),
-  (error) => (Array.isArray(photos) ? photos : []).map((photo) => createRecognitionErrorResult(error, { ...options, photo }))
-));
+ipcMain.handle('recognition:recognizePhoto', async (_event, photo, options) => {
+  const result = await safeRecognitionCall(
+    () => recognizePhoto(photo, { ...options, userDataDir: app.getPath('userData') }),
+    (error) => createRecognitionErrorResult(error, { ...options, photo })
+  );
+  await recordOcrRuntimeLog(photo, result);
+  return result;
+});
+ipcMain.handle('recognition:recognizePhotos', async (_event, photos, options) => {
+  const safePhotos = Array.isArray(photos) ? photos : [];
+  const results = await safeRecognitionCall(
+    () => recognizePhotos(safePhotos, { ...options, userDataDir: app.getPath('userData') }),
+    (error) => safePhotos.map((photo) => createRecognitionErrorResult(error, { ...options, photo }))
+  );
+  for (let index = 0; index < results.length; index += 1) {
+    await recordOcrRuntimeLog(safePhotos[index] || {}, results[index]);
+  }
+  return results;
+});
 ipcMain.handle('recognition:getStagedResult', async (_event, id) => safeRecognitionCall(
   () => getStagedRecognitionResult(app.getPath('userData'), id),
   () => null

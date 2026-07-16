@@ -31,6 +31,7 @@ function createProviderStatus(provider = {}, patch = {}) {
     safeConfig: patch.safeConfig || undefined,
     engine: patch.engine || undefined,
     engineName: patch.engineName || undefined,
+    componentVersion: patch.componentVersion || undefined,
     source: patch.source || undefined,
     executablePath: patch.executablePath || undefined,
     checkedAt: patch.checkedAt || new Date().toISOString()
@@ -70,7 +71,7 @@ function normalizeRecognitionResult(result = {}) {
     providerId: result.providerId || '',
     providerType: result.providerType || result.type || result.mode || '',
     status: result.status || 'pending',
-    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    confidence: normalizeNullableNumber(result.confidence),
     rawText: String(result.rawText || ''),
     parsedFields,
     warnings: normalizeStringArray(result.warnings),
@@ -157,6 +158,12 @@ function normalizeStringArray(values = []) {
 function nullableString(value) {
   const text = String(value || '').trim();
   return text || null;
+}
+
+function normalizeNullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function cleanText(value) {

@@ -1,5 +1,3 @@
-import { buildArchiveSuggestion } from './archiveSuggestionRules.js';
-
 export function formatFileSize(size) {
   if (!size) return '0 KB';
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -8,35 +6,22 @@ export function formatFileSize(size) {
 
 export function getSuggestedKeywords(form, configs) {
   if (!configs) return form.keywords || '';
-  const ruleKeywords = buildArchiveSuggestion({
-    watermarkCategory: form.watermarkCategory,
-    workContent: form.workContent || form.workItem
-  }, configs).keywords || [];
-
-  const sceneKeywords = configs.sceneExamples
-    .filter((scene) => scene.watermarkCategory === form.watermarkCategory && scene.workContent === form.workContent)
-    .flatMap((scene) => scene.keywords || []);
-
   const workItemKeywords = configs.watermarkCategories?.[form.watermarkCategory]?.itemMeta?.[form.workContent]?.keywords || [];
 
   const direct = configs.keywords.filter((keyword) => {
     return (
       form.workContent?.includes(keyword) ||
       form.watermarkCategory?.includes(keyword) ||
-      form.location?.includes(keyword) ||
-      form.workItem?.includes(keyword) ||
-      form.processStatus?.includes(keyword)
+      form.location?.includes(keyword)
     );
   });
 
-  const fromCurrentWork = [form.workContent, form.workItem, form.location]
+  const fromCurrentWork = [form.workContent, form.location]
     .filter(Boolean)
     .map((value) => String(value).trim())
     .filter((value) => value.length >= 2);
 
-  const statusKeywords = form.processStatus ? [form.processStatus] : [];
-
-  return uniqueKeywords([...ruleKeywords, ...workItemKeywords, ...sceneKeywords, ...direct, ...fromCurrentWork, ...statusKeywords]).slice(0, 10).join('、');
+  return uniqueKeywords([...workItemKeywords, ...direct, ...fromCurrentWork]).slice(0, 10).join('、');
 }
 
 export function splitKeywords(value) {

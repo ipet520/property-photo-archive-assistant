@@ -374,10 +374,15 @@ async function runRecognitionTask(task, photo = {}, config = {}, options = {}, l
 function parseRecognitionText(rawText = '', options = {}) {
   try {
     const cleanedText = cleanRecognitionText(rawText);
+    const projectName = extractLabeledValue(cleanedText, ['项目', '项目名称', '小区']);
+    const location = sanitizeLocationForProject(
+      extractLabeledValue(cleanedText, ['地点', '地址', '位置']) || extractLocation(cleanedText),
+      projectName
+    );
     const parsedFields = normalizeParsedFields({
       ...extractDateTime(cleanedText),
-      projectName: extractLabeledValue(cleanedText, ['项目', '项目名称', '小区']),
-      location: extractLabeledValue(cleanedText, ['地点', '地址', '位置']) || extractLocation(cleanedText),
+      projectName,
+      location,
       ...extractWorkContent(cleanedText),
       remark: extractLabeledValue(cleanedText, ['备注', '说明']),
       stage: detectPhotoStage(cleanedText),
@@ -468,7 +473,7 @@ async function executeRecognitionMode(photo = {}, task = {}, config = {}, option
     const adopted = cloudResult.rawText ? cloudResult : localResult;
     return enrichWatermarkResult({
       ...adopted,
-      status: adopted.rawText ? 'success' : 'failed',
+      status: adopted.rawText ? 'success' : getNoTextRecognitionStatus(localResult, cloudResult),
       compareResults: { local: localResult, cloud: cloudResult },
       warnings: [...(localResult.warnings || []), ...(cloudResult.warnings || []), '双引擎结果仅供人工对比，系统不会自动填表或归档。']
     }, cropResult, localResult, cloudResult);
@@ -493,6 +498,12 @@ async function executeRecognitionMode(photo = {}, task = {}, config = {}, option
   }, cropResult, localResult, cloudResult);
 }
 
+function getNoTextRecognitionStatus(...results) {
+  const statuses = results.map((result) => String(result?.status || '')).filter(Boolean);
+  if (statuses.includes('empty')) return 'empty';
+  return statuses.find((status) => ['failed', 'error', 'provider_unavailable', 'not_configured', 'disabled'].includes(status)) || 'failed';
+}
+
 async function runSingleProvider(provider, photo, task, config, options) {
   if (!provider || typeof provider.recognize !== 'function') {
     return buildUnavailableResult(task, '未找到可用识别 provider。', {
@@ -511,6 +522,8 @@ async function runSingleProvider(provider, photo, task, config, options) {
 function enrichWatermarkResult(result = {}, cropResult = null, localResult = null, cloudResult = null) {
   const adoptedText = String(result.rawText || '').trim();
   const parsedWatermark = parseWatermarkText(adoptedText);
+  const hasWatermarkEvidence = hasValidWatermarkEvidence(adoptedText, parsedWatermark);
+  const executionFailed = ['failed', 'error', 'provider_unavailable', 'not_configured', 'disabled'].includes(result.status);
   const parsedFields = normalizeParsedFields({
     ...result.parsedFields,
     date: parsedWatermark.date,
@@ -527,7 +540,7 @@ function enrichWatermarkResult(result = {}, cropResult = null, localResult = nul
     ...result,
     rawText: adoptedText,
     parsedFields,
-    status: adoptedText ? 'success' : (result.status || 'empty'),
+    status: executionFailed ? result.status : (hasWatermarkEvidence ? 'success' : 'empty'),
     cropResult,
     localResult,
     cloudResult,
@@ -535,10 +548,31 @@ function enrichWatermarkResult(result = {}, cropResult = null, localResult = nul
     parsedWatermark,
     warnings: [
       ...(result.warnings || []),
-      ...(parsedWatermark.warnings || [])
+      ...(parsedWatermark.warnings || []),
+      ...(adoptedText && !hasWatermarkEvidence ? ['OCR 仅返回零散环境文字，未形成有效水印结构。'] : [])
     ],
     errors: result.errors || []
   };
+}
+
+function hasValidWatermarkEvidence(rawText = '', parsedWatermark = {}) {
+  const text = String(rawText || '').trim();
+  if (!text) return false;
+  const hasDate = Boolean(parsedWatermark.date);
+  const hasTime = Boolean(parsedWatermark.time);
+  const watermarkMarkers = [
+    '物业公司',
+    '小区名称',
+    '防伪',
+    '佳恒物业',
+    'JIAHENG SERVICE',
+    '天气',
+    '星期',
+    '工作内容',
+    '违停类型'
+  ];
+  const markerCount = watermarkMarkers.filter((marker) => text.toUpperCase().includes(marker.toUpperCase())).length;
+  return (hasDate && hasTime) || (hasDate && markerCount >= 1) || (hasTime && markerCount >= 2) || markerCount >= 3;
 }
 
 function normalizeRecognitionMode(mode = '') {
@@ -772,6 +806,16 @@ function extractDateTime(text = '') {
 function extractLocation(text = '') {
   const locationPattern = /((?:\d+\s*[栋幢号#][^\s，,。；;]{0,12})|(?:\d+\s*单元[^\s，,。；;]{0,8})|(?:楼层|楼道|通道|车库|门岗|道路|绿化带|设备房|消防通道|公共区域|地下室|电梯厅)[^\s，,。；;]{0,12})/;
   return String(text || '').match(locationPattern)?.[1]?.trim() || null;
+}
+
+function sanitizeLocationForProject(location = '', project = '') {
+  const cleaned = String(location || '').trim();
+  const projectName = String(project || '').trim();
+  if (!cleaned) return null;
+  const withoutProject = projectName ? cleaned.replace(projectName, '') : cleaned;
+  return withoutProject
+    .replace(/^[\s·•,，、;；:：/\\|_-]+|[\s·•,，、;；:：/\\|_-]+$/g, '')
+    .trim() || null;
 }
 
 function extractWorkContent(text = '') {

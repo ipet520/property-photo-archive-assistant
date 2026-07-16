@@ -74,6 +74,7 @@ export const RECOGNITION_STAGE_STATUS = {
   STAGED: 'staged',
   PENDING_REVIEW: 'pending_review',
   REVIEWED: 'reviewed',
+  SUPERSEDED: 'superseded',
   DISMISSED: 'dismissed',
   CLEARED: 'cleared',
   EXPIRED: 'expired'
@@ -156,16 +157,11 @@ export const RECOGNITION_FORM_PATCH_DRAFT_STATUS = {
 export const RECOGNITION_FORM_PATCH_DRAFT_STATUSES = Object.values(RECOGNITION_FORM_PATCH_DRAFT_STATUS);
 
 export const RECOGNITION_ALLOWED_FORM_PATCH_FIELDS = [
-  'photoSource',
   'project',
-  'department',
   'watermarkCategory',
   'workContent',
   'date',
   'location',
-  'itemName',
-  'photoStage',
-  'processStatus',
   'keywords',
   'remark'
 ];

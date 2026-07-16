@@ -1,7 +1,8 @@
 function parseWatermarkText(text = '') {
   const rawText = String(text || '').trim();
   const dateTime = extractDateTime(rawText);
-  const location = extractLabeledValue(rawText, ['地点', '地址', '位置']);
+  const project = extractLabeledValue(rawText, ['项目', '项目名称', '小区']);
+  const location = sanitizeLocationForProject(extractLabeledValue(rawText, ['地点', '地址', '位置']), project);
   const remark = extractLabeledValue(rawText, ['备注', '说明', '工作内容']);
   const warnings = [];
   if (!rawText) warnings.push('OCR 文本为空。');
@@ -14,7 +15,7 @@ function parseWatermarkText(text = '') {
     time: dateTime.time,
     weekday: dateTime.weekday,
     location: location || '',
-    project: '',
+    project: project || '',
     category: '',
     watermarkCategory: null,
     workContent: '',
@@ -50,6 +51,16 @@ function extractDateTime(text = '') {
 function extractLabeledValue(text = '', labels = []) {
   const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   return String(text || '').match(new RegExp(`(?:${escapedLabels})\\s*[:：]\\s*([^\\n，,。；;]{1,80})`))?.[1]?.trim() || '';
+}
+
+function sanitizeLocationForProject(location = '', project = '') {
+  const cleaned = String(location || '').trim();
+  const projectName = String(project || '').trim();
+  if (!cleaned) return '';
+  const withoutProject = projectName ? cleaned.replace(projectName, '') : cleaned;
+  return withoutProject
+    .replace(/^[\s·•,，、;；:：/\\|_-]+|[\s·•,，、;；:：/\\|_-]+$/g, '')
+    .trim();
 }
 
 module.exports = {

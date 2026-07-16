@@ -1,5 +1,9 @@
-export const APP_VERSION = '3.0.1';
+import packageInfo from '../../package.json';
+
+export const APP_VERSION = packageInfo.version;
+export const OCR_COMPONENT_VERSION = packageInfo.ocrComponentVersion;
 export const APP_NAME = '物业工作照片归档助手';
+export const VERSION_SUMMARY = `软件版本 ${APP_VERSION} · RapidOCR 版本 ${OCR_COMPONENT_VERSION}`;
 
 export const PAGE_KEYS = {
   dashboard: 'dashboard',

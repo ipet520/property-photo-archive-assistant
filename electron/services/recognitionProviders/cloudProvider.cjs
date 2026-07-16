@@ -81,8 +81,8 @@ function createCloudProvider({ id, name, type }) {
         parsedFields: {},
         confidence: result.confidence,
         status: result.success && result.text ? 'success' : (result.success ? 'empty' : 'failed'),
-        warnings: result.success && !result.text ? ['云端 OCR 返回空文本，需人工确认。'] : [],
-        errors: result.success && result.text ? [] : [{ code: result.success ? 'cloud_ocr_empty' : 'cloud_ocr_failed', message: result.error || '云端 OCR 失败。' }],
+        warnings: result.success && !result.text ? ['云端 OCR 未检测到可识别的水印文字，需手工补充归档信息。'] : [],
+        errors: result.success ? [] : [{ code: 'cloud_ocr_failed', message: result.error || '云端 OCR 失败。' }],
         createdAt: new Date().toISOString(),
         engineResult: result
       };

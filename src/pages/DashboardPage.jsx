@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import AppNavIcon from '../components/AppNavIcon.jsx';
-import { APP_NAME, APP_VERSION, NAV_GROUPS, PAGE_KEYS } from '../constants/app.js';
+import { APP_NAME, NAV_GROUPS, PAGE_KEYS, VERSION_SUMMARY } from '../constants/app.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const QUICK_ENTRIES = [
   { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '导入物业工作照片，支持智能分拣架构和手动归档流程，后续可基于水印识别自动生成事项组和归档建议。' },
   { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
-  { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、部门、分类和整改状态汇总资料。' },
+  { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、分类、责任部门和整改状态汇总资料。' },
   { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },
   { key: PAGE_KEYS.serviceBrief, title: '每日服务简报', text: '按日期汇总已归档照片事项，生成可直接发布的每日服务简报图片。' },
   { key: PAGE_KEYS.dataMaintenance, title: '数据维护中心', text: '检查目录、台账、运行日志、问题反馈和本地数据状态。' },
@@ -89,7 +89,7 @@ export default function DashboardPage({ onNavigate }) {
             <MetricCard label="文件存在" value={archiveMetrics.existsCount} tone="success" />
             <MetricCard label="文件缺失" value={archiveMetrics.missingCount} tone={archiveMetrics.missingCount ? 'warning' : 'neutral'} />
             <MetricCard label="涉及项目" value={archiveMetrics.projectCount} />
-            <MetricCard label="水印分类" value={archiveMetrics.categoryCount} />
+            <MetricCard label="归档分类" value={archiveMetrics.categoryCount} />
             <MetricCard label="最近归档日期" value={archiveMetrics.latestDate || '-'} compact />
           </div>
           {!isLoading && archiveMetrics.total === 0 ? <EmptyState text="当前暂无归档数据。完成一次照片分拣归档后，首页将显示统计信息。" /> : null}
@@ -126,7 +126,7 @@ export default function DashboardPage({ onNavigate }) {
           <HealthAlerts alerts={data?.healthAlerts || []} loading={isLoading} onNavigate={onNavigate} />
         </section>
         <section className="dashboard-section">
-          <SectionHeader eyebrow="本地状态" title="当前目录与系统状态" hint={`版本 ${APP_VERSION}`} />
+          <SectionHeader eyebrow="本地状态" title="当前目录与系统状态" hint={VERSION_SUMMARY} />
           <SystemStatusList status={data?.systemStatus} onNavigate={onNavigate} />
         </section>
       </div>

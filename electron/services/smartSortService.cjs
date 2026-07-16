@@ -329,10 +329,10 @@ function normalizePhoto(photo = {}, index = 0) {
 }
 
 function resolveSmartGroupBucket(photo = {}) {
-  if (photo.archiveResult?.success === true || photo.sortStatus === 'archived') {
+  if (photo.archiveResult?.success === true || photo.archiveResult?.status === '归档成功' || photo.sortStatus === 'archived') {
     return createBucket('已归档', 'archive_result', '已归档照片。', 'high');
   }
-  if (photo.archiveResult?.success === false || photo.sortStatus === 'archive_failed') {
+  if (photo.archiveResult?.success === false || photo.archiveResult?.status === '归档失败' || ['failed', 'archive_failed'].includes(photo.sortStatus)) {
     return createBucket('归档失败', 'archive_failed', '归档失败照片，需修正后重新预览/归档。', 'high');
   }
   if (photo.previewInfo && photo.sortStatus !== 'archived') {
@@ -340,6 +340,13 @@ function resolveSmartGroupBucket(photo = {}) {
   }
   if (photo.archiveInfo || ['assigned', 'confirmed'].includes(photo.sortStatus)) {
     return createBucket('已确认待预览', 'confirmed', '已确认归档信息，等待生成预览。', 'high');
+  }
+
+  if (isRecognitionFailed(photo.recognition)) {
+    return createBucket('识别失败', 'recognition_failed', 'OCR 没有正常完成识别，需重试或转为手工整理。', 'low');
+  }
+  if (isRecognitionEmpty(photo.recognition)) {
+    return createBucket('未检测到水印', 'needs_completion', 'OCR 已正常执行但未检测到可识别的水印文字，转为手工补充归档信息。', 'low');
   }
 
   const fields = photo.archiveSuggestion?.suggestedFields || {};
@@ -353,10 +360,6 @@ function resolveSmartGroupBucket(photo = {}) {
     return createBucket('无法判断工作内容', 'archive_suggestion_pending', '已有归档建议，但无法判断工作内容。', 'low');
   }
 
-  if (isRecognitionFailed(photo.recognition)) {
-    return createBucket('识别失败', 'recognition_failed', 'OCR 识别失败，需人工确认。', 'low');
-  }
-
   return createBucket(getPendingRecognitionBucket(photo.recognition), 'recognition_pending', getPendingRecognitionBasisLabel(getPendingRecognitionBucket(photo.recognition)), 'low');
 }
 
@@ -366,6 +369,39 @@ function createBucket(title, basis, basisLabel, confidenceLabel) {
 
 function isRecognitionFailed(recognition = {}) {
   return Boolean(recognition && ['failed', 'error', 'provider_unavailable', 'not_configured', 'disabled'].includes(recognition.status));
+}
+
+function isRecognitionEmpty(recognition = {}) {
+  if (!recognition) return false;
+  const rawText = String(recognition.rawText || recognition.adoptedOcrText || '').trim();
+  return recognition.status === 'empty'
+    || (recognition.status === 'success' && (!rawText || !hasValidWatermarkEvidence(recognition)));
+}
+
+function hasValidWatermarkEvidence(recognition = {}) {
+  const text = String(recognition.rawText || recognition.adoptedOcrText || '').trim();
+  if (!text) return false;
+  const parsedWatermark = recognition.parsedWatermark || {};
+  const parsedFields = recognition.parsedFields || {};
+  const hasDate = Boolean(parsedWatermark.date || parsedFields.date);
+  const hasTime = Boolean(parsedWatermark.time || parsedFields.time);
+  const watermarkMarkers = [
+    '物业公司',
+    '小区名称',
+    '防伪',
+    '佳恒物业',
+    'JIAHENG SERVICE',
+    '天气',
+    '星期',
+    '工作内容',
+    '违停类型'
+  ];
+  const normalizedText = text.toUpperCase();
+  const markerCount = watermarkMarkers.filter((marker) => normalizedText.includes(marker.toUpperCase())).length;
+  return (hasDate && hasTime)
+    || (hasDate && markerCount >= 1)
+    || (hasTime && markerCount >= 2)
+    || markerCount >= 3;
 }
 
 function sanitizeGroupTitle(value = '') {

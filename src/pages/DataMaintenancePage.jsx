@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { APP_VERSION, PAGE_KEYS } from '../constants/app.js';
+import { PAGE_KEYS, VERSION_SUMMARY } from '../constants/app.js';
 import RuntimeLogCenter from '../components/RuntimeLogCenter.jsx';
+import { listStagedResults } from '../utils/recognitionClient.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SECTIONS = [
@@ -9,6 +10,7 @@ const SECTIONS = [
   { key: 'directories', label: '目录状态' },
   { key: 'ledger', label: '台账状态' },
   { key: 'sortProgress', label: '分拣进度' },
+  { key: 'ocrRecords', label: 'OCR 识别记录' },
   { key: 'packages', label: '资料包记录' },
   { key: 'trialIssues', label: '运行日志与问题反馈' },
   { key: 'suggestions', label: '维护建议' }
@@ -28,7 +30,7 @@ const STATUS_LABELS = {
   success: '正常'
 };
 
-export default function DataMaintenancePage({ onNavigate }) {
+export default function DataMaintenancePage({ onNavigate, navigationRequest }) {
   const [activeSection, setActiveSection] = useState('overview');
   const [report, setReport] = useState(null);
   const [status, setStatus] = useState({ type: 'idle', text: '数据维护中心已就绪。' });
@@ -37,6 +39,10 @@ export default function DataMaintenancePage({ onNavigate }) {
   useEffect(() => {
     loadReport();
   }, []);
+
+  useEffect(() => {
+    if (navigationRequest?.action === 'openOcrRecords') setActiveSection('ocrRecords');
+  }, [navigationRequest?.nonce]);
 
   const sectionTitle = useMemo(() => SECTIONS.find((item) => item.key === activeSection)?.label || '总览', [activeSection]);
 
@@ -83,7 +89,7 @@ export default function DataMaintenancePage({ onNavigate }) {
           <p>只读检查配置、目录、台账、分拣草稿和资料包目录状态，帮助确认当前数据是否可用。</p>
         </div>
         <div className="maintenance-hero-actions">
-          <span>当前版本 {APP_VERSION}</span>
+          <span>{VERSION_SUMMARY}</span>
           <button onClick={loadReport} disabled={isLoading}>{isLoading ? '检查中...' : '重新检查'}</button>
         </div>
       </section>
@@ -115,6 +121,11 @@ export default function DataMaintenancePage({ onNavigate }) {
 
           {activeSection === 'trialIssues' ? (
             <RuntimeLogCenter />
+          ) : activeSection === 'ocrRecords' ? (
+            <OcrRecordsSection
+              initialKeyword={navigationRequest?.action === 'openOcrRecords' ? navigationRequest.payload?.keyword : ''}
+              initialRecordId={navigationRequest?.action === 'openOcrRecords' ? navigationRequest.payload?.recordId : ''}
+            />
           ) : !report ? (
             <div className="empty-state">{isLoading ? '正在读取本地维护状态...' : '暂无维护状态，请点击重新检查。'}</div>
           ) : (
@@ -169,6 +180,178 @@ export default function DataMaintenancePage({ onNavigate }) {
   );
 }
 
+function OcrRecordsSection({ initialKeyword = '', initialRecordId = '' }) {
+  const [records, setRecords] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [keyword, setKeyword] = useState(initialKeyword);
+  const [notice, setNotice] = useState({ type: 'idle', text: '正在读取后台 OCR 识别记录...' });
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    loadRecords();
+  }, []);
+
+  useEffect(() => {
+    setKeyword(initialKeyword || '');
+  }, [initialKeyword]);
+
+  useEffect(() => {
+    if (initialRecordId) setSelectedId(initialRecordId);
+  }, [initialRecordId]);
+
+  const filteredRecords = useMemo(() => {
+    const normalizedKeyword = keyword.trim().toLowerCase();
+    if (!normalizedKeyword) return records;
+    return records.filter((record) => (
+      (initialRecordId && record.id === initialRecordId)
+      || [
+        record.id,
+        record.fileName,
+        record.providerId,
+        record.ocrEngine,
+        record.recognitionStatus,
+        record.stageStatus,
+        record.rawText
+      ].some((value) => String(value || '').toLowerCase().includes(normalizedKeyword))
+    ));
+  }, [initialRecordId, keyword, records]);
+
+  const selectedRecord = useMemo(
+    () => filteredRecords.find((record) => record.id === selectedId) || filteredRecords[0] || null,
+    [filteredRecords, selectedId]
+  );
+
+  async function loadRecords() {
+    setIsLoading(true);
+    try {
+      const nextRecords = await listStagedResults({ limit: 1000 });
+      setRecords(nextRecords);
+      setSelectedId((current) => {
+        if (initialRecordId && nextRecords.some((record) => record.id === initialRecordId)) return initialRecordId;
+        return nextRecords.some((record) => record.id === current) ? current : (nextRecords[0]?.id || '');
+      });
+      setNotice({ type: 'success', text: `已读取 ${nextRecords.length} 条后台 OCR 识别记录。` });
+    } catch (error) {
+      setNotice({ type: 'error', text: `OCR 识别记录读取失败：${error.message}` });
+      void recordRuntimeLog({ page: '数据维护中心', operation: '读取 OCR 识别记录', errorType: 'OCR 识别', summary: error.message, error });
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  return (
+    <div className="ocr-record-center">
+      <header className="ocr-record-heading">
+        <div>
+          <h3>OCR 识别记录</h3>
+          <p>查询本机识别暂存数据；原始照片不会在此处被删除、移动或修改。</p>
+        </div>
+        <button type="button" onClick={loadRecords} disabled={isLoading}>{isLoading ? '读取中...' : '刷新记录'}</button>
+      </header>
+      <div className={`archive-query-status ${notice.type}`}>{notice.text}</div>
+      <div className="ocr-record-toolbar">
+        <label>
+          <span>搜索记录</span>
+          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="照片名、状态、引擎或 OCR 文字" />
+        </label>
+        <span>显示 {filteredRecords.length} / {records.length}</span>
+      </div>
+      <div className="ocr-record-layout">
+        <div className="maintenance-table-wrap">
+          <table className="maintenance-table ocr-record-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>照片</th>
+                <th>识别状态</th>
+                <th>暂存状态</th>
+                <th>引擎</th>
+                <th>文字数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredRecords.map((record) => (
+                <tr key={record.id} className={selectedRecord?.id === record.id ? 'selected' : ''} onClick={() => setSelectedId(record.id)}>
+                  <td>{formatDateTime(record.createdAt)}</td>
+                  <td title={record.fileName}>{record.fileName || '未命名照片'}</td>
+                  <td>{formatRecognitionStatus(record.recognitionStatus)}</td>
+                  <td>{formatStageStatus(record.stageStatus)}</td>
+                  <td>{record.ocrEngine || record.providerId || '-'}</td>
+                  <td>{String(record.rawText || '').length}</td>
+                </tr>
+              ))}
+              {filteredRecords.length === 0 && <tr><td colSpan="6" className="maintenance-empty">暂无可查询的 OCR 识别记录</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <aside className="ocr-record-detail">
+          {selectedRecord ? (
+            <>
+              <header>
+                <div>
+                  <span>记录详情</span>
+                  <h3 title={selectedRecord.fileName}>{selectedRecord.fileName || '未命名照片'}</h3>
+                </div>
+                <button type="button" onClick={() => window.archiveAssistant.copyText(selectedRecord.rawText || '')} disabled={!selectedRecord.rawText}>复制原文</button>
+              </header>
+              <dl>
+                <div><dt>识别状态</dt><dd>{formatRecognitionStatus(selectedRecord.recognitionStatus)}</dd></div>
+                <div><dt>Provider</dt><dd>{selectedRecord.providerId || '-'}</dd></div>
+                <div><dt>引擎来源</dt><dd>{selectedRecord.engineSource || '-'}</dd></div>
+                <div><dt>组件版本</dt><dd>{selectedRecord.componentVersion || '历史记录未标注'}</dd></div>
+                <div><dt>耗时</dt><dd>{Number.isFinite(selectedRecord.durationMs) ? `${selectedRecord.durationMs} ms` : '-'}</dd></div>
+                <div><dt>文字置信度</dt><dd>{formatRecognitionConfidence(selectedRecord.confidence)}</dd></div>
+              </dl>
+              <section>
+                <h4>OCR 原文</h4>
+                <pre>{selectedRecord.rawText || '未识别到有效文字。'}</pre>
+              </section>
+              {(selectedRecord.errors || []).length > 0 && (
+                <section>
+                  <h4>错误信息</h4>
+                  <pre>{selectedRecord.errors.map((error) => error.message || String(error)).join('\n')}</pre>
+                </section>
+              )}
+            </>
+          ) : (
+            <div className="empty-state">请选择一条 OCR 识别记录查看详情。</div>
+          )}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function formatRecognitionStatus(value = '') {
+  return {
+    success: '识别成功',
+    empty: '未检测到水印文字',
+    failed: '识别失败',
+    error: '识别异常',
+    disabled: '已禁用',
+    provider_unavailable: '引擎不可用'
+  }[value] || value || '待确认';
+}
+
+function formatStageStatus(value = '') {
+  return {
+    staged: '已暂存',
+    pending_review: '待复核',
+    reviewed: '已复核',
+    superseded: '已被重新识别替代',
+    dismissed: '已忽略',
+    cleared: '已清除',
+    expired: '已过期'
+  }[value] || value || '-';
+}
+
+function formatRecognitionConfidence(value) {
+  if (value === null || value === undefined || value === '') return '未记录';
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence) || confidence <= 0) return '未记录';
+  return `${Math.round(Math.min(confidence, 1) * 100)}%`;
+}
+
 function OverviewSection({ report, onNavigate }) {
   return (
     <div className="maintenance-overview-stack">
@@ -202,11 +385,10 @@ function ConfigSection({ report, onOpen, onCopy, onNavigate }) {
           ['配置文件状态', configStatus.summary],
           ['配置模块数量', `${configStatus.files.length} 个`],
           ['启用项目', `${configStatus.stats.enabledProjects} 个`],
-          ['启用部门', `${configStatus.stats.enabledDepartments} 个`],
-          ['启用水印分类', `${configStatus.stats.enabledCategories} 个`],
+          ['启用责任部门', `${configStatus.stats.enabledDepartments} 个`],
+          ['启用归档分类', `${configStatus.stats.enabledCategories} 个`],
           ['启用工作内容', `${configStatus.stats.enabledWorkItems} 个`],
-          ['启用关键词', `${configStatus.stats.enabledKeywords} 个`],
-          ['启用常见场景', `${configStatus.stats.enabledScenes} 个`]
+          ['启用关键词', `${configStatus.stats.enabledKeywords} 个`]
         ]}
       />
       <ActionRow
@@ -256,6 +438,8 @@ function DirectoriesSection({ report, onOpen, onCopy, onNavigate }) {
           description={`${item.message} · 来源：${item.source}`}
           onOpen={() => onOpen(item.path)}
           onCopy={() => onCopy(item.path)}
+          canOpen={Boolean(item.exists && item.readable)}
+          canCopy={Boolean(item.exists && item.readable)}
           extraAction={getDirectoryAction(item.key, onNavigate)}
         />
       ))}
@@ -288,7 +472,7 @@ function LedgerSection({ report, onOpen, onCopy, onNavigate }) {
         extraAction={{ label: '加载归档台账', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' }) }}
       />
       <Distribution title="项目分布" items={ledger.projectTop} />
-      <Distribution title="水印分类分布" items={ledger.categoryTop} />
+      <Distribution title="归档分类分布" items={ledger.categoryTop} />
     </div>
   );
 }
@@ -312,6 +496,8 @@ function SortProgressSection({ report, onOpen, onCopy, onNavigate }) {
         description={progress.message}
         onOpen={() => onOpen(progress.draftsDir)}
         onCopy={() => onCopy(progress.draftsDir)}
+        canOpen={Boolean(progress.directoryExists && progress.directoryReadable)}
+        canCopy={Boolean(progress.directoryExists && progress.directoryReadable)}
         extraAction={{ label: '恢复分拣进度', onClick: () => onNavigate(PAGE_KEYS.sortWorkspace) }}
       />
       <p className="maintenance-muted">分拣草稿由用户手动保存和加载。本页仅检查本地草稿目录与文件数量，不会自动恢复、修改或清理草稿。</p>
@@ -337,6 +523,8 @@ function PackageSection({ report, onOpen, onCopy, onNavigate }) {
         description={packageStatus.message}
         onOpen={() => onOpen(packageStatus.root)}
         onCopy={() => onCopy(packageStatus.root)}
+        canOpen={Boolean(packageStatus.exists && packageStatus.readable)}
+        canCopy={Boolean(packageStatus.exists && packageStatus.readable)}
         extraAction={{ label: '生成资料包', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' }) }}
       />
       <p className="maintenance-muted">资料包状态只检查默认导出目录的直接子目录，不扫描整盘，也不会删除、移动或压缩资料包。</p>
@@ -563,16 +751,19 @@ function SuggestionSection({ report, onNavigate }) {
   const suggestions = getVisibleSuggestions(report);
   return (
     <div className="maintenance-suggestion-list">
-      {suggestions.map((suggestion, index) => (
-        <article key={`${suggestion.title}-${index}`} className={`maintenance-suggestion ${suggestion.level}`}>
-          <StatusBadge status={suggestion.level} />
-          <div>
-            <strong>{suggestion.title}</strong>
-            <p>{suggestion.text}</p>
-          </div>
-          <button type="button" onClick={() => onNavigate(getSuggestionTarget(suggestion))}>去处理</button>
-        </article>
-      ))}
+      {suggestions.map((suggestion, index) => {
+        const target = getSuggestionTarget(suggestion);
+        return (
+          <article key={`${suggestion.title}-${index}`} className={`maintenance-suggestion ${suggestion.level}`}>
+            <StatusBadge status={suggestion.level} />
+            <div>
+              <strong>{suggestion.title}</strong>
+              <p>{suggestion.text}</p>
+            </div>
+            {target ? <button type="button" onClick={() => onNavigate(target)}>去处理</button> : null}
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -583,7 +774,7 @@ function getDirectoryAction(key, onNavigate) {
     defaultArchiveRoot: { label: '设置归档目录', action: 'settings-default-paths', settingKey: 'defaultArchiveRoot' },
     defaultArchivePackageRoot: { label: '设置资料包目录', action: 'settings-default-paths', settingKey: 'defaultArchivePackageRoot' },
     sortDrafts: { label: '打开分拣工作台', action: null },
-    configBackup: { label: '管理设置备份', action: 'settings-backup' }
+    configBackup: { label: '前往备份设置', action: 'settings-backup' }
   };
   const target = actions[key] || { label: '打开系统设置', action: 'settings-default-paths' };
   return {
@@ -595,6 +786,19 @@ function getDirectoryAction(key, onNavigate) {
 }
 
 function getSuggestionTarget(suggestion) {
+  const actionTargets = {
+    'settings-base-data': { page: PAGE_KEYS.settings, action: 'settings-base-data' },
+    'settings-default-paths': { page: PAGE_KEYS.settings, action: 'settings-default-paths' },
+    'settings-default-photo': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultPhotoFolder' } },
+    'settings-default-archive': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchiveRoot' } },
+    'settings-package': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchivePackageRoot' } },
+    'settings-backup': { page: PAGE_KEYS.settings, action: 'settings-backup' },
+    'sort-workspace': PAGE_KEYS.sortWorkspace,
+    ledger: { page: PAGE_KEYS.searchCenter, action: 'load-ledger' },
+    'missing-files': { page: PAGE_KEYS.searchCenter, action: 'missing-files' }
+  };
+  if (suggestion.action && actionTargets[suggestion.action]) return actionTargets[suggestion.action];
+  if (suggestion.level === 'success') return null;
   const text = `${suggestion.title || ''} ${suggestion.text || ''}`;
   if (text.includes('资料包导出目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchivePackageRoot' } };
   if (text.includes('默认照片') || text.includes('照片导入目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultPhotoFolder' } };
@@ -604,16 +808,12 @@ function getSuggestionTarget(suggestion) {
   if (text.includes('文件缺失') || text.includes('台账')) return { page: PAGE_KEYS.searchCenter, action: text.includes('文件缺失') ? 'missing-files' : 'load-ledger' };
   if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
   if (text.includes('资料包')) return { page: PAGE_KEYS.reportCenter, action: 'load-summary' };
-  if (text.includes('分拣草稿')) return { page: PAGE_KEYS.sortWorkspace };
+  if (text.includes('分拣草稿') || text.includes('分拣进度')) return { page: PAGE_KEYS.sortWorkspace };
   return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
 }
 
 function getVisibleSuggestions(report) {
-  const packageDirectory = report.directoryStatus?.items?.find((item) => item.key === 'defaultArchivePackageRoot');
-  const suggestions = (report.suggestions || []).filter((suggestion) => {
-    if (suggestion.title !== '资料包导出目录需要确认') return true;
-    return !packageDirectory?.configured || !packageDirectory?.exists || !packageDirectory?.readable;
-  });
+  const suggestions = report.suggestions || [];
   if (suggestions.length > 0) return suggestions;
   return [{
     level: 'success',
@@ -635,7 +835,7 @@ function SummaryGrid({ items }) {
   );
 }
 
-function ActionRow({ label, value, description, status, onOpen, onCopy, extraAction }) {
+function ActionRow({ label, value, description, status, onOpen, onCopy, canOpen = true, canCopy = true, extraAction }) {
   return (
     <article className="maintenance-action-row">
       <div>
@@ -645,8 +845,8 @@ function ActionRow({ label, value, description, status, onOpen, onCopy, extraAct
       <strong title={value}>{value}</strong>
       {description ? <p>{description}</p> : null}
       <footer>
-        <button className="ghost" onClick={onOpen} disabled={!value || value === '未配置' || value === '未找到台账'}>打开</button>
-        <button className="ghost" onClick={onCopy} disabled={!value || value === '未配置' || value === '未找到台账'}>复制路径</button>
+        <button className="ghost" onClick={onOpen} disabled={!canOpen || !value || value === '未配置' || value === '未找到台账'}>打开</button>
+        <button className="ghost" onClick={onCopy} disabled={!canCopy || !value || value === '未配置' || value === '未找到台账'}>复制路径</button>
         {extraAction ? <button className="ghost" onClick={extraAction.onClick}>{extraAction.label}</button> : null}
       </footer>
     </article>

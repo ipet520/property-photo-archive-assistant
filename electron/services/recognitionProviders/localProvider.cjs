@@ -30,6 +30,7 @@ const LOCAL_PROVIDER = {
       safeConfig: maskSensitiveConfig(providerConfig),
       engine: detected?.engine || 'rapidocr',
       engineName: 'RapidOCR-ONNX',
+      componentVersion: detected?.componentVersion || '',
       source: detected?.command?.source || detected?.source || 'none',
       executablePath: detected?.command?.executablePath || detected?.executablePath || ''
     });
@@ -65,8 +66,8 @@ const LOCAL_PROVIDER = {
       parsedFields: {},
       confidence: result.confidence,
       status: result.success && result.text ? 'success' : (result.success ? 'empty' : 'failed'),
-      warnings: result.success && !result.text ? ['本地 OCR 返回空文本，需人工确认或使用云端增强。'] : [],
-      errors: result.success && result.text ? [] : [{ code: result.success ? 'local_ocr_empty' : 'local_ocr_failed', message: result.error || '本地 OCR 失败。' }],
+      warnings: result.success && !result.text ? ['本地 OCR 未检测到可识别的水印文字，需手工补充归档信息。'] : [],
+      errors: result.success ? [] : [{ code: 'local_ocr_failed', message: result.error || '本地 OCR 失败。' }],
       createdAt: new Date().toISOString(),
       engineResult: result
     };

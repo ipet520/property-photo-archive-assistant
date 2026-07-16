@@ -105,7 +105,7 @@ function buildHealthAlerts({ maintenance, archiveMetrics, rectificationMetrics, 
   if (archiveMetrics.missingCount > 0) addAlert(alerts, 'warning', '台账中存在文件缺失', `当前有 ${archiveMetrics.missingCount} 条归档文件缺失记录。`, 'dataMaintenance');
   if (rectificationMetrics.overdueCount > 0) addAlert(alerts, 'warning', '存在逾期整改事项', `当前有 ${rectificationMetrics.overdueCount} 条待整改或整改中事项已逾期。`, 'rectificationCenter');
   if (maintenance.configStatus?.status && maintenance.configStatus.status !== 'normal') addAlert(alerts, 'warning', '配置文件需要检查', maintenance.configStatus.summary || '请到系统设置中检查基础配置。', 'settings');
-  if (maintenance.packageStatus?.status && maintenance.packageStatus.status !== 'normal') addAlert(alerts, 'info', '资料包目录需要关注', maintenance.packageStatus.message || '请检查默认资料包导出目录。', 'dataMaintenance');
+  if (['warning', 'error'].includes(maintenance.packageStatus?.status)) addAlert(alerts, 'warning', '资料包目录需要关注', maintenance.packageStatus.message || '请检查默认资料包导出目录。', 'dataMaintenance');
   if (errors.maintenance) addAlert(alerts, 'warning', '数据健康检查失败', errors.maintenance, 'dataMaintenance');
   return alerts.slice(0, 6);
 }

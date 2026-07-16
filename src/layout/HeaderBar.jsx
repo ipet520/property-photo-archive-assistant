@@ -1,4 +1,4 @@
-import { APP_NAME, APP_VERSION } from '../constants/app.js';
+import { APP_NAME, VERSION_SUMMARY } from '../constants/app.js';
 
 export default function HeaderBar({ archiveState }) {
   const archiveRoot = archiveState.archiveRoot
@@ -12,7 +12,7 @@ export default function HeaderBar({ archiveState }) {
         <span className="brand-mark">归</span>
         <div>
           <strong>{APP_NAME}</strong>
-          <small>当前版本 {APP_VERSION}</small>
+          <small>{VERSION_SUMMARY}</small>
         </div>
       </div>
       <div className="header-current-path">

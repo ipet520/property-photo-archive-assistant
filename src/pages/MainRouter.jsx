@@ -32,7 +32,7 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
       return <ServiceBriefPage archiveState={archiveState} onNavigate={onNavigate} />;
   }
   if (currentPage === PAGE_KEYS.dataMaintenance) {
-    return <DataMaintenancePage onNavigate={onNavigate} />;
+    return <DataMaintenancePage onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.configCenter || currentPage === PAGE_KEYS.settings) {
       return <SettingsPage archiveState={archiveState} navigationRequest={navigationRequest} />;

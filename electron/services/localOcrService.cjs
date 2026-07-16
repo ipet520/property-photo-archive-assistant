@@ -1,6 +1,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { ocrComponentVersion: OCR_COMPONENT_VERSION } = require('../../package.json');
 
 const RAPID_OCR_RUNNER = process.platform === 'win32' ? 'rapidocr-runner.exe' : 'rapidocr-runner';
 
@@ -9,6 +10,7 @@ async function diagnoseLocalOcr(providerConfig = {}, options = {}) {
   return {
     available: resolved.available,
     engine: 'rapidocr',
+    componentVersion: OCR_COMPONENT_VERSION,
     provider: 'local_ocr',
     source: resolved.source,
     executablePath: resolved.executablePath,
@@ -49,7 +51,7 @@ async function runLocalOcr(imagePath, providerConfig = {}, options = {}) {
     const success = parsed.value.success === true;
     const text = normalizeOcrText(parsed.value.text || '');
     return createOcrResult({
-      success: success && Boolean(text),
+      success,
       text,
       started,
       error: success ? (text ? null : 'RapidOCR 执行成功，但未识别到有效水印文字。') : (parsed.value.error || 'RapidOCR 返回失败。'),
@@ -194,19 +196,36 @@ function createOcrResult({ success, text, started, error, stderr = '', resolved 
     engine: 'local',
     provider: 'local_ocr',
     ocrEngine: 'rapidocr',
+    componentVersion: OCR_COMPONENT_VERSION,
     source: resolved.source || 'none',
     executablePath: resolved.executablePath || '',
     success,
     text: String(text || ''),
     items,
-    confidence: null,
+    confidence: calculateAggregateConfidence(items),
     durationMs: Number.isFinite(Number(runnerDurationMs)) ? Number(runnerDurationMs) : Date.now() - started,
     stderr: String(stderr || ''),
     error: success ? null : String(error || 'RapidOCR 执行失败。')
   };
 }
 
+function calculateAggregateConfidence(items = []) {
+  let weightedScore = 0;
+  let totalWeight = 0;
+  for (const item of Array.isArray(items) ? items : []) {
+    const rawScore = Number(item?.score);
+    if (!Number.isFinite(rawScore)) continue;
+    const score = rawScore > 1 && rawScore <= 100 ? rawScore / 100 : rawScore;
+    if (score < 0 || score > 1) continue;
+    const weight = Math.max(1, Array.from(String(item?.text || '').trim()).length);
+    weightedScore += score * weight;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? Number((weightedScore / totalWeight).toFixed(4)) : null;
+}
+
 module.exports = {
+  OCR_COMPONENT_VERSION,
   diagnoseLocalOcr,
   runLocalOcr,
   resolveLocalOcrCommand

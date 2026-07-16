@@ -9,12 +9,8 @@ const MAX_BACKUPS = 30;
 const CONFIG_FILES = {
   projects: 'projects.json',
   departments: 'departments.json',
-  photoSources: 'photoSources.json',
   watermarkCategories: 'watermarkCategories.json',
-  photoStages: 'photoStages.json',
-  processStatuses: 'processStatuses.json',
-  keywords: 'keywords.json',
-  sceneExamples: 'sceneExamples.json'
+  keywords: 'keywords.json'
 };
 
 const LEGACY_WORK_CONTENTS_FILE = 'workContents.json';
@@ -22,9 +18,6 @@ const LEGACY_WORK_CONTENTS_FILE = 'workContents.json';
 const SIMPLE_CONFIG_KEYS = new Set([
   'projects',
   'departments',
-  'photoSources',
-  'photoStages',
-  'processStatuses',
   'keywords'
 ]);
 
@@ -176,28 +169,8 @@ function normalizeRuntimeConfigs(configs) {
   return {
     projects: enabledNames(editable.projects),
     departments: enabledNames(editable.departments),
-    photoSources: enabledNames(editable.photoSources),
     watermarkCategories: normalizeRuntimeWatermarkCategories(editable.watermarkCategories),
-    photoStages: enabledNames(editable.photoStages),
-    processStatuses: enabledNames(editable.processStatuses),
-    keywords: enabledNames(editable.keywords),
-    sceneExamples: editable.sceneExamples
-      .filter((scene) => scene.enabled !== false)
-      .sort(bySort)
-      .map((scene) => ({
-        title: scene.title || scene.name,
-        watermarkCategory: scene.watermarkCategory || '',
-        workContent: scene.workContent || '',
-        itemName: scene.itemName || '',
-        locationPlaceholder: scene.locationPlaceholder || '',
-        workItemSuggestion: scene.itemName || scene.workItemSuggestion || '',
-        processStatus: scene.processStatus || scene.processStatusSuggestion || '',
-        photoStage: scene.photoStage || scene.photoStageSuggestion || '',
-        processStatusSuggestion: scene.processStatus || scene.processStatusSuggestion || '',
-        photoStageSuggestion: scene.photoStage || scene.photoStageSuggestion || '',
-        keywords: normalizeKeywords(scene.keywords),
-        remarkTemplate: scene.remarkTemplate || ''
-      }))
+    keywords: enabledNames(editable.keywords)
   };
 }
 
@@ -206,12 +179,8 @@ function normalizeEditableConfigs(configs) {
   return {
     projects: normalizeSimpleItems(configs.projects, 'project', { defaultName: '潇湘新区二期' }),
     departments: normalizeSimpleItems(configs.departments, 'department', { defaultName: '工程' }),
-    photoSources: normalizeSimpleItems(configs.photoSources, 'photo-source'),
     watermarkCategories: normalizeWatermarkCategories(watermarkCategories),
-    photoStages: normalizeSimpleItems(configs.photoStages, 'photo-stage', { defaultName: '现场照片' }),
-    processStatuses: normalizeSimpleItems(configs.processStatuses, 'process-status', { defaultName: '待处理' }),
-    keywords: normalizeSimpleItems(configs.keywords, 'keyword', { withGroup: true }),
-    sceneExamples: normalizeSceneExamples(configs.sceneExamples)
+    keywords: normalizeSimpleItems(configs.keywords, 'keyword', { withGroup: true })
   };
 }
 
@@ -221,9 +190,6 @@ function normalizeConfigForStorage(configName, data) {
   }
   if (configName === 'watermarkCategories') {
     return normalizeWatermarkCategories(data);
-  }
-  if (configName === 'sceneExamples') {
-    return normalizeSceneExamples(data);
   }
   return data;
 }
@@ -307,7 +273,7 @@ function mergeLegacyWorkContents(watermarkCategories, legacyWorkContents) {
         sort: 9999,
         isDefault: false,
         isFallback: true,
-        description: '由旧版独立工作内容配置迁移生成，请人工归类到正确水印分类。',
+        description: '由旧版独立工作内容配置迁移生成，请人工归类到正确归档分类。',
         fallbackTip: '这些工作内容来自旧版独立配置，请人工归类。',
         items: []
       };
@@ -403,49 +369,6 @@ function normalizeWorkItems(items, categoryName) {
   }).filter((item) => item.name);
 }
 
-function normalizeSceneExamples(data) {
-  return (Array.isArray(data) ? data : []).map((scene, index) => {
-    const title = String(scene?.title || scene?.name || '').trim();
-    const itemName = String(
-      scene?.itemName
-      || scene?.workItem
-      || scene?.workItemSuggestion
-      || scene?.['工作事项']
-      || ''
-    ).trim();
-    const locationPlaceholder = String(
-      scene?.locationPlaceholder
-      || scene?.specificLocation
-      || scene?.location
-      || scene?.['具体位置']
-      || ''
-    ).trim();
-    const processStatus = String(scene?.processStatus || scene?.processStatusSuggestion || '').trim();
-    const photoStage = String(scene?.photoStage || scene?.photoStageSuggestion || '').trim();
-    return {
-      id: String(scene?.id || createId('scene', title, index)),
-      title,
-      name: title,
-      enabled: scene?.enabled !== false,
-      sort: Number.isFinite(Number(scene?.sort)) ? Number(scene.sort) : (index + 1) * 10,
-      watermarkCategory: String(scene?.watermarkCategory || ''),
-      workContent: String(scene?.workContent || ''),
-      itemName,
-      locationPlaceholder,
-      processStatus,
-      photoStage,
-      keywords: normalizeKeywords(scene?.keywords),
-      remarkTemplate: normalizeSceneRemarkTemplate(scene?.remarkTemplate || '')
-    };
-  }).filter((scene) => scene.title);
-}
-
-function normalizeSceneRemarkTemplate(template) {
-  return String(template || '')
-    .replaceAll('具体位置', '位置/区域')
-    .replaceAll('工作事项', '事项名称');
-}
-
 function normalizeRuntimeWatermarkCategories(categories) {
   return Object.fromEntries(
     categories
@@ -473,11 +396,8 @@ function validateConfig(configName, data) {
   }
   if (configName === 'watermarkCategories') {
     const categories = normalizeWatermarkCategories(data);
-    validateNames(categories, '水印分类名称');
+    validateNames(categories, '归档分类名称');
     categories.forEach((category) => validateNames(category.items, `${category.name} 的工作内容名称`));
-  }
-  if (configName === 'sceneExamples') {
-    validateNames(normalizeSceneExamples(data).map((scene) => ({ ...scene, name: scene.title })), '常见场景名称');
   }
   return { success: true };
 }
@@ -494,7 +414,10 @@ function validateNames(items, label) {
 }
 
 function enabledNames(items) {
-  return items.filter((item) => item.enabled !== false).sort(bySort).map((item) => item.name);
+  return items
+    .filter((item) => item.enabled !== false)
+    .sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)) || bySort(a, b))
+    .map((item) => item.name);
 }
 
 function bySort(a, b) {

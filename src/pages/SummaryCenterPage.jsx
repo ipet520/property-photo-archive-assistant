@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
@@ -35,12 +36,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
 
   useEffect(() => {
     window.archiveAssistant.loadSettings?.().then((settings) => {
-      const usableRoot = archiveState?.archiveRoot
-        || (settings?.pathStatus?.lastArchiveRootExists ? settings.lastArchiveRoot : '')
-        || (settings?.pathStatus?.defaultArchiveRootExists ? settings.defaultArchiveRoot : '')
-        || settings?.lastArchiveRoot
-        || settings?.defaultArchiveRoot
-        || '';
+      const usableRoot = archiveState?.archiveRoot || getUsableArchiveRoot(settings) || '';
       if (usableRoot) setArchiveRoot(usableRoot);
     }).catch(() => {});
   }, [archiveState?.archiveRoot]);
@@ -56,10 +52,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
       ...photoRecords.map((record) => record.project),
       ...rectificationItems.map((item) => item.project)
     ]),
-    department: unique([
-      ...photoRecords.map((record) => record.department),
-      ...rectificationItems.map((item) => item.responsibleDepartment)
-    ]),
+    department: unique(rectificationItems.map((item) => item.responsibleDepartment)),
     watermarkCategory: unique([
       ...photoRecords.map((record) => record.watermarkCategory),
       ...rectificationItems.map((item) => item.watermarkCategory)
@@ -86,7 +79,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
   const metrics = useMemo(() => buildMetrics(filteredPhotos, filteredRectifications), [filteredPhotos, filteredRectifications]);
   const categorySummary = useMemo(() => buildCategorySummary(filteredPhotos), [filteredPhotos]);
   const projectSummary = useMemo(() => buildProjectSummary(filteredPhotos, filteredRectifications), [filteredPhotos, filteredRectifications]);
-  const departmentSummary = useMemo(() => buildDepartmentSummary(filteredPhotos, filteredRectifications), [filteredPhotos, filteredRectifications]);
+  const departmentSummary = useMemo(() => buildDepartmentSummary(filteredRectifications), [filteredRectifications]);
   const rectificationSummary = useMemo(() => buildRectificationSummary(filteredRectifications), [filteredRectifications]);
 
   const activeDetails = activeDetailTab === 'photos' ? filteredPhotos : filteredRectifications;
@@ -102,7 +95,8 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
     const selected = await window.archiveAssistant.selectArchiveRoot();
     if (!selected) return;
     setArchiveRoot(selected);
-    await window.archiveAssistant.updateLastArchiveRoot?.(selected);
+    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot?.(selected);
+    archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
     await loadSummary(selected);
   }
 
@@ -209,7 +203,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
       `文件存在：${metrics.fileExists} 条`,
       `文件缺失：${metrics.fileMissing} 条`,
       `项目数量：${metrics.projectCount}`,
-      `部门数量：${metrics.departmentCount}`,
+      `责任部门数量：${metrics.departmentCount}`,
       `分类数量：${metrics.categoryCount}`,
       `整改事项：${metrics.rectificationTotal} 条`,
       `待整改/整改中：${metrics.rectificationOpen} 条`,
@@ -227,7 +221,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
         <div>
           <p className="eyebrow">资料汇总</p>
           <h1>资料汇总中心</h1>
-          <p>汇总照片归档台账与整改闭环事项，生成项目、部门、分类和整改维度的本地资料统计。</p>
+          <p>汇总照片归档台账与整改闭环事项，生成项目、分类、责任部门和整改状态维度的本地资料统计。</p>
         </div>
         <div className="summary-hero-actions">
           <button type="button" className="primary" onClick={() => loadSummary()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载汇总数据'}</button>
@@ -267,8 +261,8 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
         </header>
         <div className="summary-filter-grid">
           <SelectFilter label="项目" value={filters.project} options={options.project} onChange={(value) => updateFilter('project', value)} />
-          <SelectFilter label="部门" value={filters.department} options={options.department} onChange={(value) => updateFilter('department', value)} />
-          <SelectFilter label="水印分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
+          <SelectFilter label="责任部门" value={filters.department} options={options.department} onChange={(value) => updateFilter('department', value)} />
+          <SelectFilter label="归档分类" value={filters.watermarkCategory} options={options.watermarkCategory} onChange={(value) => updateFilter('watermarkCategory', value)} />
           <SelectFilter label="工作内容" value={filters.workContent} options={options.workContent} onChange={(value) => updateFilter('workContent', value)} />
           <InputFilter label="开始日期" type="date" value={filters.startDate} onChange={(value) => updateFilter('startDate', value)} />
           <InputFilter label="结束日期" type="date" value={filters.endDate} onChange={(value) => updateFilter('endDate', value)} />
@@ -285,7 +279,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
         <StatCard label="文件存在" value={metrics.fileExists} />
         <StatCard label="文件缺失" value={metrics.fileMissing} tone={metrics.fileMissing ? 'warning' : ''} />
         <StatCard label="项目数量" value={metrics.projectCount} />
-        <StatCard label="部门数量" value={metrics.departmentCount} />
+        <StatCard label="责任部门" value={metrics.departmentCount} />
         <StatCard label="整改事项" value={metrics.rectificationTotal} />
       </section>
 
@@ -300,7 +294,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
           <nav className="summary-tabs">
             <button type="button" className={activeSummary === 'category' ? 'active' : ''} onClick={() => setActiveSummary('category')}>分类汇总</button>
             <button type="button" className={activeSummary === 'project' ? 'active' : ''} onClick={() => setActiveSummary('project')}>项目汇总</button>
-            <button type="button" className={activeSummary === 'department' ? 'active' : ''} onClick={() => setActiveSummary('department')}>部门汇总</button>
+            <button type="button" className={activeSummary === 'department' ? 'active' : ''} onClick={() => setActiveSummary('department')}>责任部门汇总</button>
             <button type="button" className={activeSummary === 'rectification' ? 'active' : ''} onClick={() => setActiveSummary('rectification')}>整改汇总</button>
           </nav>
           <SummaryTable
@@ -320,7 +314,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
             <div><dt>统计范围</dt><dd>{filters.includeRectification ? '照片台账 + 整改事项' : '仅照片台账'}</dd></div>
             <div><dt>当前照片结果</dt><dd>{filteredPhotos.length} 条</dd></div>
             <div><dt>当前整改结果</dt><dd>{filteredRectifications.length} 条</dd></div>
-            <div><dt>资料包用途</dt><dd>适合迎检前核对项目、部门、分类、整改闭环覆盖情况。</dd></div>
+            <div><dt>资料包用途</dt><dd>适合迎检前核对项目、归档分类、责任部门和整改闭环覆盖情况。</dd></div>
           </dl>
         </aside>
       </div>
@@ -382,11 +376,10 @@ function SummaryTable({ active, categorySummary, projectSummary, departmentSumma
   }
   if (active === 'department') {
     return (
-      <TableWrap headers={['部门', '照片数', '整改数', '待整改/整改中', '已完成/关闭', '最近日期']} emptyText="当前没有部门汇总数据。">
+      <TableWrap headers={['责任部门', '整改数', '待整改/整改中', '已完成/关闭', '最近日期']} emptyText="当前没有责任部门汇总数据。">
         {departmentSummary.map((row) => (
           <tr key={row.department} onClick={() => onFilter('department', row.department)}>
             <Cell value={row.department} />
-            <Cell value={row.photoCount} />
             <Cell value={row.rectificationCount} />
             <Cell value={row.openCount} />
             <Cell value={row.closedCount} />
@@ -413,7 +406,7 @@ function SummaryTable({ active, categorySummary, projectSummary, departmentSumma
     );
   }
   return (
-    <TableWrap headers={['水印分类', '工作内容', '照片数', '文件存在', '文件缺失', '涉及项目', '最近日期']} emptyText="当前没有分类汇总数据。">
+    <TableWrap headers={['归档分类', '工作内容', '照片数', '文件存在', '文件缺失', '涉及项目', '最近日期']} emptyText="当前没有分类汇总数据。">
       {categorySummary.map((row) => (
         <tr key={`${row.watermarkCategory}-${row.workContent}`} onClick={() => onFilter('watermarkCategory', row.watermarkCategory)}>
           <Cell value={row.watermarkCategory} />
@@ -446,8 +439,8 @@ function TableWrap({ children, headers = ['项目', '照片数', '分类数', '�
 function DetailTable({ type, rows }) {
   const isPhotos = type === 'photos';
   const headers = isPhotos
-    ? ['日期', '项目', '部门', '水印分类', '工作内容', '位置/区域', '阶段', '状态', '关键词', '新文件名', '文件状态']
-    : ['创建日期', '项目', '责任部门', '分类', '工作内容', '位置', '问题标题', '整改状态', '截止日期', '照片数'];
+    ? ['日期', '项目', '归档分类', '工作内容', '位置/区域', '关键词', '备注', '新文件名', '文件状态']
+    : ['创建日期', '项目', '责任部门', '归档分类', '工作内容', '位置', '问题标题', '整改状态', '截止日期', '照片数'];
   return (
     <div className="summary-detail-table-wrap">
       <table className="summary-table detail">
@@ -457,13 +450,11 @@ function DetailTable({ type, rows }) {
             <tr key={row.id}>
               <Cell value={row.date} />
               <Cell value={row.project} />
-              <Cell value={row.department} />
               <Cell value={row.watermarkCategory} />
               <Cell value={row.workContent} />
               <Cell value={row.location} />
-              <Cell value={row.photoStage} />
-              <Cell value={row.processStatus} />
               <Cell value={row.keywords} />
+              <Cell value={row.remark} />
               <Cell value={row.newFileName} />
               <td><span className={`summary-file-status ${row.fileExists ? 'exists' : 'missing'}`}>{row.fileExists ? '文件存在' : '文件缺失'}</span></td>
             </tr>
@@ -518,8 +509,8 @@ function Cell({ value }) {
 }
 
 function matchesPhoto(record, filters) {
+  if (filters.department) return false;
   if (filters.project && record.project !== filters.project) return false;
-  if (filters.department && record.department !== filters.department) return false;
   if (filters.watermarkCategory && record.watermarkCategory !== filters.watermarkCategory) return false;
   if (filters.workContent && record.workContent !== filters.workContent) return false;
   if (filters.startDate && String(record.date || '') < filters.startDate) return false;
@@ -529,8 +520,7 @@ function matchesPhoto(record, filters) {
     record.newFileName,
     record.originalName,
     record.remark,
-    record.location,
-    record.itemName
+    record.location
   ].join(' '), filters.keyword)) return false;
   return true;
 }
@@ -564,7 +554,7 @@ function buildMetrics(photos, rectifications) {
     fileExists,
     fileMissing: photos.length - fileExists,
     projectCount: unique([...photos.map((record) => record.project), ...rectifications.map((item) => item.project)]).length,
-    departmentCount: unique([...photos.map((record) => record.department), ...rectifications.map((item) => item.responsibleDepartment)]).length,
+    departmentCount: unique(rectifications.map((item) => item.responsibleDepartment)).length,
     categoryCount: unique([...photos.map((record) => record.watermarkCategory), ...rectifications.map((item) => item.watermarkCategory)]).length,
     workContentCount: unique([...photos.map((record) => record.workContent), ...rectifications.map((item) => item.workContent)]).length,
     rectificationTotal: rectifications.length,
@@ -602,20 +592,18 @@ function buildProjectSummary(photos, rectifications) {
   }).sort((a, b) => b.photoCount - a.photoCount);
 }
 
-function buildDepartmentSummary(photos, rectifications) {
-  const departments = unique([...photos.map((record) => record.department), ...rectifications.map((item) => item.responsibleDepartment)]);
+function buildDepartmentSummary(rectifications) {
+  const departments = unique(rectifications.map((item) => item.responsibleDepartment));
   return departments.map((department) => {
-    const departmentPhotos = photos.filter((record) => record.department === department);
     const departmentRects = rectifications.filter((item) => item.responsibleDepartment === department);
     return {
       department: department || '未填写',
-      photoCount: departmentPhotos.length,
       rectificationCount: departmentRects.length,
       openCount: departmentRects.filter((item) => ['待整改', '整改中'].includes(item.status)).length,
       closedCount: departmentRects.filter((item) => ['已完成', '已关闭'].includes(item.status)).length,
-      latestDate: latestDate([...departmentPhotos.map((record) => record.date), ...departmentRects.map((item) => item.updatedAt || item.createdAt)])
+      latestDate: latestDate(departmentRects.map((item) => item.updatedAt || item.createdAt))
     };
-  }).sort((a, b) => b.photoCount - a.photoCount);
+  }).sort((a, b) => b.rectificationCount - a.rectificationCount);
 }
 
 function buildRectificationSummary(rectifications) {
@@ -640,7 +628,7 @@ function buildExportPayload(data) {
       ['文件存在数', data.metrics.fileExists],
       ['文件缺失数', data.metrics.fileMissing],
       ['项目数量', data.metrics.projectCount],
-      ['部门数量', data.metrics.departmentCount],
+      ['责任部门数量', data.metrics.departmentCount],
       ['分类数量', data.metrics.categoryCount],
       ['工作内容数量', data.metrics.workContentCount],
       ['整改事项数', data.metrics.rectificationTotal],
@@ -649,7 +637,7 @@ function buildExportPayload(data) {
       ['导出时间', new Date().toLocaleString()]
     ],
     categorySummary: data.categorySummary.map((row) => ({
-      水印分类: row.watermarkCategory,
+      归档分类: row.watermarkCategory,
       工作内容: row.workContent,
       照片数: row.photoCount,
       文件存在: row.existsCount,
@@ -667,8 +655,7 @@ function buildExportPayload(data) {
       最近日期: row.latestDate
     })),
     departmentSummary: data.departmentSummary.map((row) => ({
-      部门: row.department,
-      照片数: row.photoCount,
+      责任部门: row.department,
       整改数: row.rectificationCount,
       待整改或整改中: row.openCount,
       已完成或已关闭: row.closedCount,
@@ -685,14 +672,9 @@ function buildExportPayload(data) {
     photoDetails: data.filteredPhotos.map((record) => ({
       日期: record.date,
       项目: record.project,
-      部门: record.department,
-      照片来源: record.photoSource,
-      水印分类: record.watermarkCategory,
+      归档分类: record.watermarkCategory,
       工作内容: record.workContent,
       位置区域: record.location,
-      事项名称: record.itemName,
-      照片阶段: record.photoStage,
-      处理状态: record.processStatus,
       关键词: record.keywords,
       备注: record.remark,
       原文件名: record.originalName,
@@ -705,7 +687,7 @@ function buildExportPayload(data) {
       创建日期: item.createdDate,
       项目: item.project,
       责任部门: item.responsibleDepartment,
-      水印分类: item.watermarkCategory,
+      归档分类: item.watermarkCategory,
       工作内容: item.workContent,
       位置区域: item.location,
       问题标题: item.title,

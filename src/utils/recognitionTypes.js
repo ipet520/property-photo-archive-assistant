@@ -108,7 +108,7 @@ export function normalizeRecognitionResult(result = {}) {
     fileName: String(result.fileName || empty.fileName || ''),
     providerType,
     status: result.status || empty.status,
-    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    confidence: normalizeNullableNumber(result.confidence),
     rawText: String(result.rawText || ''),
     parsedFields,
     warnings: normalizeStringArray(result.warnings),
@@ -151,12 +151,16 @@ export function normalizeRecognitionStagedResult(result = {}) {
     providerId: String(result.providerId || ''),
     providerKey: String(result.providerKey || result.providerId || ''),
     providerType: String(result.providerType || ''),
+    ocrEngine: String(result.ocrEngine || ''),
+    engineSource: String(result.engineSource || ''),
+    componentVersion: String(result.componentVersion || ''),
+    durationMs: Number.isFinite(Number(result.durationMs)) ? Number(result.durationMs) : null,
     recognitionStatus: String(result.recognitionStatus || result.status || 'pending'),
     stageStatus: normalizeStageStatus(result.stageStatus),
     rawText: String(result.rawText || ''),
     parsedFields: normalizePlainObject(result.parsedFields),
     proposedFields: normalizePlainObject(result.proposedFields),
-    confidence: Number.isFinite(Number(result.confidence)) ? Number(result.confidence) : null,
+    confidence: normalizeNullableNumber(result.confidence),
     warnings: normalizeStringArray(result.warnings),
     errors: normalizeErrors(result.errors),
     message: String(result.message || ''),
@@ -164,6 +168,7 @@ export function normalizeRecognitionStagedResult(result = {}) {
     createdAt,
     updatedAt: String(result.updatedAt || createdAt),
     reviewedAt: String(result.reviewedAt || ''),
+    supersededAt: String(result.supersededAt || ''),
     clearedAt: String(result.clearedAt || ''),
     schemaVersion: 1
   };
@@ -180,7 +185,7 @@ export function normalizeRecognitionCandidateField(field = {}) {
     label: String(field.label || field.sourceFieldKey || ''),
     value: cloneJsonValue(field.value),
     normalizedValue: cloneJsonValue(field.normalizedValue),
-    confidence: Number.isFinite(Number(field.confidence)) ? Number(field.confidence) : null,
+    confidence: normalizeNullableNumber(field.confidence),
     status: normalizeCandidateFieldStatus(field.status),
     source: 'recognition_proposed_fields',
     reason: String(field.reason || ''),
@@ -435,6 +440,12 @@ function normalizeStringArray(values = []) {
 function nullableString(value) {
   const text = String(value || '').trim();
   return text || null;
+}
+
+function normalizeNullableNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function cleanText(value) {

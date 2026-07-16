@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectPhotoFolder: () => ipcRenderer.invoke('dialog:selectPhotoFolder'),
   selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
+  matchArchivedPhotos: (archiveRoot, photos) => ipcRenderer.invoke('photos:matchArchived', archiveRoot, photos),
   recognition: {
     getStatus: () => ipcRenderer.invoke('recognition:getStatus'),
     getProviders: () => ipcRenderer.invoke('recognition:getProviders'),
