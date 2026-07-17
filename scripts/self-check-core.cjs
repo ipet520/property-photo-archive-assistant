@@ -19,6 +19,15 @@ const {
   loadMarkiCredentials,
   saveMarkiCredentials
 } = require('../electron/services/markiCredentialService.cjs');
+const {
+  buildMarkiSourceKey,
+  checkMarkiSourceKeys,
+  getMarkiSourceManifestPath,
+  getMarkiSourceRecordByKey,
+  hasMarkiSourceKey,
+  loadMarkiSourceManifest,
+  upsertMarkiSourceRecords
+} = require('../electron/services/markiSourceManifestService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -29,15 +38,185 @@ async function main() {
   try {
     await checkRecognitionEngine(temporaryRoot);
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
+    await checkMarkiSourceManifest(path.join(temporaryRoot, 'marki-source'));
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：OCR、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：OCR、马克来源清单、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
+  await assert.rejects(
+    () => fs.access(temporaryRoot),
+    (error) => error?.code === 'ENOENT',
+    '核心自检结束后应清理系统临时目录'
+  );
+}
+
+async function checkMarkiSourceManifest(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '马克来源清单自检必须使用系统临时目录'
+  );
+  const orgId = '12345';
+  const firstKey = buildMarkiSourceKey(orgId, 'moment-001');
+  const secondKey = buildMarkiSourceKey(orgId, 'moment-002');
+  const newKey = buildMarkiSourceKey(orgId, 'moment-003');
+  assert.equal(firstKey, 'marki_api:12345:moment-001', '马克来源唯一标识格式必须稳定');
+
+  const firstWrite = await upsertMarkiSourceRecords(root, orgId, [
+    {
+      id: 'moment-001',
+      teamId: 10001,
+      uid: 20001,
+      postTime: 1760000001,
+      markName: '巡查检查类',
+      url: 'https://private.example/photo.jpg',
+      rawContent: '不应写入来源清单',
+      organizationKey: '不应写入来源清单'
+    },
+    {
+      id: 'moment-001',
+      teamId: 10001,
+      uid: 20001,
+      postTime: 1760000001,
+      markName: '巡查检查类'
+    },
+    {
+      id: 'moment-002',
+      teamId: 10001,
+      uid: 20002,
+      postTime: 1760000002,
+      markName: '工程类专用'
+    }
+  ], { now: () => new Date('2026-07-17T04:00:00.000Z') });
+  assert.equal(firstWrite.inputCount, 3, '来源清单应记录原始输入数量');
+  assert.equal(firstWrite.uniqueInputCount, 2, '同批重复 momentId 应合并');
+  assert.equal(firstWrite.duplicateInputCount, 1, '同批重复数量应准确');
+  assert.equal(firstWrite.createdCount, 2, '首次写入应创建两条唯一来源记录');
+  assert.equal(firstWrite.totalCount, 2, '来源清单总数应按 sourceKey 去重');
+
+  const manifestPath = getMarkiSourceManifestPath(root, orgId);
+  assert.equal(
+    manifestPath,
+    path.join(root, '物业工作照片归档助手', 'marki-import', orgId, 'source-manifest.json'),
+    '来源清单应位于正式 marki-import 组织目录'
+  );
+  const manifestText = await fs.readFile(manifestPath, 'utf8');
+  assert.equal(manifestText.includes('private.example'), false, '来源清单不得保存完整远程 URL');
+  assert.equal(manifestText.includes('不应写入来源清单'), false, '来源清单不得保存未允许的原始字段或凭证');
+
+  const firstRecord = await getMarkiSourceRecordByKey(root, orgId, firstKey);
+  assert.equal(firstRecord?.importStatus, 'discovered', '第一刀新来源记录初始状态应为 discovered');
+  assert.equal(firstRecord?.teamId, '10001', '来源记录应保留团队 ID');
+  assert.equal(Object.hasOwn(firstRecord || {}, 'url'), false, '单条来源记录不得返回远程 URL');
+  assert.equal(await hasMarkiSourceKey(root, orgId, firstKey), true, '已写入 sourceKey 应返回存在');
+  assert.equal(await hasMarkiSourceKey(root, orgId, newKey), false, '未写入 sourceKey 应返回不存在');
+
+  const batchCheck = await checkMarkiSourceKeys(root, orgId, [firstKey, firstKey, secondKey, newKey]);
+  assert.equal(batchCheck.requestedCount, 4, '批量检查应保留请求数量');
+  assert.equal(batchCheck.uniqueCount, 3, '批量检查应合并重复 sourceKey');
+  assert.equal(batchCheck.duplicateInputCount, 1, '批量检查重复数量应准确');
+  assert.equal(batchCheck.existingCount, 2, '批量检查应正确识别已存在记录');
+  assert.equal(batchCheck.newCount, 1, '批量检查应正确识别新来源');
+  assert.equal(batchCheck.bySourceKey[firstKey].importStatus, 'discovered', '批量检查应返回已有来源状态');
+  assert.equal(batchCheck.bySourceKey[newKey].exists, false, '未写入来源应返回不存在');
+
+  const manifestBeforeRepeat = await loadMarkiSourceManifest(root, orgId);
+  const repeated = await upsertMarkiSourceRecords(root, orgId, [
+    { id: 'moment-001', teamId: 10001, uid: 20001, postTime: 1760000001, markName: '巡查检查类' },
+    { id: 'moment-002', teamId: 10001, uid: 20002, postTime: 1760000002, markName: '工程类专用' }
+  ], { now: () => new Date('2026-07-17T05:00:00.000Z') });
+  assert.equal(repeated.createdCount, 0, '重复写入不得创建新记录');
+  assert.equal(repeated.updatedCount, 0, '相同元数据重复写入不得制造无意义更新');
+  assert.equal(repeated.unchangedCount, 2, '相同来源应明确计为未变化');
+  const manifestAfterRepeat = await loadMarkiSourceManifest(root, orgId);
+  assert.equal(manifestAfterRepeat.updatedAt, manifestBeforeRepeat.updatedAt, '幂等写入不得改变清单更新时间');
+  assert.equal(
+    manifestAfterRepeat.records[firstKey]?.importStatus,
+    'discovered',
+    '重复写入后来源状态仍应保持 discovered'
+  );
+
+  const updated = await upsertMarkiSourceRecords(root, orgId, [
+    { id: 'moment-002', teamId: 10001, uid: 20002, postTime: 1760000002, markName: '工程类专用（更新）' }
+  ], { now: () => new Date('2026-07-17T06:00:00.000Z') });
+  assert.equal(updated.updatedCount, 1, '来源元数据变化时应更新原记录');
+  const updatedRecord = await getMarkiSourceRecordByKey(root, orgId, secondKey);
+  assert.equal(updatedRecord?.markName, '工程类专用（更新）', '来源元数据更新后应可重新读取');
+  assert.equal(updatedRecord?.importStatus, 'discovered', '元数据更新不得重置或改变导入状态');
+
+  await Promise.all([
+    upsertMarkiSourceRecords(root, orgId, [
+      { id: 'moment-003', teamId: 10001, uid: 20003, postTime: 1760000003, markName: '绿化保洁类' }
+    ]),
+    upsertMarkiSourceRecords(root, orgId, [
+      { id: 'moment-004', teamId: 10001, uid: 20004, postTime: 1760000004, markName: '时间地点' }
+    ])
+  ]);
+  const afterConcurrentWrites = await loadMarkiSourceManifest(root, orgId);
+  assert.equal(Object.keys(afterConcurrentWrites.records).length, 4, '并发写入不得互相覆盖来源记录');
+
+  const serviceModulePath = require.resolve('../electron/services/markiSourceManifestService.cjs');
+  delete require.cache[serviceModulePath];
+  const restartedSourceService = require(serviceModulePath);
+  const manifestAfterRestart = await restartedSourceService.loadMarkiSourceManifest(root, orgId);
+  assert.equal(Object.keys(manifestAfterRestart.records).length, 4, '重新加载服务后应从磁盘恢复全部来源记录');
+  assert.equal(
+    await restartedSourceService.hasMarkiSourceKey(root, orgId, firstKey),
+    true,
+    '重新加载服务后仍应正确判断 sourceKey 已存在'
+  );
+
+  const manifestDirectoryEntries = await fs.readdir(path.dirname(manifestPath));
+  assert.equal(
+    manifestDirectoryEntries.some((name) => name.endsWith('.tmp')),
+    false,
+    '来源清单成功写入后不得遗留临时文件'
+  );
+
+  const validManifestText = await fs.readFile(manifestPath, 'utf8');
+  const validManifest = JSON.parse(validManifestText);
+  for (const futureStatus of ['downloading', 'imported', 'download_failed']) {
+    const futureManifest = JSON.parse(JSON.stringify(validManifest));
+    futureManifest.records[firstKey].importStatus = futureStatus;
+    await fs.writeFile(manifestPath, `${JSON.stringify(futureManifest, null, 2)}\n`, 'utf8');
+    await assert.rejects(
+      () => loadMarkiSourceManifest(root, orgId),
+      (error) => error?.code === 'marki_source_manifest_invalid',
+      `第一刀读取清单时必须拒绝未来状态 ${futureStatus}`
+    );
+    assert.equal(
+      JSON.parse(await fs.readFile(manifestPath, 'utf8')).records[firstKey].importStatus,
+      futureStatus,
+      `拒绝未来状态 ${futureStatus} 时不得静默改写清单`
+    );
+  }
+  await fs.writeFile(manifestPath, validManifestText, 'utf8');
+
+  await fs.writeFile(manifestPath, '{"version":1,"records":', 'utf8');
+  await assert.rejects(
+    () => upsertMarkiSourceRecords(root, orgId, [
+      { id: 'moment-005', teamId: 10001, uid: 20005, postTime: 1760000005, markName: '测试' }
+    ]),
+    (error) => error?.code === 'marki_source_manifest_invalid',
+    '来源清单损坏时应阻止后续覆盖写入'
+  );
+  assert.equal(
+    await fs.readFile(manifestPath, 'utf8'),
+    '{"version":1,"records":',
+    '来源清单损坏后不得被静默替换为空清单'
+  );
+  await fs.writeFile(manifestPath, validManifestText, 'utf8');
+
+  await assert.rejects(
+    () => checkMarkiSourceKeys(root, orgId, ['marki_api:99999:moment-001']),
+    (error) => error?.code === 'invalid_source_key',
+    '跨组织 sourceKey 必须被拒绝'
+  );
 }
 
 async function checkMarkiFoundation(root) {

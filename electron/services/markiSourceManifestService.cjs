@@ -1,0 +1,413 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
+
+const APP_FOLDER_NAME = '物业工作照片归档助手';
+const MARKI_IMPORT_DIRECTORY_NAME = 'marki-import';
+const SOURCE_MANIFEST_FILE_NAME = 'source-manifest.json';
+const SOURCE_MANIFEST_VERSION = 1;
+const SOURCE_TYPE = 'marki_api';
+const INITIAL_IMPORT_STATUS = 'discovered';
+const IMPORT_STATUSES = Object.freeze([INITIAL_IMPORT_STATUS]);
+const MAX_BATCH_SIZE = 5000;
+const manifestWriteQueues = new Map();
+
+function getMarkiImportRoot(documentsPath) {
+  const root = String(documentsPath || '').trim();
+  if (!root) throw createManifestError('invalid_documents_path', '缺少软件数据目录。');
+  return path.join(root, APP_FOLDER_NAME, MARKI_IMPORT_DIRECTORY_NAME);
+}
+
+function getMarkiSourceManifestPath(documentsPath, orgId) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  return path.join(getMarkiImportRoot(documentsPath), normalizedOrgId, SOURCE_MANIFEST_FILE_NAME);
+}
+
+function buildMarkiSourceKey(orgId, momentId) {
+  return `${SOURCE_TYPE}:${normalizeOrgId(orgId)}:${normalizeMomentId(momentId)}`;
+}
+
+async function loadMarkiSourceManifest(documentsPath, orgId) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const manifestPath = getMarkiSourceManifestPath(documentsPath, normalizedOrgId);
+  try {
+    const content = await fs.readFile(manifestPath, 'utf8');
+    const parsed = JSON.parse(content);
+    return cloneJson(normalizeStoredManifest(parsed, normalizedOrgId));
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return createEmptyManifest(normalizedOrgId);
+    }
+    if (error.name === 'SyntaxError' || error.code === 'marki_source_manifest_invalid') {
+      throw createManifestError(
+        'marki_source_manifest_invalid',
+        '马克来源清单无法解析，已停止写入以保护现有记录。'
+      );
+    }
+    throw error;
+  }
+}
+
+async function upsertMarkiSourceRecords(documentsPath, orgId, sourceRecords = [], options = {}) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const inputs = normalizeSourceRecordBatch(normalizedOrgId, sourceRecords);
+  const manifestPath = getMarkiSourceManifestPath(documentsPath, normalizedOrgId);
+  return withManifestWriteLock(manifestPath, async () => {
+    const manifest = await loadMarkiSourceManifest(documentsPath, normalizedOrgId);
+    const now = resolveNow(options);
+    let createdCount = 0;
+    let updatedCount = 0;
+    let unchangedCount = 0;
+    const items = [];
+
+    for (const input of inputs.uniqueRecords) {
+      const existing = manifest.records[input.sourceKey] || null;
+      if (!existing) {
+        const record = {
+          ...input,
+          importStatus: INITIAL_IMPORT_STATUS,
+          createdAt: now,
+          updatedAt: now
+        };
+        manifest.records[input.sourceKey] = record;
+        createdCount += 1;
+        items.push(createUpsertResult(record, false, true));
+        continue;
+      }
+
+      const merged = {
+        ...existing,
+        teamId: input.teamId,
+        uid: input.uid,
+        postTime: input.postTime,
+        markName: input.markName
+      };
+      if (hasSourceMetadataChanged(existing, merged)) {
+        merged.updatedAt = now;
+        manifest.records[input.sourceKey] = merged;
+        updatedCount += 1;
+        items.push(createUpsertResult(merged, true, true));
+      } else {
+        unchangedCount += 1;
+        items.push(createUpsertResult(existing, true, false));
+      }
+    }
+
+    if (createdCount > 0 || updatedCount > 0) {
+      manifest.updatedAt = now;
+      await writeMarkiSourceManifest(manifestPath, manifest);
+    }
+
+    return {
+      success: true,
+      orgId: normalizedOrgId,
+      manifestPath,
+      inputCount: inputs.inputCount,
+      uniqueInputCount: inputs.uniqueRecords.length,
+      duplicateInputCount: inputs.inputCount - inputs.uniqueRecords.length,
+      createdCount,
+      updatedCount,
+      unchangedCount,
+      totalCount: Object.keys(manifest.records).length,
+      items
+    };
+  });
+}
+
+async function getMarkiSourceRecordByKey(documentsPath, orgId, sourceKey) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const normalizedSourceKey = normalizeSourceKey(normalizedOrgId, sourceKey);
+  const manifest = await loadMarkiSourceManifest(documentsPath, normalizedOrgId);
+  const record = manifest.records[normalizedSourceKey];
+  return record ? cloneJson(record) : null;
+}
+
+async function hasMarkiSourceKey(documentsPath, orgId, sourceKey) {
+  return Boolean(await getMarkiSourceRecordByKey(documentsPath, orgId, sourceKey));
+}
+
+async function checkMarkiSourceKeys(documentsPath, orgId, sourceKeys = []) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  if (!Array.isArray(sourceKeys)) {
+    throw createManifestError('invalid_source_keys', 'sourceKeys 必须为数组。');
+  }
+  if (sourceKeys.length > MAX_BATCH_SIZE) {
+    throw createManifestError('source_key_batch_too_large', `一次最多检查 ${MAX_BATCH_SIZE} 个来源标识。`);
+  }
+  const uniqueSourceKeys = [];
+  const seen = new Set();
+  for (const sourceKey of sourceKeys) {
+    const normalizedSourceKey = normalizeSourceKey(normalizedOrgId, sourceKey);
+    if (seen.has(normalizedSourceKey)) continue;
+    seen.add(normalizedSourceKey);
+    uniqueSourceKeys.push(normalizedSourceKey);
+  }
+
+  const manifest = await loadMarkiSourceManifest(documentsPath, normalizedOrgId);
+  const items = uniqueSourceKeys.map((sourceKey) => {
+    const record = manifest.records[sourceKey] || null;
+    return {
+      sourceKey,
+      exists: Boolean(record),
+      importStatus: record?.importStatus || ''
+    };
+  });
+  const bySourceKey = Object.fromEntries(items.map((item) => [item.sourceKey, {
+    exists: item.exists,
+    importStatus: item.importStatus
+  }]));
+  const existingCount = items.filter((item) => item.exists).length;
+  return {
+    success: true,
+    orgId: normalizedOrgId,
+    requestedCount: sourceKeys.length,
+    uniqueCount: uniqueSourceKeys.length,
+    duplicateInputCount: sourceKeys.length - uniqueSourceKeys.length,
+    existingCount,
+    newCount: items.length - existingCount,
+    items,
+    bySourceKey
+  };
+}
+
+function normalizeSourceRecordBatch(orgId, sourceRecords) {
+  if (!Array.isArray(sourceRecords)) {
+    throw createManifestError('invalid_source_records', '来源记录必须为数组。');
+  }
+  if (sourceRecords.length > MAX_BATCH_SIZE) {
+    throw createManifestError('source_record_batch_too_large', `一次最多写入 ${MAX_BATCH_SIZE} 条来源记录。`);
+  }
+  const recordsByKey = new Map();
+  for (const item of sourceRecords) {
+    const normalized = normalizeSourceRecordInput(orgId, item);
+    recordsByKey.set(normalized.sourceKey, normalized);
+  }
+  return {
+    inputCount: sourceRecords.length,
+    uniqueRecords: Array.from(recordsByKey.values())
+  };
+}
+
+function normalizeSourceRecordInput(orgId, input = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createManifestError('invalid_source_record', '来源记录格式无效。');
+  }
+  const momentId = normalizeMomentId(input.momentId ?? input.id);
+  return {
+    sourceKey: buildMarkiSourceKey(orgId, momentId),
+    sourceType: SOURCE_TYPE,
+    orgId,
+    momentId,
+    teamId: normalizeOptionalId(input.teamId),
+    uid: normalizeOptionalId(input.uid),
+    postTime: normalizeTimestamp(input.postTime),
+    markName: normalizeText(input.markName, 200)
+  };
+}
+
+function normalizeStoredManifest(input, expectedOrgId) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源清单结构无效。');
+  }
+  if (Number(input.version) !== SOURCE_MANIFEST_VERSION) {
+    throw createManifestError('marki_source_manifest_invalid', '来源清单版本不受支持。');
+  }
+  const storedOrgId = String(input.orgId || '').trim();
+  if (!/^\d+$/.test(storedOrgId) || storedOrgId !== expectedOrgId) {
+    throw createManifestError('marki_source_manifest_invalid', '来源清单组织 ID 不匹配。');
+  }
+  if (String(input.sourceType || '') !== SOURCE_TYPE) {
+    throw createManifestError('marki_source_manifest_invalid', '来源清单类型无效。');
+  }
+  if (!isPlainObject(input.records)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源清单记录结构无效。');
+  }
+
+  const records = {};
+  for (const [sourceKey, value] of Object.entries(input.records)) {
+    const normalizedSourceKey = normalizeSourceKey(expectedOrgId, sourceKey);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw createManifestError('marki_source_manifest_invalid', '来源记录结构无效。');
+    }
+    const momentId = normalizeMomentId(value.momentId);
+    if (buildMarkiSourceKey(expectedOrgId, momentId) !== normalizedSourceKey) {
+      throw createManifestError('marki_source_manifest_invalid', '来源记录唯一标识不一致。');
+    }
+    const importStatus = String(value.importStatus || '');
+    if (!IMPORT_STATUSES.includes(importStatus)) {
+      throw createManifestError('marki_source_manifest_invalid', '来源记录状态无效。');
+    }
+    records[normalizedSourceKey] = {
+      sourceKey: normalizedSourceKey,
+      sourceType: SOURCE_TYPE,
+      orgId: expectedOrgId,
+      momentId,
+      teamId: normalizeOptionalId(value.teamId),
+      uid: normalizeOptionalId(value.uid),
+      postTime: normalizeTimestamp(value.postTime),
+      markName: normalizeText(value.markName, 200),
+      importStatus,
+      createdAt: normalizeIsoDate(value.createdAt),
+      updatedAt: normalizeIsoDate(value.updatedAt)
+    };
+  }
+  return {
+    version: SOURCE_MANIFEST_VERSION,
+    sourceType: SOURCE_TYPE,
+    orgId: expectedOrgId,
+    updatedAt: normalizeIsoDate(input.updatedAt, true),
+    records
+  };
+}
+
+async function writeMarkiSourceManifest(manifestPath, manifest) {
+  await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+  const temporaryPath = `${manifestPath}.${process.pid}.${Date.now()}.tmp`;
+  const payload = `${JSON.stringify(manifest, null, 2)}\n`;
+  let handle;
+  try {
+    handle = await fs.open(temporaryPath, 'wx');
+    await handle.writeFile(payload, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(temporaryPath, manifestPath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function createEmptyManifest(orgId) {
+  return {
+    version: SOURCE_MANIFEST_VERSION,
+    sourceType: SOURCE_TYPE,
+    orgId,
+    updatedAt: '',
+    records: {}
+  };
+}
+
+function createUpsertResult(record, existedBefore, changed) {
+  return {
+    sourceKey: record.sourceKey,
+    existedBefore,
+    changed,
+    importStatus: record.importStatus
+  };
+}
+
+function hasSourceMetadataChanged(existing, next) {
+  return ['teamId', 'uid', 'postTime', 'markName'].some((key) => existing[key] !== next[key]);
+}
+
+function normalizeSourceKey(orgId, sourceKey) {
+  const text = String(sourceKey || '').trim();
+  const expectedPrefix = `${SOURCE_TYPE}:${orgId}:`;
+  if (!text.startsWith(expectedPrefix)) {
+    throw createManifestError('invalid_source_key', '来源标识与当前组织不匹配。');
+  }
+  const momentId = normalizeMomentId(text.slice(expectedPrefix.length));
+  const normalized = buildMarkiSourceKey(orgId, momentId);
+  if (text !== normalized) {
+    throw createManifestError('invalid_source_key', '来源标识格式无效。');
+  }
+  return normalized;
+}
+
+function normalizeOrgId(value) {
+  const text = String(value || '').trim();
+  if (!/^\d+$/.test(text)) {
+    throw createManifestError('invalid_org_id', '组织 ID 必须为数字。');
+  }
+  return text;
+}
+
+function normalizeMomentId(value) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > 200 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw createManifestError('invalid_moment_id', '照片来源 ID 无效。');
+  }
+  return text;
+}
+
+function normalizeOptionalId(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  if (text.length > 100 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw createManifestError('invalid_source_record', '来源记录中的 ID 无效。');
+  }
+  return text;
+}
+
+function normalizeTimestamp(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function normalizeText(value, maxLength) {
+  const text = String(value ?? '').trim();
+  return text.slice(0, maxLength);
+}
+
+function normalizeIsoDate(value, allowEmpty = false) {
+  const text = String(value || '').trim();
+  if (!text && allowEmpty) return '';
+  const date = new Date(text);
+  if (!text || Number.isNaN(date.getTime())) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录时间无效。');
+  }
+  return date.toISOString();
+}
+
+function resolveNow(options = {}) {
+  const value = typeof options.now === 'function' ? options.now() : new Date();
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw createManifestError('invalid_current_time', '无法生成来源记录时间。');
+  }
+  return date.toISOString();
+}
+
+function withManifestWriteLock(manifestPath, action) {
+  const previous = manifestWriteQueues.get(manifestPath) || Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  manifestWriteQueues.set(manifestPath, current);
+  return current.finally(() => {
+    if (manifestWriteQueues.get(manifestPath) === current) {
+      manifestWriteQueues.delete(manifestPath);
+    }
+  });
+}
+
+function createManifestError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+module.exports = {
+  IMPORT_STATUSES,
+  INITIAL_IMPORT_STATUS,
+  MARKI_IMPORT_DIRECTORY_NAME,
+  MAX_BATCH_SIZE,
+  SOURCE_MANIFEST_FILE_NAME,
+  SOURCE_MANIFEST_VERSION,
+  SOURCE_TYPE,
+  buildMarkiSourceKey,
+  checkMarkiSourceKeys,
+  getMarkiImportRoot,
+  getMarkiSourceManifestPath,
+  getMarkiSourceRecordByKey,
+  hasMarkiSourceKey,
+  loadMarkiSourceManifest,
+  upsertMarkiSourceRecords
+};
