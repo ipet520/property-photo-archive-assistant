@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { buildArchivePreview, archivePhotos } = require('../electron/services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('../electron/services/archivePackageService.cjs');
 const { matchArchivedPhotos } = require('../electron/services/archiveFingerprintService.cjs');
@@ -33,6 +34,20 @@ const {
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 } = require('../electron/services/markiSourceManifestService.cjs');
+const {
+  buildMarkiStructuredImportBundle,
+  buildMarkiWorkbenchImportPackage,
+  cleanMarkiFieldValue,
+  mapMarkiMoment,
+  parseMarkiContent
+} = require('../electron/services/markiStructuredImportService.cjs');
+const {
+  buildMarkiSourceMetadataRecord,
+  buildMarkiSourceMetadataRef,
+  getMarkiSourceMetadataPath,
+  loadMarkiSourceMetadata,
+  saveMarkiSourceMetadata
+} = require('../electron/services/markiSourceMetadataService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -42,15 +57,18 @@ async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'photo-archive-self-check-'));
   try {
     await checkRecognitionEngine(temporaryRoot);
+    await checkRecognitionModelCompatibility();
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkMarkiSourceManifest(path.join(temporaryRoot, 'marki-source'));
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
+    await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
+    await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：OCR、马克来源清单与下载、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：OCR、马克来源清单、来源元数据、下载与结构化导入、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -657,6 +675,808 @@ function createTestJpeg(width, height) {
   ]);
 }
 
+async function checkRecognitionModelCompatibility() {
+  const recognitionModuleUrl = pathToFileURL(
+    path.join(__dirname, '..', 'src', 'constants', 'recognition.js')
+  ).href;
+  const recognitionConstants = await import(recognitionModuleUrl);
+  assert.equal(
+    recognitionConstants.RECOGNITION_RESULT_SOURCES.includes('marki_api'),
+    true,
+    '正式识别来源必须支持 marki_api'
+  );
+  assert.equal(
+    recognitionConstants.RECOGNITION_PROVIDER_TYPES.includes('structured_data'),
+    true,
+    '正式识别提供方类型必须支持 structured_data'
+  );
+  assert.equal(
+    recognitionConstants.RECOGNITION_RESULT_STATUSES.includes('recognized'),
+    true,
+    '正式识别状态必须支持 recognized'
+  );
+
+  const workspaceSource = await fs.readFile(
+    path.join(__dirname, '..', 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const outcomeFunction = workspaceSource.match(
+    /function getRecognitionOutcome\(result = null\) \{[\s\S]*?\n\}\n\nfunction hasValidWatermarkEvidence/
+  )?.[0] || '';
+  assert.ok(outcomeFunction, '必须能定位工作台 getRecognitionOutcome 判断函数');
+  assert.match(
+    outcomeFunction,
+    /if \(result\.status === 'recognized'\) return 'success';/,
+    'recognized 必须在 getRecognitionOutcome 中直接识别为成功'
+  );
+  assert.match(
+    outcomeFunction,
+    /if \(result\.status === 'success' && rawText\) return hasValidWatermarkEvidence\(result\) \? 'success' : 'empty';/,
+    '既有 success 文本判断不得改变'
+  );
+  assert.match(
+    outcomeFunction,
+    /if \(result\.status === 'empty' \|\| \(result\.status === 'success' && !rawText\)\) return 'empty';/,
+    '既有空识别判断不得改变'
+  );
+  assert.match(
+    outcomeFunction,
+    /if \(recognitionFailureStatuses\.has\(result\.status\)\) return 'failed';/,
+    '既有识别失败判断不得改变'
+  );
+}
+
+async function checkMarkiSourceMetadata(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '马克来源元数据自检必须使用系统临时目录'
+  );
+  const orgId = '12345';
+  const momentId = 'metadata-001';
+  const sourceMetadataRef = buildMarkiSourceMetadataRef(orgId, momentId);
+  assert.equal(
+    sourceMetadataRef,
+    'marki_source_metadata:12345:metadata-001',
+    '来源元数据引用格式必须稳定'
+  );
+  assert.notEqual(
+    buildMarkiSourceMetadataRef('67890', momentId),
+    sourceMetadataRef,
+    '不同组织下相同 momentId 不得共用来源元数据引用'
+  );
+  const metadataPath = getMarkiSourceMetadataPath(root, orgId, momentId);
+  assert.equal(
+    metadataPath,
+    path.join(
+      root,
+      '物业工作照片归档助手',
+      'marki-import',
+      orgId,
+      'source-metadata',
+      `${momentId}.json`
+    ),
+    '来源元数据必须保存到组织 source-metadata 目录'
+  );
+
+  const now = () => new Date('2026-07-17T04:00:00.000Z');
+  const metadataOptions = deepFreeze({ now });
+  const parsedEntriesInput = deepFreeze([
+    { key: '__proto__', value: 'blocked' },
+    { key: 'constructor', value: 'blocked' },
+    { key: 'prototype', value: 'blocked' },
+    { key: '工作内容', value: '设施巡查' },
+    { key: '工作内容', value: '复查' },
+    { key: '占位字段', value: '未设置' },
+    { key: '对象字段', value: { unsafe: true } }
+  ]);
+  const parsedEntriesSnapshot = JSON.stringify(parsedEntriesInput);
+  const record = buildMarkiSourceMetadataRecord({
+    orgId,
+    momentId,
+    teamId: '10001',
+    uid: '20001',
+    postTime: 1784246400,
+    capturedAt: '2026-07-17T10:00:00+08:00',
+    markName: '巡查检查类',
+    antiCounterfeitCode: 'ANTI-001',
+    parsedEntries: parsedEntriesInput,
+    url: 'https://private.example/photo.jpg',
+    rawContent: '不得保存',
+    organizationKey: '不得保存',
+    sign: '不得保存',
+    headers: { authorization: '不得保存' }
+  }, metadataOptions);
+  assert.equal(
+    JSON.stringify(parsedEntriesInput),
+    parsedEntriesSnapshot,
+    '来源元数据构建不得修改深冻结的 parsedEntries 输入'
+  );
+  assert.deepEqual(
+    Object.keys(record),
+    [
+      'schemaVersion',
+      'sourceMetadataRef',
+      'sourceKey',
+      'sourceType',
+      'orgId',
+      'momentId',
+      'teamId',
+      'uid',
+      'postTime',
+      'capturedAt',
+      'markName',
+      'antiCounterfeitCode',
+      'parsedEntries',
+      'createdAt',
+      'updatedAt'
+    ],
+    '来源元数据必须严格使用字段白名单'
+  );
+  assert.equal(Object.hasOwn(record, 'parsedFields'), false, '来源元数据不得继续保存 parsedFields');
+  assert.deepEqual(
+    record.parsedEntries,
+    [
+      { key: '工作内容', value: '设施巡查' },
+      { key: '工作内容', value: '复查' }
+    ],
+    '来源字段条目应过滤特殊键、占位值和对象值，并保留合法顺序及重复关系'
+  );
+  const serializedRecord = JSON.stringify(record);
+  assert.equal(serializedRecord.includes('private.example'), false, '来源元数据不得保存远程 URL');
+  assert.equal(serializedRecord.includes('rawContent'), false, '来源元数据不得保存原始 content');
+  assert.equal(serializedRecord.includes('organizationKey'), false, '来源元数据不得保存组织 KEY');
+  assert.equal(serializedRecord.includes('"sign"'), false, '来源元数据不得保存签名');
+  assert.equal(serializedRecord.includes('"headers"'), false, '来源元数据不得保存请求头');
+
+  const firstSave = await saveMarkiSourceMetadata(root, record, metadataOptions);
+  assert.equal(firstSave.success, true, '来源元数据应能保存');
+  assert.equal(firstSave.sourceMetadataRef, sourceMetadataRef, '保存结果应返回稳定引用');
+  const loaded = await loadMarkiSourceMetadata(root, orgId, sourceMetadataRef);
+  assert.equal(loaded?.antiCounterfeitCode, 'ANTI-001', '来源元数据应保存防伪码');
+  assert.equal(loaded?.sourceKey, buildMarkiSourceKey(orgId, momentId), '来源元数据应关联 sourceKey');
+  assert.deepEqual(loaded?.parsedEntries, record.parsedEntries, '通过来源引用重新读取后字段条目应保持一致');
+
+  const frozenSaveInput = deepFreeze({
+    orgId,
+    momentId: 'metadata-frozen-input',
+    antiCounterfeitCode: 'FROZEN-001',
+    parsedEntries: parsedEntriesInput
+  });
+  const frozenSaveOptions = deepFreeze({
+    now: () => new Date('2026-07-17T04:00:30.000Z')
+  });
+  const frozenSaveInputSnapshot = JSON.stringify(frozenSaveInput);
+  await saveMarkiSourceMetadata(root, frozenSaveInput, frozenSaveOptions);
+  assert.equal(
+    JSON.stringify(frozenSaveInput),
+    frozenSaveInputSnapshot,
+    '来源元数据保存不得修改深冻结输入及其字段条目'
+  );
+
+  const updated = await saveMarkiSourceMetadata(root, {
+    ...record,
+    antiCounterfeitCode: 'ANTI-002',
+    parsedEntries: [
+      ...record.parsedEntries,
+      { key: '上传人', value: '测试人员' }
+    ]
+  }, {
+    now: () => new Date('2026-07-17T04:01:00.000Z')
+  });
+  assert.equal(updated.record.antiCounterfeitCode, 'ANTI-002', '重复保存应更新同一来源记录');
+  assert.equal(updated.record.createdAt, record.createdAt, '更新来源元数据应保留首次创建时间');
+  assert.equal(updated.record.updatedAt, '2026-07-17T04:01:00.000Z', '更新来源元数据应刷新更新时间');
+  const metadataFiles = await fs.readdir(path.dirname(metadataPath));
+  assert.deepEqual(
+    metadataFiles.filter((name) => name.startsWith(`${momentId}.json`)),
+    [`${momentId}.json`],
+    '重复保存不得为同一来源记录产生重复文件或遗留临时文件'
+  );
+
+  const corruptMomentId = 'metadata-corrupt';
+  const corruptPath = getMarkiSourceMetadataPath(root, orgId, corruptMomentId);
+  await fs.mkdir(path.dirname(corruptPath), { recursive: true });
+  await fs.writeFile(corruptPath, '{broken-json', 'utf8');
+  await assert.rejects(
+    () => saveMarkiSourceMetadata(root, {
+      orgId,
+      momentId: corruptMomentId,
+      parsedEntries: []
+    }, { now }),
+    (error) => (
+      error?.code === 'marki_source_metadata_invalid'
+      && !String(error.message || '').includes(root)
+    ),
+    '损坏来源元数据必须拒绝覆盖，且错误不得暴露完整路径'
+  );
+  assert.equal(await fs.readFile(corruptPath, 'utf8'), '{broken-json', '损坏来源元数据文件应保持原样');
+
+  const emptyAntiCounterfeitValues = [
+    '未填写',
+    '未设置',
+    '暂无',
+    'null',
+    'NULL',
+    'Null',
+    'undefined',
+    'Undefined'
+  ];
+  for (const [index, antiCounterfeitCode] of emptyAntiCounterfeitValues.entries()) {
+    const placeholderMomentId = `metadata-anti-empty-${index}`;
+    await saveMarkiSourceMetadata(root, {
+      orgId,
+      momentId: placeholderMomentId,
+      antiCounterfeitCode,
+      parsedEntries: []
+    }, metadataOptions);
+    const placeholderRecord = await loadMarkiSourceMetadata(root, orgId, placeholderMomentId);
+    assert.equal(
+      placeholderRecord?.antiCounterfeitCode,
+      '',
+      `来源元数据服务必须独立过滤防伪码占位值 ${antiCounterfeitCode}`
+    );
+  }
+  for (const [index, antiCounterfeitCode] of [0, '0', '无损防伪码-001'].entries()) {
+    const validMomentId = `metadata-anti-valid-${index}`;
+    await saveMarkiSourceMetadata(root, {
+      orgId,
+      momentId: validMomentId,
+      antiCounterfeitCode,
+      parsedEntries: []
+    }, metadataOptions);
+    const validRecord = await loadMarkiSourceMetadata(root, orgId, validMomentId);
+    assert.equal(
+      validRecord?.antiCounterfeitCode,
+      String(antiCounterfeitCode),
+      `有效防伪码 ${String(antiCounterfeitCode)} 必须保留`
+    );
+  }
+
+  const renameFailure = new Error(`EACCES: rename failed at ${root}`);
+  renameFailure.code = 'EACCES';
+  const renameFailingFs = {
+    ...fs,
+    rename: async () => {
+      throw renameFailure;
+    }
+  };
+  const existingContentBeforeFailure = await fs.readFile(metadataPath, 'utf8');
+  await assert.rejects(
+    () => saveMarkiSourceMetadata(root, {
+      ...record,
+      antiCounterfeitCode: 'ANTI-RENAME-FAIL'
+    }, {
+      now: () => new Date('2026-07-17T04:02:00.000Z'),
+      fs: renameFailingFs
+    }),
+    (error) => (
+      error?.code === 'marki_source_metadata_save_failed'
+      && !String(error.message || '').includes(root)
+      && !String(error.message || '').includes('EACCES')
+    ),
+    '更新来源元数据 rename 失败时应返回受控错误且不得暴露路径或系统错误'
+  );
+  assert.equal(
+    await fs.readFile(metadataPath, 'utf8'),
+    existingContentBeforeFailure,
+    '更新 rename 失败不得破坏已有正式元数据文件'
+  );
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(metadataPath))).filter((name) => name.includes('.tmp')),
+    [],
+    '更新 rename 失败后不得遗留临时文件'
+  );
+
+  const firstWriteFailureMomentId = 'metadata-first-write-failure';
+  const firstWriteFailurePath = getMarkiSourceMetadataPath(root, orgId, firstWriteFailureMomentId);
+  await assert.rejects(
+    () => saveMarkiSourceMetadata(root, {
+      orgId,
+      momentId: firstWriteFailureMomentId,
+      antiCounterfeitCode: 'ANTI-FIRST-FAIL',
+      parsedEntries: []
+    }, {
+      now: () => new Date('2026-07-17T04:03:00.000Z'),
+      fs: renameFailingFs
+    }),
+    (error) => error?.code === 'marki_source_metadata_save_failed',
+    '首次来源元数据 rename 失败时应返回受控错误'
+  );
+  await assert.rejects(
+    () => fs.access(firstWriteFailurePath),
+    (error) => error?.code === 'ENOENT',
+    '首次写入 rename 失败不得生成正式元数据文件'
+  );
+  assert.deepEqual(
+    (await fs.readdir(path.dirname(firstWriteFailurePath))).filter((name) => (
+      name.startsWith(`${firstWriteFailureMomentId}.json.`) && name.endsWith('.tmp')
+    )),
+    [],
+    '首次写入 rename 失败不得遗留临时文件'
+  );
+
+  const recoveredSave = await saveMarkiSourceMetadata(root, {
+    orgId,
+    momentId: firstWriteFailureMomentId,
+    antiCounterfeitCode: 'ANTI-RECOVERED',
+    parsedEntries: []
+  }, {
+    now: () => new Date('2026-07-17T04:04:00.000Z')
+  });
+  assert.equal(recoveredSave.success, true, '文件系统恢复后应能正常重试来源元数据保存');
+  assert.equal(
+    (await loadMarkiSourceMetadata(root, orgId, firstWriteFailureMomentId))?.antiCounterfeitCode,
+    'ANTI-RECOVERED',
+    '恢复重试后应读取到完整正式元数据'
+  );
+}
+
+async function checkMarkiStructuredImport(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '马克结构化导入自检必须使用系统临时目录'
+  );
+
+  const parsed = parseMarkiContent(JSON.stringify([
+    ['拍摄日期', '2026/07/16'],
+    ['拍摄时间', '10:30:36'],
+    ['项目名称', '曲靖潇湘新区二期'],
+    ['工作内容', '水泵房设备巡检'],
+    ['工作备注', '请输入备注'],
+    ['标题', '设备巡检'],
+    ['施工单位', '佳恒维保'],
+    ['上传人', '测试人员'],
+    ['防伪码', 'SAFE-001']
+  ]));
+  assert.equal(parsed.success, true, '马克 content 数组字段应可解析');
+  assert.equal(parsed.fields['日期'], '2026/07/16', '日期字段别名应规范为日期');
+  assert.equal(parsed.fields['时间'], '10:30:36', '时间字段别名应规范为时间');
+  assert.equal(parsed.fields['小区名称'], '曲靖潇湘新区二期', '项目字段别名应规范为小区名称');
+  assert.equal(parsed.fields['工作备注'], undefined, '模板占位备注应在映射前过滤');
+  assert.equal(cleanMarkiFieldValue('  请输入工作内容  '), '', '请输入类占位值应视为空');
+  assert.equal(cleanMarkiFieldValue(' 公区巡查 '), '公区巡查', '有效字段值应清理并保留');
+  for (const placeholder of ['', '　', '-', '--', '暂无', '未填写', '未设置', 'null', 'NULL', 'undefined', 'Undefined']) {
+    assert.equal(cleanMarkiFieldValue(placeholder), '', `占位值 ${JSON.stringify(placeholder)} 应被过滤`);
+  }
+  assert.equal(cleanMarkiFieldValue(0), '0', '数字 0 不得被当作占位值');
+  assert.equal(cleanMarkiFieldValue('0'), '0', '字符串 0 不得被当作占位值');
+  assert.equal(cleanMarkiFieldValue('无障碍通道'), '无障碍通道', '包含“无”的正常业务内容不得被过滤');
+  assert.equal(cleanMarkiFieldValue('无人值守'), '无人值守', '正常业务文本“无人值守”不得被过滤');
+  assert.equal(cleanMarkiFieldValue('无线网络'), '无线网络', '正常业务文本“无线网络”不得被过滤');
+
+  const frozenContentEntries = deepFreeze([
+    ['日期', '2026-07-16'],
+    ['工作内容', '冻结输入巡查']
+  ]);
+  const frozenContentSnapshot = JSON.stringify(frozenContentEntries);
+  assert.equal(
+    parseMarkiContent(frozenContentEntries).fields['工作内容'],
+    '冻结输入巡查',
+    'content 解析应支持深冻结字段数组'
+  );
+  assert.equal(
+    JSON.stringify(frozenContentEntries),
+    frozenContentSnapshot,
+    'content 解析不得修改深冻结字段数组'
+  );
+
+  const specialFields = parseMarkiContent(JSON.stringify([
+    ['__proto__', 'blocked'],
+    ['prototype', 'blocked'],
+    ['constructor', 'blocked'],
+    ['工作内容', '首次巡查'],
+    ['工作内容', '复查'],
+    ['', 'blocked']
+  ]));
+  assert.deepEqual(
+    Object.keys(specialFields.fields),
+    ['工作内容'],
+    'content 解析必须显式拒绝特殊键和空字段名'
+  );
+  assert.equal(specialFields.fields['工作内容'], '首次巡查', '重复字段应保留首个有效值');
+  assert.equal(specialFields.warnings.length, 1, '重复有效字段应生成核对提示');
+  assert.equal({}.blocked, undefined, '特殊键不得污染对象原型');
+
+  const configs = deepFreeze({
+    projects: [
+      { name: '潇湘新区二期', aliases: ['曲靖潇湘新区二期', '新区二期'] },
+      { name: '香辰康园', aliases: [] }
+    ],
+    watermarkCategories: {
+      '工程类专用': { items: ['水电设施设备维修'] },
+      '机动车违规管理': { items: ['占用消防通道'] },
+      '时间地点水印': { items: ['标题/内容自定义'] }
+    }
+  });
+  const baseMoment = deepFreeze({
+    id: 'moment-structured-001',
+    uid: 20001,
+    teamId: 10001,
+    momentType: 1,
+    markName: '工程类专用',
+    content: JSON.stringify([
+      ['日期', '2026年7月16日 09:05:06'],
+      ['时间', '10:30:36'],
+      ['小区名称', '曲靖潇湘新区二期'],
+      ['工作内容', '水泵房设备巡检'],
+      ['标题', '设备巡检'],
+      ['施工单位', '佳恒维保'],
+      ['工作备注', '巡检正常'],
+      ['地点', '地下水泵房'],
+      ['上传人', '测试人员'],
+      ['防伪码', 'SAFE-001']
+    ]),
+    lng: 103.8,
+    lat: 25.5,
+    postTime: Math.floor(Date.parse('2026-07-17T03:00:00Z') / 1000),
+    url: 'https://private.example/photo.jpg'
+  });
+  const mapped = mapMarkiMoment(baseMoment, configs);
+  assert.equal(mapped.contentStatus, 'parsed', '有效 content 应标记为已解析');
+  assert.equal(mapped.suggestedFields.date, '2026-07-16', '水印日期必须优先于平台上传时间');
+  assert.equal(mapped.watermarkRecord.captureTime, '09:05:06', '日期字段中的实际时间应优先保留');
+  assert.equal(mapped.capturedAt, '2026-07-16T09:05:06+08:00', '拍摄时间应按东八区生成');
+  assert.equal(mapped.suggestedFields.project, '潇湘新区二期', '项目别名应匹配现有项目');
+  assert.equal(mapped.suggestedFields.watermarkCategory, '工程类专用', '水印名称应匹配现有分类');
+  assert.equal(mapped.suggestedFields.workContent, '水泵房设备巡检', '工作内容应优先取结构化工作内容');
+  assert.equal(mapped.suggestedFields.location, '地下水泵房', '地点字段应优先于经纬度');
+  assert.equal(mapped.suggestedFields.remark, '巡检正常', '有效工作备注应进入建议');
+  assert.deepEqual(mapped.parsedFields.keywords, ['设备巡检', '佳恒维保'], '标题和施工单位应形成辅助关键词');
+
+  const exactProject = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-project-exact',
+    content: JSON.stringify([
+      ['日期', '2026-07-16'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ])
+  }, configs);
+  assert.equal(exactProject.suggestedFields.project, '潇湘新区二期', '项目名称应支持精确匹配');
+
+  const fallbackCategory = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-structured-002',
+    markName: '时间地点（兜底选择）'
+  }, configs);
+  assert.equal(
+    fallbackCategory.suggestedFields.watermarkCategory,
+    '时间地点水印',
+    '时间地点兜底水印应通过明确映射匹配现有分类'
+  );
+
+  const vehicle = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-structured-003',
+    markName: '机动车违规管理',
+    content: JSON.stringify([
+      ['日期', '2026-07-16'],
+      ['小区名称', '潇湘新区二期'],
+      ['违停类型', '占用消防通道'],
+      ['车牌号', '云D12345'],
+      ['地点', '一号门']
+    ])
+  }, configs);
+  assert.equal(
+    vehicle.suggestedFields.workContent,
+    '占用消防通道｜云D12345',
+    '机动车水印应组合违停类型和车牌号'
+  );
+
+  const postTimeFallback = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-structured-004',
+    content: JSON.stringify([
+      ['时间', '10:45:30'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ]),
+    lng: 0,
+    lat: 0
+  }, configs);
+  assert.equal(postTimeFallback.suggestedFields.date, '2026-07-17', '水印缺少日期时应使用上传日期兜底');
+  assert.equal(postTimeFallback.watermarkRecord.captureTime, '10:45:30', '水印仅有时间时应继续保留实际时间');
+  assert.equal(postTimeFallback.suggestedFields.location, '', '零坐标应作为合法空位置处理');
+  assert.equal(
+    postTimeFallback.warnings.some((item) => item.includes('上传时间兜底')),
+    true,
+    '上传时间兜底应产生明确提示'
+  );
+
+  const timeFieldDate = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-time-field-date',
+    content: JSON.stringify([
+      ['时间', '2026-07-15 08:09:10'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ])
+  }, configs);
+  assert.equal(timeFieldDate.suggestedFields.date, '2026-07-15', '日期缺失时应读取时间字段中的日期');
+  assert.equal(timeFieldDate.watermarkRecord.captureTime, '08:09:10', '时间字段中的时分秒应保留');
+
+  const invalidDate = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-invalid-date',
+    content: JSON.stringify([
+      ['日期', '2026-02-30'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ]),
+    postTime: 0
+  }, configs);
+  assert.equal(invalidDate.suggestedFields.date, '', '无兜底时非法日期不得进入归档建议');
+  assert.equal(invalidDate.missingRequiredFields.includes('日期'), true, '非法且无兜底日期应进入待补全');
+
+  const coordinateFallback = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-structured-005',
+    content: JSON.stringify([
+      ['日期', '2026-07-16'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ])
+  }, configs);
+  assert.equal(
+    coordinateFallback.suggestedFields.location,
+    '经纬度：25.5, 103.8',
+    '缺少地点时有效经纬度可作为辅助位置'
+  );
+  for (const [lng, lat] of [[0, 25], [103, 0], [181, 25], [103, 91], [Number.NaN, 25], [103, Number.POSITIVE_INFINITY]]) {
+    const invalidCoordinate = mapMarkiMoment({
+      ...baseMoment,
+      id: `moment-coordinate-${String(lng)}-${String(lat)}`,
+      content: JSON.stringify([
+        ['日期', '2026-07-16'],
+        ['小区名称', '潇湘新区二期'],
+        ['工作内容', '设施巡查']
+      ]),
+      lng,
+      lat
+    }, configs);
+    assert.equal(
+      invalidCoordinate.suggestedFields.location,
+      '',
+      `无地点时无效坐标 ${String(lng)}, ${String(lat)} 不得生成位置`
+    );
+  }
+
+  const unmatched = mapMarkiMoment({
+    ...baseMoment,
+    id: 'moment-structured-006',
+    markName: '未知水印',
+    content: JSON.stringify([
+      ['日期', '2026-07-16'],
+      ['小区名称', '未配置项目'],
+      ['工作内容', '现场检查']
+    ])
+  }, configs);
+  assert.equal(unmatched.suggestedFields.project, '', '未匹配项目不得自动写入归档建议');
+  assert.deepEqual(unmatched.candidateFields.projectCandidates, ['未配置项目'], '未匹配项目应保留候选值');
+  assert.equal(unmatched.missingRequiredFields.includes('项目'), true, '未匹配项目必须进入待补全状态');
+  assert.equal(unmatched.suggestedFields.watermarkCategory, '', '未匹配分类不得自动写入归档建议');
+  assert.deepEqual(unmatched.candidateFields.watermarkCategoryCandidates, ['未知水印'], '未匹配水印名应保留分类候选');
+  assert.equal(unmatched.missingRequiredFields.includes('归档分类'), true, '未匹配分类应保持待补充状态');
+
+  const sourceKey = buildMarkiSourceKey('12345', baseMoment.id);
+  const localPath = path.join(root, 'marki-import', '12345', '10001', '2026-07-16', `${baseMoment.id}.jpg`);
+  const download = deepFreeze({
+    success: true,
+    sourceKey,
+    importStatus: 'imported',
+    localPath,
+    fileName: `${baseMoment.id}.jpg`,
+    size: 4096,
+    width: 1080,
+    height: 1440,
+    completedAt: '2026-07-17T03:01:00.000Z'
+  });
+  const moments = deepFreeze([baseMoment, baseMoment]);
+  const bundleInput = deepFreeze({
+    orgId: '12345',
+    configs,
+    items: [
+      { moment: moments[0], download },
+      { moment: moments[1], download }
+    ]
+  });
+  const bundleOptions = deepFreeze({
+    batchId: 'marki-batch-self-check',
+    now: () => new Date('2026-07-17T03:02:00.000Z')
+  });
+  const bundleInputSnapshot = JSON.stringify(bundleInput);
+  const bundleOptionsSnapshot = JSON.stringify(bundleOptions);
+  const importBundle = buildMarkiStructuredImportBundle(bundleInput, bundleOptions);
+  assert.equal(JSON.stringify(bundleInput), bundleInputSnapshot, '结构化转换不得修改输入对象');
+  assert.equal(JSON.stringify(bundleOptions), bundleOptionsSnapshot, '结构化转换不得修改深冻结 options');
+  assert.deepEqual(
+    Object.keys(importBundle),
+    ['workbenchImportPackage', 'sourceMetadataRecordsByRef', 'deduplication'],
+    '结构化转换 bundle 顶层结构必须稳定'
+  );
+  const importPackage = importBundle.workbenchImportPackage;
+  assert.deepEqual(
+    Object.keys(importPackage),
+    [
+      'batchId',
+      'photos',
+      'recognitionResultsByPhoto',
+      'watermarkRecordsByPhoto',
+      'archiveSuggestionsByPhoto'
+    ],
+    '工作台导入包必须严格保持五个顶层字段'
+  );
+  assert.equal(importPackage.batchId, 'marki-batch-self-check', '工作台导入包应保留批次标识');
+  assert.equal(importPackage.photos.length, 1, '同一 sourceKey 在导入包内应去重');
+  assert.deepEqual(
+    importBundle.deduplication,
+    {
+      inputCount: 2,
+      uniqueCount: 1,
+      duplicateCount: 1,
+      skippedItems: [{
+        sourceKey,
+        keptInputIndex: 0,
+        skippedInputIndex: 1
+      }]
+    },
+    '批内重复 sourceKey 必须返回稳定且不含敏感数据的去重结果'
+  );
+  const photo = importPackage.photos[0];
+  const expectedMetadataRef = buildMarkiSourceMetadataRef('12345', baseMoment.id);
+  assert.equal(photo.sourceType, 'marki_api', '马克照片来源类型应明确');
+  assert.equal(photo.sourceKey, sourceKey, '照片对象应保留来源唯一标识');
+  assert.equal(photo.sourceMetadataRef, expectedMetadataRef, '照片对象应使用独立来源元数据引用');
+  assert.notEqual(photo.sourceMetadataRef, photo.sourceKey, '来源元数据引用不得直接等同 sourceKey');
+  assert.equal(photo.originalPath, localPath, '工作台照片应使用事务下载后的本地路径');
+  assert.equal(photo.originalName, `${baseMoment.id}.jpg`, '工作台照片应使用本地 JPG 文件名');
+  assert.equal(photo.previewUrl.startsWith('local-photo://image/'), true, '工作台照片应使用本地预览协议');
+  assert.equal(photo.capturedAt, '2026-07-16T09:05:06+08:00', '照片对象应保留水印实际拍摄时间');
+  assert.equal(photo.archiveInfo, null, '结构化导入不得自动确认归档信息');
+  const recognitionResult = importPackage.recognitionResultsByPhoto[photo.id];
+  assert.equal(recognitionResult.source, 'marki_api', '识别结果来源应为马克 API');
+  assert.equal(recognitionResult.providerType, 'structured_data', '马克识别结果应标记为结构化数据');
+  assert.equal(recognitionResult.status, 'recognized', '有效结构化数据应标记为 recognized');
+  assert.equal(recognitionResult.rawText, '', '工作台识别结果不得携带原始 content');
+  assert.equal(
+    importPackage.archiveSuggestionsByPhoto[photo.id].needsHumanReview,
+    true,
+    '结构化字段完整也必须进入人工确认链路'
+  );
+  assert.equal(
+    importPackage.archiveSuggestionsByPhoto[photo.id].status,
+    'suggestion_ready',
+    '四个核心字段完整时应生成待确认建议'
+  );
+  const metadataRecord = importBundle.sourceMetadataRecordsByRef[expectedMetadataRef];
+  assert.equal(Boolean(metadataRecord), true, '每张工作台照片必须有对应来源元数据记录');
+  assert.equal(metadataRecord.sourceKey, sourceKey, '来源元数据记录应关联 sourceKey');
+  assert.equal(metadataRecord.teamId, '10001', '来源元数据应保留团队 ID');
+  assert.equal(metadataRecord.uid, '20001', '来源元数据应保留人员 UID');
+  assert.equal(metadataRecord.postTime, baseMoment.postTime, '来源元数据应保留平台上传时间');
+  assert.equal(metadataRecord.antiCounterfeitCode, 'SAFE-001', '防伪码必须进入后端来源元数据');
+  assert.equal(Object.hasOwn(metadataRecord, 'parsedFields'), false, '来源元数据不得包含 parsedFields');
+  assert.equal(
+    metadataRecord.parsedEntries.some((entry) => entry.key === '上传人' && entry.value === '测试人员'),
+    true,
+    '清洗后的上传人条目应进入来源元数据'
+  );
+  const serializedPackage = JSON.stringify(importPackage);
+  assert.equal(serializedPackage.includes('private.example'), false, '远程 URL 不得进入工作台导入包');
+  assert.equal(serializedPackage.includes('"rawContent"'), false, '原始 content 不得进入工作台导入包');
+  assert.equal(serializedPackage.includes('"content":'), false, '完整 API content 字段不得进入工作台导入包');
+  assert.equal(serializedPackage.includes('SAFE-001'), false, '防伪码应保留在来源明细层，不进入工作台导入包');
+  assert.equal(serializedPackage.includes('"parsedEntries"'), false, '来源字段条目不得进入五字段工作台导入包');
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(importBundle)), '结构化转换 bundle 必须可 JSON 序列化');
+
+  const otherOrgSourceKey = buildMarkiSourceKey('67890', baseMoment.id);
+  const otherOrgBundle = buildMarkiStructuredImportBundle({
+    orgId: '67890',
+    configs,
+    items: [{
+      moment: baseMoment,
+      download: {
+        ...download,
+        sourceKey: otherOrgSourceKey
+      }
+    }]
+  }, {
+    batchId: 'marki-batch-other-org',
+    now: () => new Date('2026-07-17T03:02:10.000Z')
+  });
+  assert.notEqual(otherOrgSourceKey, sourceKey, '不同组织下相同 momentId 必须生成不同 sourceKey');
+  assert.equal(otherOrgBundle.workbenchImportPackage.photos.length, 1, '不同组织的同名照片必须保留');
+  assert.deepEqual(
+    otherOrgBundle.deduplication,
+    {
+      inputCount: 1,
+      uniqueCount: 1,
+      duplicateCount: 0,
+      skippedItems: []
+    },
+    '不同组织下相同 momentId 不得产生误去重'
+  );
+
+  const missingProjectPackage = buildMarkiWorkbenchImportPackage({
+    orgId: '12345',
+    configs,
+    items: [{
+      moment: {
+        ...baseMoment,
+        id: 'moment-missing-project',
+        content: JSON.stringify([
+          ['日期', '2026-07-16'],
+          ['小区名称', '未配置项目'],
+          ['工作内容', '设施巡查']
+        ])
+      },
+      download: {
+        ...download,
+        sourceKey: buildMarkiSourceKey('12345', 'moment-missing-project'),
+        localPath: path.join(root, 'moment-missing-project.jpg'),
+        fileName: 'moment-missing-project.jpg'
+      }
+    }]
+  }, {
+    batchId: 'marki-batch-missing-project',
+    now: () => new Date('2026-07-17T03:02:30.000Z')
+  });
+  const missingProjectPhoto = missingProjectPackage.photos[0];
+  const missingProjectSuggestion = missingProjectPackage.archiveSuggestionsByPhoto[missingProjectPhoto.id];
+  assert.equal(missingProjectSuggestion.status, 'needs_completion', '项目未匹配时归档建议必须待补全');
+  assert.deepEqual(
+    missingProjectSuggestion.candidateFields.projectCandidates,
+    ['未配置项目'],
+    '项目未匹配时归档建议必须保留项目候选'
+  );
+
+  const invalidContentPackage = buildMarkiWorkbenchImportPackage({
+    orgId: '12345',
+    configs,
+    items: [{
+      moment: {
+        ...baseMoment,
+        id: 'moment-structured-invalid',
+        content: '{invalid-json'
+      },
+      download: {
+        ...download,
+        sourceKey: buildMarkiSourceKey('12345', 'moment-structured-invalid'),
+        localPath: path.join(root, 'moment-structured-invalid.jpg'),
+        fileName: 'moment-structured-invalid.jpg'
+      }
+    }]
+  }, {
+    batchId: 'marki-batch-invalid-content',
+    now: () => new Date('2026-07-17T03:03:00.000Z')
+  });
+  assert.equal(invalidContentPackage.photos.length, 1, 'content 解析失败的照片仍应进入工作台导入包');
+  const invalidPhoto = invalidContentPackage.photos[0];
+  const invalidRecognition = invalidContentPackage.recognitionResultsByPhoto[invalidPhoto.id];
+  assert.equal(invalidRecognition.status, 'failed', 'content 解析失败应标记为结构化数据异常');
+  assert.equal(invalidRecognition.errorCode, 'marki_content_parse_failed', 'content 解析失败应返回受控错误码');
+  assert.equal(
+    invalidContentPackage.archiveSuggestionsByPhoto[invalidPhoto.id].status,
+    'needs_completion',
+    '结构化数据异常应保留待人工补充建议'
+  );
+
+  assert.throws(
+    () => buildMarkiWorkbenchImportPackage({
+      orgId: '12345',
+      configs,
+      items: [{
+        moment: { ...baseMoment, id: 'video-001', momentType: 2 },
+        download: { ...download, sourceKey: buildMarkiSourceKey('12345', 'video-001') }
+      }]
+    }),
+    (error) => error?.code === 'marki_moment_type_not_supported',
+    'V3.2 工作台导入包必须拒绝视频'
+  );
+}
+
 async function checkMarkiFoundation(root) {
   const safeStorage = {
     isEncryptionAvailable: () => true,
@@ -1031,6 +1851,21 @@ async function checkSourceContracts() {
   assert.equal(/项目部门照片来源/.test(settingsSource), false, '系统设置不应继续暴露已停用的旧版基础数据入口');
   assert.equal(serviceBriefSource.includes('archivedDateCounts'), true, '每日服务简报日期选择器应统计有归档的日期');
   assert.equal(serviceBriefSource.includes('archive-date-dot'), true, '每日服务简报日历应显示归档日期圆点');
+}
+
+function deepFreeze(value, seen = new WeakSet()) {
+  if (
+    value === null
+    || (typeof value !== 'object' && typeof value !== 'function')
+    || seen.has(value)
+  ) {
+    return value;
+  }
+  seen.add(value);
+  for (const child of Object.values(value)) {
+    deepFreeze(child, seen);
+  }
+  return Object.freeze(value);
 }
 
 async function isFile(filePath) {

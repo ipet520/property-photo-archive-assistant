@@ -3139,6 +3139,7 @@ function getRecognitionOutcome(result = null) {
   if (!result) return 'unrecognized';
   if (result.resolution) return 'resolved';
   if (result.manualPendingAt || result.handlingMode === 'manual') return 'manual_pending';
+  if (result.status === 'recognized') return 'success';
   const rawText = String(result.rawText || result.adoptedOcrText || result.text || '').trim();
   if (result.status === 'success' && rawText) return hasValidWatermarkEvidence(result) ? 'success' : 'empty';
   if (result.status === 'empty' || (result.status === 'success' && !rawText)) return 'empty';

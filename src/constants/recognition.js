@@ -1,4 +1,4 @@
-export const RECOGNITION_PROVIDER_TYPES = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual'];
+export const RECOGNITION_PROVIDER_TYPES = ['local_ocr', 'cloud_ocr', 'cloud_ai', 'manual', 'structured_data'];
 
 export const RECOGNITION_MODES = ['local_first', 'local_only', 'cloud_only', 'compare', 'manual', 'disabled', 'local', 'cloud', 'hybrid'];
 
@@ -35,6 +35,7 @@ export const RECOGNITION_RESULT_SOURCES = [
   'custom_ocr',
   'manual',
   'watermark_parser',
+  'marki_api',
   'system'
 ];
 
