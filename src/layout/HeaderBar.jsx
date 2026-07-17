@@ -1,4 +1,5 @@
 import { APP_NAME, VERSION_SUMMARY } from '../constants/app.js';
+import appIconUrl from '../assets/app-icon.svg';
 
 export default function HeaderBar({ archiveState }) {
   const archiveRoot = archiveState.archiveRoot
@@ -9,7 +10,7 @@ export default function HeaderBar({ archiveState }) {
   return (
     <header className="header-bar">
       <div className="brand-block">
-        <span className="brand-mark">归</span>
+        <img className="brand-mark" src={appIconUrl} alt="" aria-hidden="true" />
         <div>
           <strong>{APP_NAME}</strong>
           <small>{VERSION_SUMMARY}</small>

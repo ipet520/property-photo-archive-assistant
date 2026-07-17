@@ -125,14 +125,12 @@ button.primary {
 }
 
 .brand-mark {
-  display: grid;
+  display: block;
   width: 42px;
   height: 42px;
-  place-items: center;
   border-radius: 14px;
-  color: var(--navy);
-  background: #fff;
-  font-weight: 800;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow: 0 3px 10px rgba(7, 24, 43, 0.2);
 }
 
 .brand-block strong,

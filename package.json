@@ -46,7 +46,8 @@
       }
     ],
     "win": {
-      "signAndEditExecutable": false,
+      "icon": "electron/assets/app-icon.png",
+      "signAndEditExecutable": true,
       "target": [
         "portable",
         "nsis"

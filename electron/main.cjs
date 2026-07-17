@@ -119,6 +119,7 @@ const {
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appDataFolderName = '物业工作照片归档助手';
+const appIconPath = path.join(__dirname, 'assets', 'app-icon.png');
 const runtimeDir = resolveRuntimeDir();
 const WINDOW_STATE_FILE = 'window-state.json';
 const MIN_WINDOW_WIDTH = 1280;
@@ -157,6 +158,7 @@ function createWindow() {
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     title: '物业工作照片归档助手',
+    icon: appIconPath,
     backgroundColor: '#f6f7fb',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -459,6 +461,7 @@ function createChineseMenu() {
 }
 
 app.whenReady().then(() => {
+  app.setAppUserModelId('com.property.photo.archive.assistant');
   createChineseMenu();
 
   protocol.handle('local-photo', (request) => {
