@@ -28,8 +28,16 @@ const { getRecognitionStatus } = require('../electron/services/recognitionServic
 const {
   buildMarkiPostSignature,
   listMarkiMembers,
+  listMarkiMoments,
   listMarkiTeams
 } = require('../electron/services/markiApiService.cjs');
+const {
+  HARD_TTL_MS,
+  IDLE_TTL_MS,
+  MAX_ACTIVE_SESSIONS,
+  MAX_SESSION_PHOTOS,
+  createMarkiPhotoQuerySessionService
+} = require('../electron/services/markiPhotoQuerySessionService.cjs');
 const {
   getMarkiCredentialStatus,
   loadMarkiCredentials,
@@ -93,6 +101,7 @@ async function main() {
     await checkRecognitionEngine(temporaryRoot);
     await checkRecognitionModelCompatibility();
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
+    await checkMarkiPhotoQuerySessions(path.join(temporaryRoot, 'marki-photo-query'));
     await checkMarkiSourceManifest(path.join(temporaryRoot, 'marki-source'));
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
@@ -106,7 +115,7 @@ async function main() {
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkArchiveTransactionRecovery(path.join(temporaryRoot, 'archive-transaction'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载、结构化导入、主进程编排与临时批次、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克照片查询会话、来源清单、来源元数据、下载、结构化导入、主进程编排与临时批次、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -1601,6 +1610,461 @@ async function checkMarkiFoundation(root) {
   assert.equal(requests[0].options.body, undefined, '团队列表 POST 请求不应发送业务参数');
   assert.equal(requests[1].options.body, '{"teamId":10001}', '成员列表请求体应保持稳定 JSON 格式');
   assert.equal(requests.every((item) => item.options.headers.sign && !item.options.headers.key), true, '请求头只应包含签名，不得发送组织 KEY');
+}
+
+async function checkMarkiPhotoQuerySessions(root) {
+  const credentials = { orgId: '12345', key: 'key123' };
+  const filters = {
+    teamId: 10001,
+    uid: 20001,
+    start: '2026-07-01 00:00:00',
+    end: '2026-07-17 23:59:59'
+  };
+  const postTime = Math.floor(Date.UTC(2026, 6, 17, 2, 30, 0) / 1000);
+  const makeMoment = (id, overrides = {}) => ({
+    id: String(id),
+    uid: '20001',
+    teamId: '10001',
+    url: `https://images.test/${id}.jpg`,
+    momentType: 1,
+    content: JSON.stringify([
+      ['小区名称', '春和苑'],
+      ['工作内容', `巡查-${id}`],
+      ['地点', '东门']
+    ]),
+    markName: '巡查检查类',
+    lng: 103.5,
+    lat: 25.1,
+    postTime,
+    ...overrides
+  });
+  const makePage = (moments, overrides = {}) => ({
+    success: true,
+    moments,
+    next: '',
+    hasMore: false,
+    traceId: 'mock-trace',
+    ...overrides
+  });
+  const uuidFactory = () => {
+    let value = 1;
+    return () => `00000000-0000-4000-8000-${String(value++).padStart(12, '0')}`;
+  };
+  const createSourceChecker = (statusByMomentId = {}) => async (_documentsPath, orgId, sourceKeys) => {
+    const bySourceKey = {};
+    for (const sourceKey of sourceKeys) {
+      const momentId = sourceKey.slice(sourceKey.lastIndexOf(':') + 1);
+      const status = statusByMomentId[momentId] || 'new';
+      bySourceKey[sourceKey] = {
+        exists: status !== 'new',
+        importStatus: status === 'new' ? '' : status
+      };
+    }
+    return {
+      success: true,
+      orgId,
+      bySourceKey
+    };
+  };
+  const makeService = ({
+    pages = [makePage([makeMoment('1')])],
+    statusByMomentId = {},
+    clock = { value: Date.UTC(2026, 6, 18, 0, 0, 0) },
+    calls = []
+  } = {}) => {
+    let pageIndex = 0;
+    const service = createMarkiPhotoQuerySessionService({
+      now: () => clock.value,
+      randomUUID: uuidFactory(),
+      listMarkiMoments: async (receivedCredentials, input) => {
+        calls.push({
+          orgId: String(receivedCredentials?.orgId || ''),
+          input: { ...input }
+        });
+        const page = pages[Math.min(pageIndex, pages.length - 1)];
+        pageIndex += 1;
+        return page;
+      },
+      checkMarkiSourceKeys: createSourceChecker(statusByMomentId)
+    });
+    return { service, clock, calls };
+  };
+  const createInput = (overrides = {}) => ({
+    credentials,
+    documentsPath: root,
+    filters,
+    ...overrides
+  });
+  let scenarioCount = 0;
+  const apiRequests = [];
+  const fetchImpl = async (url, options) => {
+    apiRequests.push({ url, options });
+    return createJsonResponse({
+      code: 0,
+      msg: 'ok',
+      traceId: 'moment-trace',
+      data: {
+        momList: [makeMoment('moment-9001')],
+        next: 'cursor-2',
+        hasMore: true
+      }
+    });
+  };
+  const apiOptions = {
+    fetchImpl,
+    baseUrl: 'https://marki.test',
+    now: () => 1650000000000,
+    traceId: 'moment-query-test'
+  };
+
+  const firstApiResult = await listMarkiMoments(credentials, filters, apiOptions);
+  assert.equal(apiRequests[0].url, 'https://marki.test/marki/moment', '照片查询必须使用 /marki/moment');
+  assert.equal(apiRequests[0].options.method, 'POST', '照片查询必须使用 POST');
+  scenarioCount += 1;
+
+  const firstApiBody = JSON.parse(apiRequests[0].options.body);
+  assert.equal(firstApiBody.momType, 1, '照片查询请求体必须固定 momType=1');
+  scenarioCount += 1;
+
+  assert.equal(firstApiBody.teamId, 10001, '照片查询应写入可选 teamId');
+  assert.equal(firstApiBody.uid, 20001, '照片查询应写入可选 uid');
+  scenarioCount += 1;
+
+  await listMarkiMoments(credentials, { ...filters, next: 'cursor-2' }, apiOptions);
+  assert.equal(JSON.parse(apiRequests[1].options.body).next, 'cursor-2', '分页请求应原样使用内部 next');
+  scenarioCount += 1;
+
+  await assert.rejects(
+    () => listMarkiMoments(credentials, {
+      ...filters,
+      start: '2026-07-01T00:00:00+08:00'
+    }, apiOptions),
+    (error) => error?.code === 'invalid_request',
+    '照片查询应拒绝 ISO 时间字符串'
+  );
+  scenarioCount += 1;
+
+  await assert.rejects(
+    () => listMarkiMoments(credentials, {
+      ...filters,
+      start: '2026-02-30 00:00:00'
+    }, apiOptions),
+    (error) => error?.code === 'invalid_request',
+    '照片查询应按 UTC+8 日历校验日期'
+  );
+  await assert.rejects(
+    () => listMarkiMoments(credentials, {
+      ...filters,
+      start: '2026-07-18 00:00:00',
+      end: '2026-07-17 00:00:00'
+    }, apiOptions),
+    (error) => error?.code === 'invalid_request',
+    '照片查询开始时间不得晚于结束时间'
+  );
+  scenarioCount += 1;
+
+  await assert.rejects(
+    () => listMarkiMoments(credentials, {
+      ...filters,
+      start: '2026-06-01 00:00:00',
+      end: '2026-07-03 00:00:01'
+    }, apiOptions),
+    (error) => error?.code === 'invalid_request',
+    '照片查询时间范围不得超过 31 天'
+  );
+  scenarioCount += 1;
+
+  await assert.rejects(
+    () => listMarkiMoments(credentials, {
+      uid: 20001,
+      start: filters.start,
+      end: filters.end
+    }, apiOptions),
+    (error) => error?.code === 'invalid_request',
+    'uid 查询必须同时提供 teamId'
+  );
+  scenarioCount += 1;
+
+  assert.equal(firstApiResult.moments[0].id, 'moment-9001', '照片查询应保留字符串 moment ID');
+  assert.equal(firstApiResult.next, 'cursor-2', '照片查询应读取 next');
+  assert.equal(firstApiResult.hasMore, true, '照片查询应读取 hasMore');
+  assert.deepEqual(
+    Object.keys(firstApiResult.moments[0]),
+    ['id', 'uid', 'teamId', 'url', 'momentType', 'content', 'markName', 'lng', 'lat', 'postTime'],
+    '主进程内部 moment 应保持固定字段白名单'
+  );
+  scenarioCount += 1;
+
+  const core = makeService();
+  const created = await core.service.create(createInput());
+  assert.match(created.sessionId, /^[0-9a-f-]{36}$/i, '查询会话应使用随机 UUID');
+  scenarioCount += 1;
+
+  assert.match(created.photos[0].selectionToken, /^[0-9a-f-]{36}$/i, '照片选择令牌应使用随机 UUID');
+  assert.notEqual(created.photos[0].selectionToken, created.sessionId, 'sessionId 与 selectionToken 不得复用');
+  scenarioCount += 1;
+
+  assert.equal(created.sessionId.includes(credentials.orgId), false, 'sessionId 不得编码组织 ID');
+  assert.equal(created.photos[0].selectionToken.includes('1'), false, 'selectionToken 不得编码 momentId');
+  assert.equal(created.photos[0].selectionToken.includes('images.test'), false, 'selectionToken 不得编码照片 URL');
+  scenarioCount += 1;
+
+  assert.deepEqual(
+    Object.keys(created.photos[0]),
+    [
+      'selectionToken',
+      'displayId',
+      'teamId',
+      'uid',
+      'photographerName',
+      'markName',
+      'postTime',
+      'displayDate',
+      'projectText',
+      'workContentText',
+      'locationText',
+      'selectedSourceStatus'
+    ],
+    'renderer 照片摘要必须严格使用十二字段白名单'
+  );
+  scenarioCount += 1;
+
+  const safeSummarySource = JSON.stringify(created.photos[0]);
+  for (const forbidden of ['momentId', 'sourceKey', 'url', 'content', 'parsedEntries', '防伪码', 'lng', 'lat', 'orgId']) {
+    assert.equal(safeSummarySource.includes(forbidden), false, `renderer 摘要不得包含 ${forbidden}`);
+  }
+  scenarioCount += 1;
+
+  assert.equal(created.photos[0].projectText, '春和苑', '摘要应复用结构化解析提取项目文本');
+  assert.equal(created.photos[0].workContentText, '巡查-1', '摘要应复用结构化解析提取工作内容');
+  assert.equal(created.photos[0].locationText, '东门', '摘要应复用结构化解析提取地点');
+  scenarioCount += 1;
+
+  assert.equal(created.photos[0].displayDate, '2026-07-17 10:30:00', 'postTime 应按 UTC+8 格式化');
+  scenarioCount += 1;
+
+  const paged = makeService({
+    pages: [
+      makePage([makeMoment('p1')], { next: 'page-2', hasMore: true }),
+      makePage([makeMoment('p2'), makeMoment('p3')])
+    ]
+  });
+  const pagedFirst = await paged.service.create(createInput());
+  const pagedNext = await paged.service.loadNext(pagedFirst.sessionId, { credentials });
+  assert.deepEqual(
+    pagedNext.photos.map((item) => item.workContentText),
+    ['巡查-p1', '巡查-p2', '巡查-p3'],
+    '下一页应按首次出现顺序追加摘要'
+  );
+  assert.equal(pagedNext.pagination.pageCount, 2, '下一页成功后应增加页数');
+  scenarioCount += 1;
+
+  const duplicatePaged = makeService({
+    pages: [
+      makePage([makeMoment('repeat')], { next: 'repeat-next', hasMore: true }),
+      makePage([makeMoment('repeat'), makeMoment('unique')])
+    ]
+  });
+  const duplicateFirst = await duplicatePaged.service.create(createInput());
+  const originalToken = duplicateFirst.photos[0].selectionToken;
+  const duplicateNext = await duplicatePaged.service.loadNext(duplicateFirst.sessionId, { credentials });
+  assert.equal(duplicateNext.photos.length, 2, '跨页重复 moment 不得生成重复摘要');
+  assert.equal(duplicateNext.photos[0].selectionToken, originalToken, '跨页重复 moment 应复用原 selectionToken');
+  scenarioCount += 1;
+
+  assert.equal(Object.hasOwn(pagedNext, 'next'), false, '会话结果不得返回真实 next');
+  assert.equal(Object.hasOwn(pagedNext.pagination, 'next'), false, '分页摘要不得返回真实 next');
+  scenarioCount += 1;
+
+  const statuses = ['new', 'discovered', 'downloading', 'download_failed', 'imported'];
+  const statusService = makeService({
+    pages: [makePage(statuses.map((status, index) => makeMoment(`status-${index}`)))],
+    statusByMomentId: Object.fromEntries(
+      statuses.map((status, index) => [`status-${index}`, status])
+    )
+  });
+  const statusResult = await statusService.service.create(createInput());
+  assert.deepEqual(
+    statusResult.photos.map((item) => item.selectedSourceStatus),
+    statuses,
+    '来源状态应只映射为五种 renderer 安全状态'
+  );
+  scenarioCount += 1;
+
+  const getWithoutCredentials = await core.service.get(created.sessionId);
+  assert.equal(getWithoutCredentials.success, true, 'get 查询会话不得依赖组织凭证');
+  scenarioCount += 1;
+
+  const destroyOnly = makeService();
+  const destroyCreated = await destroyOnly.service.create(createInput());
+  const destroyed = await destroyOnly.service.destroy(destroyCreated.sessionId);
+  assert.equal(destroyed.destroyed, true, 'destroy 查询会话不得依赖组织凭证');
+  scenarioCount += 1;
+
+  const organizationCheck = makeService({
+    pages: [
+      makePage([makeMoment('org-1')], { next: 'org-next', hasMore: true }),
+      makePage([makeMoment('org-2')])
+    ]
+  });
+  const organizationSession = await organizationCheck.service.create(createInput());
+  await assert.rejects(
+    () => organizationCheck.service.loadNext(organizationSession.sessionId),
+    (error) => error?.code === 'marki_not_configured',
+    '下一页查询必须提供组织凭证'
+  );
+  await assert.rejects(
+    () => organizationCheck.service.loadNext(organizationSession.sessionId, {
+      credentials: { orgId: '54321', key: 'other-key' }
+    }),
+    (error) => error?.code === 'marki_photo_query_organization_changed',
+    '下一页查询必须校验凭证组织与会话一致'
+  );
+  await assert.rejects(
+    () => organizationCheck.service.get(organizationSession.sessionId),
+    (error) => error?.code === 'marki_photo_query_session_not_found',
+    '组织变化后旧查询会话应失效'
+  );
+  scenarioCount += 1;
+
+  const idle = makeService({ clock: { value: 0 } });
+  const idleSession = await idle.service.create(createInput());
+  idle.clock.value = IDLE_TTL_MS;
+  await assert.rejects(
+    () => idle.service.get(idleSession.sessionId),
+    (error) => error?.code === 'marki_photo_query_session_expired',
+    '查询会话应在空闲 15 分钟后过期'
+  );
+  scenarioCount += 1;
+
+  const hard = makeService({ clock: { value: 0 } });
+  const hardSession = await hard.service.create(createInput());
+  hard.clock.value = 10 * 60 * 1000;
+  await hard.service.get(hardSession.sessionId);
+  hard.clock.value = 20 * 60 * 1000;
+  await hard.service.get(hardSession.sessionId);
+  hard.clock.value = HARD_TTL_MS;
+  await assert.rejects(
+    () => hard.service.get(hardSession.sessionId),
+    (error) => error?.code === 'marki_photo_query_session_expired',
+    '查询会话即使持续访问也应在 30 分钟硬期限后过期'
+  );
+  scenarioCount += 1;
+
+  const limitedSessions = makeService();
+  for (let index = 0; index < MAX_ACTIVE_SESSIONS; index += 1) {
+    await limitedSessions.service.create(createInput());
+  }
+  await assert.rejects(
+    () => limitedSessions.service.create(createInput()),
+    (error) => error?.code === 'marki_photo_query_session_limit_reached',
+    '主进程最多保留三个有效照片查询会话'
+  );
+  scenarioCount += 1;
+
+  const thousandMoments = Array.from(
+    { length: MAX_SESSION_PHOTOS + 1 },
+    (_value, index) => makeMoment(`limit-${index + 1}`)
+  );
+  const photoLimitCalls = [];
+  const photoLimit = makeService({
+    pages: [makePage(thousandMoments, { next: 'limit-next', hasMore: true })],
+    calls: photoLimitCalls
+  });
+  const photoLimitResult = await photoLimit.service.create(createInput());
+  assert.equal(photoLimitResult.photos.length, MAX_SESSION_PHOTOS, '单会话最多保存 1000 张唯一照片');
+  assert.equal(photoLimitResult.pagination.limitReached, true, '达到照片上限应标记 limitReached');
+  assert.equal(photoLimitResult.pagination.hasMore, false, '达到照片上限后 renderer 应视为无下一页');
+  scenarioCount += 1;
+
+  await photoLimit.service.loadNext(photoLimitResult.sessionId, { credentials });
+  assert.equal(photoLimitCalls.length, 1, '达到照片上限后不得继续发起下一页请求');
+  scenarioCount += 1;
+
+  const destroyRecovery = makeService();
+  const destroyRecoverySession = await destroyRecovery.service.create(createInput());
+  await destroyRecovery.service.destroy(destroyRecoverySession.sessionId);
+  await assert.rejects(
+    () => destroyRecovery.service.get(destroyRecoverySession.sessionId),
+    (error) => error?.code === 'marki_photo_query_session_not_found',
+    '会话销毁后不得继续恢复'
+  );
+  scenarioCount += 1;
+
+  const restartOriginal = makeService();
+  const restartSession = await restartOriginal.service.create(createInput());
+  const restartFresh = makeService();
+  await assert.rejects(
+    () => restartFresh.service.get(restartSession.sessionId),
+    (error) => error?.code === 'marki_photo_query_session_not_found',
+    '新的主进程内存服务实例不应恢复旧会话'
+  );
+  scenarioCount += 1;
+
+  const [mainSource, preloadSource, clientSource] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/utils/markiClient.js'), 'utf8')
+  ]);
+  const startHandler = mainSource.match(
+    /ipcMain\.handle\('marki:start-photo-query-session'[\s\S]*?\n\)\);/
+  )?.[0] || '';
+  const getHandler = mainSource.match(
+    /ipcMain\.handle\('marki:get-photo-query-session'[\s\S]*?\n\)\);/
+  )?.[0] || '';
+  const nextHandler = mainSource.match(
+    /ipcMain\.handle\('marki:load-next-photo-query-page'[\s\S]*?\n\)\);/
+  )?.[0] || '';
+  const destroyHandler = mainSource.match(
+    /ipcMain\.handle\('marki:destroy-photo-query-session'[\s\S]*?\n\)\);/
+  )?.[0] || '';
+  assert.equal(startHandler.includes('safeMarkiCall'), true, '首次照片查询 IPC 必须加载组织凭证');
+  assert.equal(startHandler.includes("app.getPath('documents')"), true, '首次照片查询必须使用正式 Documents 路径');
+  assert.equal(startHandler.includes('getWritableDocumentsPath'), false, '照片查询不得使用可回退 userData 的 Documents 路径');
+  assert.equal(nextHandler.includes('safeMarkiCall'), true, '下一页 IPC 必须加载组织凭证');
+  assert.equal(getHandler.includes('safeMarkiLocalCall'), true, '查询会话恢复不得加载组织凭证');
+  assert.equal(destroyHandler.includes('safeMarkiLocalCall'), true, '查询会话销毁不得加载组织凭证');
+  assert.equal(/loadNextMarkiPhotoQueryPage\(sessionId, \{ credentials \}\)/.test(nextHandler), true, '下一页只能由主进程注入凭证');
+  const preloadMarki = preloadSource.match(/marki: \{([\s\S]*?)\n  \},\n  smartSort:/)?.[1] || '';
+  for (const method of [
+    'startPhotoQuerySession',
+    'getPhotoQuerySession',
+    'loadNextPhotoQueryPage',
+    'destroyPhotoQuerySession'
+  ]) {
+    assert.equal(preloadMarki.includes(`${method}:`), true, `preload 应暴露 ${method}`);
+    assert.equal(clientSource.includes(`function ${method}`) || clientSource.includes(`function ${method.replace('Photo', 'MarkiPhoto')}`), true, `markiClient 应包装 ${method}`);
+  }
+  for (const forbidden of ['orgId', 'next,', 'momentId', 'remoteUrl', 'documentsPath', 'userDataPath']) {
+    assert.equal(preloadMarki.includes(forbidden), false, `preload 照片查询接口不得暴露 ${forbidden}`);
+  }
+  scenarioCount += 1;
+
+  assert.equal(
+    apiRequests.every((request) => request.url.startsWith('https://marki.test/')),
+    true,
+    '照片查询自检只能使用受控 mock API'
+  );
+  assert.equal(
+    apiRequests.some((request) => request.url.includes('open-api.markiapp.com')),
+    false,
+    '照片查询自检不得访问真实马克平台'
+  );
+  scenarioCount += 1;
+
+  const cleanup = makeService();
+  const cleanupSession = await cleanup.service.create(createInput());
+  await cleanup.service.destroy(cleanupSession.sessionId);
+  const cleanupResult = await cleanup.service.cleanup();
+  assert.equal(cleanupResult.activeCount, 0, '照片查询自检结束后不得遗留内存会话');
+  await assert.rejects(
+    () => fs.access(root),
+    (error) => error?.code === 'ENOENT',
+    '照片查询会话自检不得生成临时文件'
+  );
+  scenarioCount += 1;
+
+  assert.equal(scenarioCount, 33, '马克照片查询 API 与可信会话应完整执行 33 个自检场景');
 }
 
 function createJsonResponse(payload) {

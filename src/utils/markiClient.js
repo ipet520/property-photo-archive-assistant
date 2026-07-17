@@ -62,6 +62,46 @@ export async function listMarkiMembers(input = {}) {
   }
 }
 
+export async function startMarkiPhotoQuerySession(input = {}) {
+  const api = getMarkiApi();
+  if (!api?.startPhotoQuerySession) return createUnavailableResult('马克照片查询接口不可用。');
+  try {
+    return await api.startPhotoQuerySession(input);
+  } catch {
+    return createUnavailableResult('马克照片查询失败。');
+  }
+}
+
+export async function getMarkiPhotoQuerySession(sessionId) {
+  const api = getMarkiApi();
+  if (!api?.getPhotoQuerySession) return createUnavailableResult('马克照片查询会话接口不可用。');
+  try {
+    return await api.getPhotoQuerySession(sessionId);
+  } catch {
+    return createUnavailableResult('马克照片查询会话读取失败。');
+  }
+}
+
+export async function loadNextMarkiPhotoQueryPage(sessionId) {
+  const api = getMarkiApi();
+  if (!api?.loadNextPhotoQueryPage) return createUnavailableResult('马克照片分页查询接口不可用。');
+  try {
+    return await api.loadNextPhotoQueryPage(sessionId);
+  } catch {
+    return createUnavailableResult('马克照片下一页读取失败。');
+  }
+}
+
+export async function destroyMarkiPhotoQuerySession(sessionId) {
+  const api = getMarkiApi();
+  if (!api?.destroyPhotoQuerySession) return createUnavailableResult('马克照片查询会话销毁接口不可用。');
+  try {
+    return await api.destroyPhotoQuerySession(sessionId);
+  } catch {
+    return createUnavailableResult('马克照片查询会话销毁失败。');
+  }
+}
+
 function createUnavailableResult(message) {
   return {
     success: false,

@@ -118,6 +118,12 @@ const {
   consumeMarkiImportBatch,
   getMarkiImportBatch
 } = require('./services/markiImportBatchService.cjs');
+const {
+  createMarkiPhotoQuerySession,
+  destroyMarkiPhotoQuerySession,
+  getMarkiPhotoQuerySession,
+  loadNextMarkiPhotoQueryPage
+} = require('./services/markiPhotoQuerySessionService.cjs');
 
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -867,6 +873,22 @@ ipcMain.handle('marki:testConnection', async () => safeMarkiCall((credentials) =
 ipcMain.handle('marki:listTeams', async () => safeMarkiCall((credentials) => listMarkiTeams(credentials)));
 ipcMain.handle('marki:listMembers', async (_event, input) => safeMarkiCall(
   (credentials) => listMarkiMembers(credentials, input)
+));
+ipcMain.handle('marki:start-photo-query-session', async (_event, input) => safeMarkiCall(
+  (credentials) => createMarkiPhotoQuerySession({
+    credentials,
+    documentsPath: app.getPath('documents'),
+    filters: input
+  })
+));
+ipcMain.handle('marki:get-photo-query-session', async (_event, sessionId) => safeMarkiLocalCall(
+  () => getMarkiPhotoQuerySession(sessionId)
+));
+ipcMain.handle('marki:load-next-photo-query-page', async (_event, sessionId) => safeMarkiCall(
+  (credentials) => loadNextMarkiPhotoQueryPage(sessionId, { credentials })
+));
+ipcMain.handle('marki:destroy-photo-query-session', async (_event, sessionId) => safeMarkiLocalCall(
+  () => destroyMarkiPhotoQuerySession(sessionId)
 ));
 ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiLocalCall(
   () => getMarkiImportBatch(app.getPath('userData'), batchId)

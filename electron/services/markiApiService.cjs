@@ -2,6 +2,11 @@ const crypto = require('node:crypto');
 
 const MARKI_API_BASE_URL = 'https://open-api.markiapp.com';
 const DEFAULT_TIMEOUT_MS = 15000;
+const MAX_MOMENT_QUERY_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
+const MAX_MOMENT_PAGE_SIZE = 1000;
+const MAX_MOMENT_CONTENT_LENGTH = 1024 * 1024;
+const MAX_PAGINATION_CURSOR_LENGTH = 2000;
+const MOMENT_QUERY_KEYS = new Set(['teamId', 'uid', 'start', 'end', 'next']);
 
 class MarkiApiError extends Error {
   constructor(code, message, options = {}) {
@@ -65,6 +70,53 @@ async function listMarkiMembers(credentials, input = {}, options = {}) {
     regTotal: normalizeCount(data.regTotal),
     unRegTotal: normalizeCount(data.unRegTotal),
     total: normalizeCount(data.total),
+    traceId: response.traceId,
+    receivedAt: new Date().toISOString()
+  };
+}
+
+async function listMarkiMoments(credentials, input = {}, options = {}) {
+  const query = normalizeMomentQueryInput(input);
+  const body = {
+    ...(query.teamId ? { teamId: query.teamId } : {}),
+    ...(query.uid ? { uid: query.uid } : {}),
+    start: query.start,
+    end: query.end,
+    ...(query.next ? { next: query.next } : {}),
+    momType: 1
+  };
+  const response = await postMarkiApi('/marki/moment', credentials, body, {
+    ...options,
+    tracePrefix: 'photo-archive-moment'
+  });
+  const data = response.data || {};
+  const list = data.momList;
+  if (list !== undefined && !Array.isArray(list)) {
+    throw new MarkiApiError('invalid_response', '马克平台返回的照片列表格式不正确。', {
+      traceId: response.traceId
+    });
+  }
+  if (Array.isArray(list) && list.length > MAX_MOMENT_PAGE_SIZE) {
+    throw new MarkiApiError('invalid_response', '马克平台返回的单页照片数量超过允许上限。', {
+      traceId: response.traceId
+    });
+  }
+  const next = normalizePaginationCursor(data.next, {
+    optional: true,
+    errorCode: 'invalid_response',
+    errorMessage: '马克平台返回的分页信息不正确。'
+  });
+  const hasMore = data.hasMore === true;
+  if (hasMore && !next) {
+    throw new MarkiApiError('invalid_response', '马克平台返回的分页信息不完整。', {
+      traceId: response.traceId
+    });
+  }
+  return {
+    success: true,
+    moments: (list || []).map((item) => sanitizeMoment(item, response.traceId)),
+    next,
+    hasMore,
     traceId: response.traceId,
     receivedAt: new Date().toISOString()
   };
@@ -162,6 +214,132 @@ function sanitizeMember(item = {}) {
   };
 }
 
+function sanitizeMoment(item = {}, traceId = '') {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了无效的照片记录。', { traceId });
+  }
+  const id = normalizeMomentResponseId(item.id, traceId);
+  const uid = normalizeResponseId(item.uid, '拍照人员 ID', traceId);
+  const teamId = normalizeResponseId(item.teamId, '团队 ID', traceId);
+  const url = String(item.url || '').trim();
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    parsedUrl = null;
+  }
+  if (!parsedUrl || parsedUrl.protocol !== 'https:' || url.length > 8192) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了无效的照片地址。', { traceId });
+  }
+  const momentType = Number(item.momentType);
+  if (momentType !== 1) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了非照片类型的记录。', { traceId });
+  }
+  const postTime = Number(item.postTime);
+  if (!Number.isSafeInteger(postTime) || postTime <= 0) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了无效的上传时间。', { traceId });
+  }
+  if (typeof item.content !== 'string' || item.content.length > MAX_MOMENT_CONTENT_LENGTH) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了无效的照片结构化内容。', { traceId });
+  }
+  return {
+    id,
+    uid,
+    teamId,
+    url,
+    momentType,
+    content: item.content,
+    markName: String(item.markName || '').trim().slice(0, 500),
+    lng: normalizeCoordinate(item.lng),
+    lat: normalizeCoordinate(item.lat),
+    postTime
+  };
+}
+
+function normalizeMomentQueryInput(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new MarkiApiError('invalid_request', '马克照片查询条件格式不正确。');
+  }
+  const extraKeys = Object.keys(input).filter((key) => !MOMENT_QUERY_KEYS.has(key));
+  if (extraKeys.length) {
+    throw new MarkiApiError('invalid_request', '马克照片查询包含不允许的参数。');
+  }
+  const start = normalizeUtc8DateTime(input.start, 'start');
+  const end = normalizeUtc8DateTime(input.end, 'end');
+  if (start.timestamp > end.timestamp) {
+    throw new MarkiApiError('invalid_request', '查询开始时间不得晚于结束时间。');
+  }
+  if (end.timestamp - start.timestamp > MAX_MOMENT_QUERY_RANGE_MS) {
+    throw new MarkiApiError('invalid_request', '马克照片单次查询时间范围不得超过 31 天。');
+  }
+  const teamId = input.teamId === undefined || input.teamId === null || input.teamId === ''
+    ? null
+    : normalizeIntegerId(input.teamId, 'teamId');
+  const uid = input.uid === undefined || input.uid === null || input.uid === ''
+    ? null
+    : normalizeIntegerId(input.uid, 'uid');
+  if (uid && !teamId) {
+    throw new MarkiApiError('invalid_request', '按拍照人员查询时必须同时选择团队。');
+  }
+  return {
+    teamId,
+    uid,
+    start: start.value,
+    end: end.value,
+    next: normalizePaginationCursor(input.next, {
+      optional: true,
+      errorCode: 'invalid_request',
+      errorMessage: '分页参数不合法。'
+    })
+  };
+}
+
+function normalizeUtc8DateTime(value, fieldName) {
+  const text = String(value || '').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text);
+  if (!match) {
+    throw new MarkiApiError('invalid_request', `${fieldName} 必须使用 yyyy-MM-dd HH:mm:ss 格式。`);
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const parts = [yearText, monthText, dayText, hourText, minuteText, secondText].map(Number);
+  const [year, month, day, hour, minute, second] = parts;
+  const timestamp = Date.UTC(year, month - 1, day, hour - 8, minute, second);
+  const utc8 = new Date(timestamp + 8 * 60 * 60 * 1000);
+  if (
+    utc8.getUTCFullYear() !== year
+    || utc8.getUTCMonth() + 1 !== month
+    || utc8.getUTCDate() !== day
+    || utc8.getUTCHours() !== hour
+    || utc8.getUTCMinutes() !== minute
+    || utc8.getUTCSeconds() !== second
+  ) {
+    throw new MarkiApiError('invalid_request', `${fieldName} 不是有效的东八区日期时间。`);
+  }
+  return { value: text, timestamp };
+}
+
+function normalizePaginationCursor(value, options = {}) {
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw new MarkiApiError(
+      options.errorCode || 'invalid_request',
+      options.errorMessage || '分页参数不合法。'
+    );
+  }
+  const text = String(value ?? '').trim();
+  if (!text && options.optional) return '';
+  if (
+    !text
+    || text.length > MAX_PAGINATION_CURSOR_LENGTH
+    || /[\u0000-\u001f\u007f]/.test(text)
+  ) {
+    throw new MarkiApiError(
+      options.errorCode || 'invalid_request',
+      options.errorMessage || '分页参数不合法。'
+    );
+  }
+  return text;
+}
+
 function normalizeIntegerId(value, fieldName) {
   const text = String(value || '').trim();
   const number = Number(text);
@@ -169,6 +347,27 @@ function normalizeIntegerId(value, fieldName) {
     throw new MarkiApiError('invalid_request', `${fieldName} 必须为有效数字。`);
   }
   return number;
+}
+
+function normalizeResponseId(value, fieldName, traceId) {
+  const text = String(value ?? '').trim();
+  if (!/^\d+$/.test(text) || text === '0') {
+    throw new MarkiApiError('invalid_response', `马克平台返回了无效的${fieldName}。`, { traceId });
+  }
+  return text;
+}
+
+function normalizeMomentResponseId(value, traceId) {
+  const text = String(value ?? '').trim();
+  if (!text || text.length > 200 || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new MarkiApiError('invalid_response', '马克平台返回了无效的照片 ID。', { traceId });
+  }
+  return text;
+}
+
+function normalizeCoordinate(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function normalizeTimestamp(value) {
@@ -245,6 +444,7 @@ module.exports = {
   MarkiApiError,
   buildMarkiPostSignature,
   listMarkiMembers,
+  listMarkiMoments,
   listMarkiTeams,
   postMarkiApi,
   testMarkiConnection,

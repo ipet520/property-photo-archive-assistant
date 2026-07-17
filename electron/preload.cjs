@@ -68,6 +68,10 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     testConnection: () => ipcRenderer.invoke('marki:testConnection'),
     listTeams: () => ipcRenderer.invoke('marki:listTeams'),
     listMembers: (input) => ipcRenderer.invoke('marki:listMembers', input),
+    startPhotoQuerySession: (input) => ipcRenderer.invoke('marki:start-photo-query-session', input),
+    getPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:get-photo-query-session', sessionId),
+    loadNextPhotoQueryPage: (sessionId) => ipcRenderer.invoke('marki:load-next-photo-query-page', sessionId),
+    destroyPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:destroy-photo-query-session', sessionId),
     getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
     consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)
   },
