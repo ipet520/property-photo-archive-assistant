@@ -67,7 +67,9 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     clearConfig: () => ipcRenderer.invoke('marki:clearConfig'),
     testConnection: () => ipcRenderer.invoke('marki:testConnection'),
     listTeams: () => ipcRenderer.invoke('marki:listTeams'),
-    listMembers: (input) => ipcRenderer.invoke('marki:listMembers', input)
+    listMembers: (input) => ipcRenderer.invoke('marki:listMembers', input),
+    getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
+    consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)
   },
   smartSort: {
     generateGroups: (input) => ipcRenderer.invoke('smartSort:generateGroups', input),

@@ -114,6 +114,10 @@ const {
   testMarkiConnection,
   toSafeMarkiError
 } = require('./services/markiApiService.cjs');
+const {
+  consumeMarkiImportBatch,
+  getMarkiImportBatch
+} = require('./services/markiImportBatchService.cjs');
 
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -863,6 +867,12 @@ ipcMain.handle('marki:testConnection', async () => safeMarkiCall((credentials) =
 ipcMain.handle('marki:listTeams', async () => safeMarkiCall((credentials) => listMarkiTeams(credentials)));
 ipcMain.handle('marki:listMembers', async (_event, input) => safeMarkiCall(
   (credentials) => listMarkiMembers(credentials, input)
+));
+ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiCall(
+  () => getMarkiImportBatch(app.getPath('userData'), batchId)
+));
+ipcMain.handle('marki:consume-import-batch', async (_event, batchId) => safeMarkiCall(
+  () => consumeMarkiImportBatch(app.getPath('userData'), batchId)
 ));
 
 ipcMain.handle('ledger:open', async (_event, archiveRoot) => {

@@ -66,6 +66,14 @@ const {
 const {
   prepareMarkiStructuredImport
 } = require('../electron/services/markiImportOrchestratorService.cjs');
+const {
+  beginMarkiImportBatch,
+  cleanupExpiredMarkiImportBatches,
+  consumeMarkiImportBatch,
+  getMarkiImportBatch,
+  markMarkiImportBatchFailed,
+  markMarkiImportBatchReady
+} = require('../electron/services/markiImportBatchService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -90,13 +98,14 @@ async function main() {
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
     await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
     await checkMarkiImportOrchestrator(path.join(temporaryRoot, 'marki-orchestrator'));
+    await checkMarkiImportBatchService(path.join(temporaryRoot, 'marki-import-batches'));
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkArchiveTransactionRecovery(path.join(temporaryRoot, 'archive-transaction'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载、结构化导入与主进程编排、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载、结构化导入、主进程编排与临时批次、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -2293,6 +2302,573 @@ async function checkMarkiImportOrchestrator(root) {
     (error) => error?.code === 'ENOENT',
     '马克导入编排自检结束后应清理自身临时目录'
   );
+}
+
+async function checkMarkiImportBatchService(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '马克导入批次自检必须使用系统临时目录'
+  );
+  const baseTime = Date.parse('2026-07-17T06:00:00.000Z');
+  const at = (offsetMs = 0) => () => new Date(baseTime + offsetMs);
+  const deduplication = (inputCount = 2) => ({
+    inputCount,
+    uniqueCount: inputCount,
+    duplicateCount: 0,
+    skippedItems: []
+  });
+  const beginInput = (batchId, inputCount = 2) => ({
+    batchId,
+    inputCount,
+    deduplication: deduplication(inputCount)
+  });
+  const batchDirectory = (userDataPath) => path.join(userDataPath, 'marki-import-batches');
+  const batchPath = (userDataPath, batchId) => path.join(batchDirectory(userDataPath), `${batchId}.json`);
+  const workbenchPackage = (batchId, label = '原始业务内容') => ({
+    batchId,
+    photos: [{
+      id: `${batchId}-photo-1`,
+      sourceType: 'marki_api',
+      sourceKey: `marki_api:12345:${batchId}-moment-1`,
+      originalPath: path.join(root, 'downloaded', `${batchId}.jpg`),
+      label
+    }],
+    recognitionResultsByPhoto: {
+      [`${batchId}-photo-1`]: {
+        source: 'marki_api',
+        providerType: 'structured_data',
+        status: 'recognized',
+        rawText: ''
+      }
+    },
+    watermarkRecordsByPhoto: {
+      [`${batchId}-photo-1`]: { date: '2026-07-17', workContent: '设施巡查' }
+    },
+    archiveSuggestionsByPhoto: {
+      [`${batchId}-photo-1`]: {
+        status: 'suggestion_ready',
+        needsHumanReview: true,
+        suggestedFields: {
+          date: '2026-07-17',
+          project: '潇湘新区二期',
+          watermarkCategory: '工程类专用',
+          workContent: '设施巡查'
+        }
+      }
+    }
+  });
+  const readyInput = (batchId, packageValue = workbenchPackage(batchId)) => ({
+    success: true,
+    batchId,
+    inputCount: 2,
+    metadataSavedCount: 2,
+    failedCount: 0,
+    failures: [],
+    deduplication: deduplication(2),
+    workbenchImportPackage: packageValue
+  });
+  const failedInput = (batchId, message = '马克来源元数据保存失败，请重试。') => ({
+    success: false,
+    batchId,
+    inputCount: 2,
+    metadataSavedCount: 1,
+    failedCount: 1,
+    failures: [{
+      sourceMetadataRef: 'marki_source_metadata:12345:moment-2',
+      sourceKey: 'marki_api:12345:moment-2',
+      code: 'marki_source_metadata_save_failed',
+      message
+    }],
+    deduplication: deduplication(2),
+    workbenchImportPackage: null
+  });
+  let scenarioCount = 0;
+
+  await fs.mkdir(root, { recursive: true });
+  try {
+    const lifecycleRoot = path.join(root, 'lifecycle');
+    const lifecycleBatchId = 'batch-lifecycle';
+    const preparing = await beginMarkiImportBatch(
+      lifecycleRoot,
+      beginInput(lifecycleBatchId),
+      { now: at() }
+    );
+    assert.equal(preparing.status, 'preparing', '不存在的批次应进入 preparing');
+    assert.equal(preparing.workbenchImportPackage, null, 'preparing 批次不得保存工作台包');
+    assert.equal(
+      batchDirectory(lifecycleRoot),
+      path.join(lifecycleRoot, 'marki-import-batches'),
+      '批次目录必须固定在 userData 下的 marki-import-batches'
+    );
+    const lifecyclePath = batchPath(lifecycleRoot, lifecycleBatchId);
+    const preparingRecord = JSON.parse(await fs.readFile(lifecyclePath, 'utf8'));
+    assert.deepEqual(
+      Object.keys(preparingRecord),
+      [
+        'schemaVersion',
+        'batchId',
+        'status',
+        'inputCount',
+        'metadataSavedCount',
+        'failedCount',
+        'failures',
+        'deduplication',
+        'workbenchImportPackage',
+        'createdAt',
+        'updatedAt',
+        'expiresAt',
+        'consumedAt'
+      ],
+      '批次文件必须严格使用固定字段白名单'
+    );
+    assert.equal(preparingRecord.schemaVersion, 1, '批次 schemaVersion 必须为 1');
+    scenarioCount += 1;
+
+    const originalPackage = workbenchPackage(lifecycleBatchId);
+    const packageSnapshot = JSON.stringify(originalPackage);
+    const ready = await markMarkiImportBatchReady(
+      lifecycleRoot,
+      readyInput(lifecycleBatchId, originalPackage),
+      { now: at(60 * 1000) }
+    );
+    assert.equal(ready.status, 'ready', 'preparing 批次应能转换为 ready');
+    assert.equal(JSON.stringify(originalPackage), packageSnapshot, '批次服务不得修改工作台包业务内容');
+    scenarioCount += 1;
+
+    originalPackage.photos[0].label = '外部修改';
+    const readyQuery = await getMarkiImportBatch(
+      lifecycleRoot,
+      lifecycleBatchId,
+      { now: at(2 * 60 * 1000) }
+    );
+    assert.equal(readyQuery.status, 'ready', 'ready 查询应返回就绪状态');
+    assert.deepEqual(
+      Object.keys(readyQuery.workbenchImportPackage),
+      [
+        'batchId',
+        'photos',
+        'recognitionResultsByPhoto',
+        'watermarkRecordsByPhoto',
+        'archiveSuggestionsByPhoto'
+      ],
+      'ready 查询必须严格返回五字段工作台包'
+    );
+    assert.equal(
+      readyQuery.workbenchImportPackage.photos[0].label,
+      '原始业务内容',
+      '批次服务必须深拷贝后保存工作台包'
+    );
+    assert.equal(Object.hasOwn(readyQuery, 'filePath'), false, '批次查询不得返回内部文件路径');
+    scenarioCount += 1;
+
+    const beforeGetText = await fs.readFile(lifecyclePath, 'utf8');
+    readyQuery.workbenchImportPackage.photos[0].label = '查询对象修改';
+    const secondReadyQuery = await getMarkiImportBatch(
+      lifecycleRoot,
+      lifecycleBatchId,
+      { now: at(3 * 60 * 1000) }
+    );
+    const afterGetText = await fs.readFile(lifecyclePath, 'utf8');
+    assert.equal(beforeGetText, afterGetText, 'get 查询不得修改批次持久化状态');
+    assert.equal(
+      secondReadyQuery.workbenchImportPackage.photos[0].label,
+      '原始业务内容',
+      '批次查询结果必须深拷贝返回'
+    );
+    scenarioCount += 1;
+
+    const firstConsume = await consumeMarkiImportBatch(
+      lifecycleRoot,
+      lifecycleBatchId,
+      { now: at(4 * 60 * 1000) }
+    );
+    assert.deepEqual(
+      firstConsume,
+      {
+        success: true,
+        batchId: lifecycleBatchId,
+        status: 'consumed',
+        alreadyConsumed: false
+      },
+      '首次消费应执行 ready 到 consumed 转换'
+    );
+    scenarioCount += 1;
+
+    const consumedRecord = JSON.parse(await fs.readFile(lifecyclePath, 'utf8'));
+    assert.equal(consumedRecord.status, 'consumed', '消费后批次文件应保存 consumed 状态');
+    assert.equal(consumedRecord.workbenchImportPackage, null, '消费后持久化文件必须立即清除工作台包');
+    assert.equal(Boolean(consumedRecord.consumedAt), true, '消费后应记录 consumedAt');
+    const consumedQuery = await getMarkiImportBatch(
+      lifecycleRoot,
+      lifecycleBatchId,
+      { now: at(5 * 60 * 1000) }
+    );
+    assert.equal(consumedQuery.workbenchImportPackage, null, 'consumed 查询不得返回旧工作台包');
+    scenarioCount += 1;
+
+    const repeatedConsume = await consumeMarkiImportBatch(
+      lifecycleRoot,
+      lifecycleBatchId,
+      { now: at(5 * 60 * 1000) }
+    );
+    assert.equal(repeatedConsume.alreadyConsumed, true, '重复消费应幂等返回 alreadyConsumed=true');
+    scenarioCount += 1;
+
+    const concurrentRoot = path.join(root, 'concurrent');
+    const concurrentBatchId = 'batch-concurrent';
+    await beginMarkiImportBatch(concurrentRoot, beginInput(concurrentBatchId), { now: at() });
+    await markMarkiImportBatchReady(
+      concurrentRoot,
+      readyInput(concurrentBatchId),
+      { now: at(60 * 1000) }
+    );
+    const concurrentResults = await Promise.all([
+      consumeMarkiImportBatch(concurrentRoot, concurrentBatchId, { now: at(2 * 60 * 1000) }),
+      consumeMarkiImportBatch(concurrentRoot, concurrentBatchId, { now: at(2 * 60 * 1000) })
+    ]);
+    assert.deepEqual(
+      concurrentResults.map((result) => result.alreadyConsumed).sort(),
+      [false, true],
+      '并发消费只能有一次真实 ready 到 consumed 转换'
+    );
+    scenarioCount += 1;
+
+    const blockedRoot = path.join(root, 'blocked-consumption');
+    await beginMarkiImportBatch(blockedRoot, beginInput('batch-preparing-blocked'), { now: at() });
+    await assert.rejects(
+      () => consumeMarkiImportBatch(blockedRoot, 'batch-preparing-blocked', { now: at(60 * 1000) }),
+      (error) => error?.code === 'marki_import_batch_not_consumable',
+      'preparing 批次不得消费'
+    );
+    await beginMarkiImportBatch(blockedRoot, beginInput('batch-failed-blocked'), { now: at() });
+    await markMarkiImportBatchFailed(
+      blockedRoot,
+      failedInput('batch-failed-blocked'),
+      { now: at(60 * 1000) }
+    );
+    await assert.rejects(
+      () => consumeMarkiImportBatch(blockedRoot, 'batch-failed-blocked', { now: at(2 * 60 * 1000) }),
+      (error) => error?.code === 'marki_import_batch_not_consumable',
+      'failed 批次不得消费'
+    );
+    scenarioCount += 1;
+
+    const failedQuery = await getMarkiImportBatch(
+      blockedRoot,
+      'batch-failed-blocked',
+      { now: at(2 * 60 * 1000) }
+    );
+    assert.equal(failedQuery.status, 'failed', 'preparing 应能转换为 failed');
+    assert.equal(failedQuery.failedCount, 1, 'failed 批次应保留安全失败数量');
+    assert.equal(failedQuery.workbenchImportPackage, null, 'failed 批次不得返回工作台包');
+    scenarioCount += 1;
+
+    const failedCreatedAt = failedQuery.createdAt;
+    const retryPreparing = await beginMarkiImportBatch(
+      blockedRoot,
+      beginInput('batch-failed-blocked'),
+      { now: at(3 * 60 * 1000) }
+    );
+    assert.equal(retryPreparing.status, 'preparing', 'failed 批次应允许幂等重试进入 preparing');
+    assert.equal(retryPreparing.createdAt, failedCreatedAt, '失败重试应保留批次 createdAt');
+    const retryReady = await markMarkiImportBatchReady(
+      blockedRoot,
+      readyInput('batch-failed-blocked'),
+      { now: at(4 * 60 * 1000) }
+    );
+    assert.equal(retryReady.status, 'ready', 'failed 重试后应能进入 ready');
+    scenarioCount += 1;
+
+    await assert.rejects(
+      () => beginMarkiImportBatch(
+        blockedRoot,
+        beginInput('batch-failed-blocked'),
+        { now: at(5 * 60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_transition_invalid',
+      'ready 批次不得重新 begin 覆盖'
+    );
+    await assert.rejects(
+      () => markMarkiImportBatchFailed(
+        blockedRoot,
+        failedInput('batch-failed-blocked'),
+        { now: at(5 * 60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_transition_invalid',
+      'ready 批次不得转换为 failed'
+    );
+    await consumeMarkiImportBatch(
+      blockedRoot,
+      'batch-failed-blocked',
+      { now: at(6 * 60 * 1000) }
+    );
+    await assert.rejects(
+      () => beginMarkiImportBatch(
+        blockedRoot,
+        beginInput('batch-failed-blocked'),
+        { now: at(7 * 60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_transition_invalid',
+      'consumed 批次不得重新 preparing'
+    );
+    await assert.rejects(
+      () => markMarkiImportBatchReady(
+        blockedRoot,
+        readyInput('batch-failed-blocked'),
+        { now: at(7 * 60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_transition_invalid',
+      'consumed 批次不得重新 ready'
+    );
+    await assert.rejects(
+      () => markMarkiImportBatchFailed(
+        blockedRoot,
+        failedInput('batch-failed-blocked'),
+        { now: at(7 * 60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_transition_invalid',
+      'consumed 批次不得转换为 failed'
+    );
+    scenarioCount += 1;
+
+    const corruptRoot = path.join(root, 'corrupt');
+    const corruptPath = batchPath(corruptRoot, 'batch-corrupt');
+    await fs.mkdir(path.dirname(corruptPath), { recursive: true });
+    await fs.writeFile(corruptPath, '{ damaged json', 'utf8');
+    await assert.rejects(
+      () => beginMarkiImportBatch(corruptRoot, beginInput('batch-corrupt'), { now: at() }),
+      (error) => error?.code === 'marki_import_batch_invalid',
+      '损坏批次不得被 begin 静默覆盖'
+    );
+    assert.equal(await fs.readFile(corruptPath, 'utf8'), '{ damaged json', '损坏批次文件必须原样保留');
+    scenarioCount += 1;
+
+    for (const invalidBatchId of ['../escape', '..', '.', 'batch/escape', 'batch\\escape', 'batch.json', '']) {
+      await assert.rejects(
+        () => getMarkiImportBatch(root, invalidBatchId, { now: at() }),
+        (error) => error?.code === 'marki_import_batch_id_invalid',
+        `非法 batchId ${JSON.stringify(invalidBatchId)} 必须拒绝`
+      );
+    }
+    scenarioCount += 1;
+
+    const extraFieldRoot = path.join(root, 'extra-package-field');
+    const extraBatchId = 'batch-extra-field';
+    await beginMarkiImportBatch(extraFieldRoot, beginInput(extraBatchId), { now: at() });
+    await assert.rejects(
+      () => markMarkiImportBatchReady(extraFieldRoot, readyInput(extraBatchId, {
+        ...workbenchPackage(extraBatchId),
+        sixthField: true
+      }), { now: at(60 * 1000) }),
+      (error) => error?.code === 'marki_import_batch_package_invalid',
+      '工作台包多出第六个字段时必须拒绝'
+    );
+    assert.equal(
+      (await getMarkiImportBatch(extraFieldRoot, extraBatchId, { now: at(2 * 60 * 1000) })).status,
+      'preparing',
+      '无效工作台包不得改变 preparing 状态'
+    );
+    scenarioCount += 1;
+
+    const mismatchRoot = path.join(root, 'package-mismatch');
+    const mismatchBatchId = 'batch-package-mismatch';
+    await beginMarkiImportBatch(mismatchRoot, beginInput(mismatchBatchId), { now: at() });
+    await assert.rejects(
+      () => markMarkiImportBatchReady(
+        mismatchRoot,
+        readyInput(mismatchBatchId, workbenchPackage('different-batch-id')),
+        { now: at(60 * 1000) }
+      ),
+      (error) => error?.code === 'marki_import_batch_package_invalid',
+      '工作台包 batchId 不一致时必须拒绝'
+    );
+    scenarioCount += 1;
+
+    const expiryRoot = path.join(root, 'ready-expiry');
+    const expiryBatchId = 'batch-ready-expiry';
+    await beginMarkiImportBatch(expiryRoot, beginInput(expiryBatchId), { now: at() });
+    await markMarkiImportBatchReady(expiryRoot, readyInput(expiryBatchId), { now: at() });
+    await assert.rejects(
+      () => getMarkiImportBatch(expiryRoot, expiryBatchId, { now: at(24 * 60 * 60 * 1000 + 1) }),
+      (error) => error?.code === 'marki_import_batch_expired',
+      'ready 批次超过 24 小时后不得返回旧工作台包'
+    );
+    await assert.rejects(
+      () => fs.access(batchPath(expiryRoot, expiryBatchId)),
+      (error) => error?.code === 'ENOENT',
+      'ready 过期查询应清理正式批次文件'
+    );
+    scenarioCount += 1;
+
+    const preparingTtlRoot = path.join(root, 'ttl-preparing');
+    await beginMarkiImportBatch(preparingTtlRoot, beginInput('batch-ttl-preparing'), { now: at() });
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(preparingTtlRoot, { now: at(59 * 60 * 1000) })).removedCount,
+      0,
+      'preparing 批次一小时内不得清理'
+    );
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(preparingTtlRoot, { now: at(61 * 60 * 1000) })).removedCount,
+      1,
+      'preparing 批次超过一小时应清理'
+    );
+    const failedTtlRoot = path.join(root, 'ttl-failed');
+    await beginMarkiImportBatch(failedTtlRoot, beginInput('batch-ttl-failed'), { now: at() });
+    await markMarkiImportBatchFailed(failedTtlRoot, failedInput('batch-ttl-failed'), { now: at() });
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(failedTtlRoot, { now: at(23 * 60 * 60 * 1000) })).removedCount,
+      0,
+      'failed 批次 24 小时内不得清理'
+    );
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(failedTtlRoot, { now: at(24 * 60 * 60 * 1000 + 1) })).removedCount,
+      1,
+      'failed 批次超过 24 小时应清理'
+    );
+    const consumedTtlRoot = path.join(root, 'ttl-consumed');
+    await beginMarkiImportBatch(consumedTtlRoot, beginInput('batch-ttl-consumed'), { now: at() });
+    await markMarkiImportBatchReady(consumedTtlRoot, readyInput('batch-ttl-consumed'), { now: at() });
+    await consumeMarkiImportBatch(consumedTtlRoot, 'batch-ttl-consumed', { now: at() });
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(consumedTtlRoot, { now: at(9 * 60 * 1000) })).removedCount,
+      0,
+      'consumed 墓碑十分钟内不得清理'
+    );
+    assert.equal(
+      (await cleanupExpiredMarkiImportBatches(consumedTtlRoot, { now: at(11 * 60 * 1000) })).removedCount,
+      1,
+      'consumed 墓碑超过十分钟应清理'
+    );
+    scenarioCount += 1;
+
+    const safeFailureRoot = path.join(root, 'safe-failure');
+    const safeFailureBatchId = 'batch-safe-failure';
+    await beginMarkiImportBatch(safeFailureRoot, beginInput(safeFailureBatchId), { now: at() });
+    const unsafeFailure = failedInput(
+      safeFailureBatchId,
+      `${safeFailureRoot} https://private.example raw content stack secret`
+    );
+    await assert.rejects(
+      () => markMarkiImportBatchFailed(safeFailureRoot, {
+        ...unsafeFailure,
+        failures: [{ ...unsafeFailure.failures[0], stack: 'secret stack' }]
+      }, { now: at(60 * 1000) }),
+      (error) => error?.code === 'marki_import_batch_failures_invalid',
+      '失败摘要多出 stack 字段时必须拒绝'
+    );
+    const safeFailed = await markMarkiImportBatchFailed(
+      safeFailureRoot,
+      unsafeFailure,
+      { now: at(2 * 60 * 1000) }
+    );
+    const serializedSafeFailure = JSON.stringify(safeFailed.failures);
+    for (const forbidden of [safeFailureRoot, 'private.example', 'raw content', 'stack', 'secret']) {
+      assert.equal(
+        serializedSafeFailure.includes(forbidden),
+        false,
+        `批次失败摘要不得泄露 ${forbidden}`
+      );
+    }
+    scenarioCount += 1;
+
+    const allBatchFiles = await fs.readdir(batchDirectory(lifecycleRoot));
+    assert.equal(
+      allBatchFiles.some((fileName) => fileName.endsWith('.tmp')),
+      false,
+      '批次保存成功后不得遗留临时文件'
+    );
+    const atomicFailureRoot = path.join(root, 'atomic-failure');
+    const failingFileSystem = {
+      mkdir: (...args) => fs.mkdir(...args),
+      open: (...args) => fs.open(...args),
+      readFile: (...args) => fs.readFile(...args),
+      readdir: (...args) => fs.readdir(...args),
+      rename: async () => {
+        const error = new Error('injected rename failure');
+        error.code = 'EPERM';
+        throw error;
+      },
+      rm: (...args) => fs.rm(...args)
+    };
+    await assert.rejects(
+      () => beginMarkiImportBatch(
+        atomicFailureRoot,
+        beginInput('batch-atomic-failure'),
+        { fs: failingFileSystem, now: at() }
+      ),
+      (error) => error?.code === 'marki_import_batch_save_failed',
+      '原子替换失败应返回受控保存错误'
+    );
+    const atomicFailureFiles = await fs.readdir(batchDirectory(atomicFailureRoot));
+    assert.deepEqual(atomicFailureFiles, [], '批次保存失败后不得遗留正式文件或临时文件');
+    scenarioCount += 1;
+
+    const [mainSource, preloadSource] = await Promise.all([
+      fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
+      fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8')
+    ]);
+    const getHandler = mainSource.match(
+      /ipcMain\.handle\('marki:get-import-batch'[\s\S]*?\n\)\);/
+    )?.[0] || '';
+    const consumeHandler = mainSource.match(
+      /ipcMain\.handle\('marki:consume-import-batch'[\s\S]*?\n\)\);/
+    )?.[0] || '';
+    for (const handler of [getHandler, consumeHandler]) {
+      assert.equal(Boolean(handler), true, '主进程必须注册马克批次查询和消费 IPC');
+      assert.equal(handler.includes("app.getPath('userData')"), true, '批次 IPC 必须固定使用 app.getPath(userData)');
+      assert.equal(handler.includes('safeMarkiCall'), true, '批次 IPC 必须使用 safeMarkiCall');
+      assert.equal(handler.includes('getWritableDocumentsPath'), false, '批次 IPC 不得使用 Documents 路径');
+      assert.equal(handler.includes('documentsPath'), false, '批次 IPC 不得接受 documentsPath');
+      assert.equal(handler.includes('userDataPath'), false, '批次 IPC 不得接受 userDataPath');
+    }
+    assert.equal(
+      /marki:get-import-batch', async \(_event, batchId\)/.test(getHandler),
+      true,
+      '批次查询 IPC 只能接收 batchId'
+    );
+    assert.equal(
+      /marki:consume-import-batch', async \(_event, batchId\)/.test(consumeHandler),
+      true,
+      '批次消费 IPC 只能接收 batchId'
+    );
+    assert.equal(
+      mainSource.includes("ipcMain.handle('marki:prepare-structured-import'"),
+      false,
+      '本刀不得向 renderer 注册结构化导入准备 IPC'
+    );
+    scenarioCount += 1;
+
+    const markiPreloadBlock = preloadSource.match(/marki: \{([\s\S]*?)\n  \},\n  smartSort:/)?.[1] || '';
+    assert.equal(
+      markiPreloadBlock.includes("getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId)"),
+      true,
+      'preload marki 分组应暴露 getImportBatch(batchId)'
+    );
+    assert.equal(
+      markiPreloadBlock.includes("consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)"),
+      true,
+      'preload marki 分组应暴露 consumeImportBatch(batchId)'
+    );
+    assert.deepEqual(
+      [...markiPreloadBlock.matchAll(/(\w+ImportBatch):/g)].map((match) => match[1]),
+      ['getImportBatch', 'consumeImportBatch'],
+      'preload 不得暴露其他批次写入或准备方法'
+    );
+    for (const forbidden of ['userDataPath', 'documentsPath', 'prepareStructuredImport', 'saveImportBatch', 'updateImportBatch']) {
+      assert.equal(markiPreloadBlock.includes(forbidden), false, `preload 不得暴露 ${forbidden}`);
+    }
+    scenarioCount += 1;
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+  await assert.rejects(
+    () => fs.access(root),
+    (error) => error?.code === 'ENOENT',
+    '马克导入批次自检结束后应清理系统临时目录'
+  );
+  scenarioCount += 1;
+  assert.equal(scenarioCount, 23, '马克导入批次服务应完整执行 23 个自检场景');
 }
 
 async function checkCurrentFormContract() {
