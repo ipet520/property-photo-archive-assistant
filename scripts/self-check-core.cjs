@@ -724,7 +724,8 @@ async function checkRecognitionModelCompatibility() {
     path.join(__dirname, '..', 'src', 'pages', 'SortWorkspacePage.jsx'),
     'utf8'
   );
-  const outcomeFunction = workspaceSource.match(
+  const normalizedWorkspaceSource = workspaceSource.replace(/\r\n?/g, '\n');
+  const outcomeFunction = normalizedWorkspaceSource.match(
     /function getRecognitionOutcome\(result = null\) \{[\s\S]*?\n\}\n\nfunction hasValidWatermarkEvidence/
   )?.[0] || '';
   assert.ok(outcomeFunction, '必须能定位工作台 getRecognitionOutcome 判断函数');
