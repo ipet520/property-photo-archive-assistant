@@ -233,17 +233,18 @@ export function getPreviewDisabledReason({ isBusy, selectedIds, selectedHasIgnor
 }
 
 export function validateSortForm(form = {}, configs = {}) {
+  const safeConfigs = configs && typeof configs === 'object' ? configs : {};
   const project = normalizeValue(form.project);
   const date = normalizeValue(form.date);
   const watermarkCategory = normalizeValue(form.watermarkCategory);
   const workContent = normalizeValue(form.workContent);
-  const projects = Array.isArray(configs.projects) ? configs.projects : [];
-  const categories = Object.keys(configs.watermarkCategories || {});
+  const projects = Array.isArray(safeConfigs.projects) ? safeConfigs.projects : [];
+  const categories = Object.keys(safeConfigs.watermarkCategories || {});
   const projectValid = Boolean(project) && projects.includes(project);
   const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00Z`) : null;
   const dateValid = Boolean(parsedDate && !Number.isNaN(parsedDate.getTime()) && parsedDate.toISOString().slice(0, 10) === date);
   const categoryValid = Boolean(watermarkCategory) && categories.includes(watermarkCategory);
-  const workOptions = categoryValid ? (configs.watermarkCategories?.[watermarkCategory]?.items || []) : [];
+  const workOptions = categoryValid ? (safeConfigs.watermarkCategories?.[watermarkCategory]?.items || []) : [];
   const validityByField = {
     project: projectValid,
     watermarkCategory: categoryValid,

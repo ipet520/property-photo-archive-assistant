@@ -1672,6 +1672,11 @@ async function checkCurrentFormContract() {
   };
   assert.deepEqual(validateSortForm(validForm, configs), [], '项目、归档分类、工作内容和日期全部有效时应通过校验');
   assert.deepEqual(validateRequiredArchiveFields(validForm, configs), [], '工作台四项必填校验应复用生产校验规则');
+  assert.deepEqual(
+    validateRequiredArchiveFields(validForm, null),
+    ['项目', '归档分类', '工作内容'],
+    '配置尚未加载时工作台校验不得抛错，配置依赖字段应保持未完成'
+  );
   assert.deepEqual(validateSortForm({ ...validForm, project: '' }, configs), ['项目'], '项目为空时应阻止确认和预览');
   assert.deepEqual(validateSortForm({ ...validForm, project: '   ' }, configs), ['项目'], '项目只有空格时应视为空');
   assert.deepEqual(validateSortForm({ ...validForm, project: '未配置项目' }, configs), ['项目'], '项目不在当前配置中时应校验失败');
