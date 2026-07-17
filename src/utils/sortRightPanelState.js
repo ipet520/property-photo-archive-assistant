@@ -10,9 +10,10 @@ const defaultArchiveFields = {
 };
 
 const requiredFieldLabels = [
-  ['日期', 'date'],
+  ['项目', 'project'],
+  ['归档分类', 'watermarkCategory'],
   ['工作内容', 'workContent'],
-  ['归档分类', 'watermarkCategory']
+  ['日期', 'date']
 ];
 
 export function normalizeRecognitionEvidence(recognitionResult = {}, photo = {}) {
@@ -115,7 +116,9 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
   };
 
   setField('date', watermarkRecord.captureDate, 'watermark.date', 0.95);
-  setField('project', context.currentProject || inferProjectFromText(watermarkRecord.projectText || watermarkRecord.locationText, configs.projects) || context.defaultProject, context.currentProject ? 'context.project' : 'watermark.project', 0.85);
+  const currentProject = pickIfValid(context.currentProject, configs.projects || []);
+  const watermarkProject = inferProjectFromText(watermarkRecord.projectText, configs.projects || []);
+  setField('project', currentProject || watermarkProject, currentProject ? 'context.project' : 'watermark.project', 0.85);
 
   const categoryMatch = matchCategory(watermarkRecord.watermarkCategoryText || watermarkRecord.workContentText, configs.watermarkCategories);
   if (categoryMatch.category) setField('watermarkCategory', categoryMatch.category, categoryMatch.source, categoryMatch.confidence);
@@ -149,7 +152,7 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
   }
 
   const safeFields = sanitizeArchiveFields(suggestedFields, configs);
-  const missingRequiredFields = validateSortForm(safeFields);
+  const missingRequiredFields = validateSortForm(safeFields, configs);
   const needsHumanReview = missingRequiredFields.length > 0 || Object.keys(candidateFields).length > 0 || conflictFields.size > 0;
   return {
     photoId: watermarkRecord.photoId || '',
@@ -173,7 +176,7 @@ export function updateArchiveSuggestion(currentSuggestion = null, userPatch = {}
   Object.keys(userPatch).forEach((key) => {
     fieldSources[key] = base.fieldSources?.[key] && base.fieldSources[key] !== 'manual' ? 'mixed' : 'manual';
   });
-  const missingRequiredFields = validateSortForm(suggestedFields);
+  const missingRequiredFields = validateSortForm(suggestedFields, configs);
   return {
     ...base,
     suggestedFields,
@@ -190,9 +193,11 @@ export function regenerateArchiveSuggestion(watermarkRecord = {}, context = {}, 
   return buildArchiveSuggestion(watermarkRecord, context, currentSuggestion);
 }
 
-export function confirmArchiveSuggestion(archiveSuggestion = {}) {
-  const archiveInfo = normalizeConfirmedArchiveInfo(archiveSuggestion.suggestedFields || {});
-  const missingRequiredFields = validateSortForm(archiveInfo);
+export function confirmArchiveSuggestion(archiveSuggestion = {}, configs = {}) {
+  const archiveInfo = normalizeConfirmedArchiveInfo(
+    sanitizeArchiveFields(archiveSuggestion.suggestedFields || {}, configs)
+  );
+  const missingRequiredFields = validateSortForm(archiveInfo, configs);
   if (missingRequiredFields.length) {
     return {
       ok: false,
@@ -227,10 +232,41 @@ export function getPreviewDisabledReason({ isBusy, selectedIds, selectedHasIgnor
   return '请先确认归档建议。';
 }
 
-export function validateSortForm(form = {}) {
+export function validateSortForm(form = {}, configs = {}) {
+  const project = normalizeValue(form.project);
+  const date = normalizeValue(form.date);
+  const watermarkCategory = normalizeValue(form.watermarkCategory);
+  const workContent = normalizeValue(form.workContent);
+  const projects = Array.isArray(configs.projects) ? configs.projects : [];
+  const categories = Object.keys(configs.watermarkCategories || {});
+  const projectValid = Boolean(project) && projects.includes(project);
+  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00Z`) : null;
+  const dateValid = Boolean(parsedDate && !Number.isNaN(parsedDate.getTime()) && parsedDate.toISOString().slice(0, 10) === date);
+  const categoryValid = Boolean(watermarkCategory) && categories.includes(watermarkCategory);
+  const workOptions = categoryValid ? (configs.watermarkCategories?.[watermarkCategory]?.items || []) : [];
+  const validityByField = {
+    project: projectValid,
+    watermarkCategory: categoryValid,
+    workContent: Boolean(workContent) && workOptions.includes(workContent),
+    date: dateValid
+  };
   return requiredFieldLabels
-    .filter(([, key]) => !normalizeValue(form[key]))
+    .filter(([, key]) => !validityByField[key])
     .map(([label]) => label);
+}
+
+export const validateRequiredArchiveFields = validateSortForm;
+
+export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = {}) {
+  return {
+    project: pickIfValid(archiveInfo.project, configs.projects || []),
+    watermarkCategory: archiveInfo.watermarkCategory || archiveInfo.archiveCategory || '',
+    workContent: archiveInfo.workContent || '',
+    date: archiveInfo.date || '',
+    location: archiveInfo.location ?? '',
+    keywords: archiveInfo.keywords ?? '',
+    remark: archiveInfo.remark ?? ''
+  };
 }
 
 export function sanitizeArchiveFields(fields = {}, configs = {}) {
@@ -241,7 +277,7 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
   return {
     ...defaultArchiveFields,
     ...fields,
-    project: pickIfValid(fields.project, configs.projects) || normalizeValue(fields.project),
+    project: pickIfValid(fields.project, configs.projects || []),
     watermarkCategory,
     workContent,
     location: normalizeValue(fields.location || fields.area)
@@ -368,7 +404,7 @@ function normalizeValue(value) {
 }
 
 function normalizeMissingFields(fields = []) {
-  const allowed = new Set(['日期', '工作内容', '归档分类']);
+  const allowed = new Set(['项目', '日期', '工作内容', '归档分类']);
   return (fields || [])
     .map((field) => {
       if (field === '水印分类') return '归档分类';
@@ -411,6 +447,7 @@ function findProjectText(rawText = '') {
 
 function inferProjectFromText(text = '', projects = []) {
   const normalized = normalizeCompareText(text);
+  if (!normalized) return '';
   return projects.find((project) => normalized.includes(normalizeCompareText(project)) || normalizeCompareText(project).includes(normalized)) || '';
 }
 

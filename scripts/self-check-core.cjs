@@ -1631,7 +1631,10 @@ async function checkRecognitionEngine(userDataDir) {
 async function checkCurrentFormContract() {
   const {
     buildArchiveSuggestion,
+    buildCurrentPhotoArchiveServiceForm,
+    confirmArchiveSuggestion,
     parseWatermarkRecord,
+    validateRequiredArchiveFields,
     validateSortForm
   } = await import('../src/utils/sortRightPanelState.js');
   const configs = {
@@ -1654,19 +1657,59 @@ async function checkCurrentFormContract() {
   const watermark = parseWatermarkRecord(recognition);
   const suggestion = buildArchiveSuggestion(watermark, {
     configs,
-    currentProject: '潇湘新区二期',
-    defaultProject: '潇湘新区二期'
+    currentProject: '潇湘新区二期'
   });
   assert.equal(watermark.locationText, '', '只有项目名称时，位置/区域必须保持为空');
   assert.equal(suggestion.suggestedFields.location, '', '项目名称不得重复写入位置/区域');
-  assert.deepEqual(validateSortForm({
+  const validForm = {
+    project: '潇湘新区二期',
     date: '2026-06-12',
     watermarkCategory: '机动车违规管理',
     workContent: '随意停放阻碍通行',
     location: '',
     keywords: '',
     remark: ''
-  }), [], '当前表单只应要求日期、归档分类和工作内容');
+  };
+  assert.deepEqual(validateSortForm(validForm, configs), [], '项目、归档分类、工作内容和日期全部有效时应通过校验');
+  assert.deepEqual(validateRequiredArchiveFields(validForm, configs), [], '工作台四项必填校验应复用生产校验规则');
+  assert.deepEqual(validateSortForm({ ...validForm, project: '' }, configs), ['项目'], '项目为空时应阻止确认和预览');
+  assert.deepEqual(validateSortForm({ ...validForm, project: '   ' }, configs), ['项目'], '项目只有空格时应视为空');
+  assert.deepEqual(validateSortForm({ ...validForm, project: '未配置项目' }, configs), ['项目'], '项目不在当前配置中时应校验失败');
+  const invalidProjectConfirmation = confirmArchiveSuggestion({
+    suggestedFields: { ...validForm, project: '未配置项目' }
+  }, configs);
+  assert.equal(invalidProjectConfirmation.ok, false, '无效项目不得通过归档建议确认');
+  assert.deepEqual(invalidProjectConfirmation.missingRequiredFields, ['项目'], '无效项目确认失败时应明确提示项目');
+  assert.deepEqual(validateSortForm({ ...validForm, date: '' }, configs), ['日期'], '日期缺失时应保持原有校验失败');
+  assert.deepEqual(
+    validateSortForm({ ...validForm, watermarkCategory: '' }, configs),
+    ['归档分类', '工作内容'],
+    '归档分类缺失时分类及其工作内容应校验失败'
+  );
+  assert.deepEqual(
+    validateSortForm({ ...validForm, watermarkCategory: '未配置分类' }, configs),
+    ['归档分类', '工作内容'],
+    '归档分类无效时分类及其工作内容应校验失败'
+  );
+  assert.deepEqual(validateSortForm({ ...validForm, workContent: '' }, configs), ['工作内容'], '工作内容缺失时应校验失败');
+  assert.deepEqual(validateSortForm({ ...validForm, workContent: '不属于当前分类' }, configs), ['工作内容'], '工作内容不属于当前分类时应校验失败');
+
+  const emptyProjectServiceForm = buildCurrentPhotoArchiveServiceForm({ ...validForm, project: '' }, configs);
+  assert.equal(emptyProjectServiceForm.project, '', '项目为空时归档服务表单不得使用首项目兜底');
+  assert.notEqual(emptyProjectServiceForm.project, configs.projects[0], '空项目不得静默变成第一个配置项目');
+  const validProjectServiceForm = buildCurrentPhotoArchiveServiceForm(validForm, configs);
+  assert.equal(validProjectServiceForm.project, validForm.project, '有效项目进入归档服务表单时应保持原值');
+
+  const markiUnmatchedProjectForm = {
+    ...validForm,
+    project: '',
+    projectCandidates: ['马克未匹配项目']
+  };
+  assert.deepEqual(
+    validateRequiredArchiveFields(markiUnmatchedProjectForm, configs),
+    ['项目'],
+    'Marki 未匹配项目只能保留候选值，不得通过工作台四项必填校验'
+  );
 }
 
 async function checkSmartSortOutcomes(userDataDir) {

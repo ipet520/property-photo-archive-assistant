@@ -10,6 +10,7 @@ import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import {
   buildArchiveSuggestion,
+  buildCurrentPhotoArchiveServiceForm,
   buildRecognitionSuggestionDisplayModel,
   clearArchiveSuggestionForPhoto,
   clearRecognitionForPhoto,
@@ -19,6 +20,7 @@ import {
   regenerateArchiveSuggestion,
   sanitizeDraftFields,
   updateArchiveSuggestion,
+  validateRequiredArchiveFields,
   validateSortForm
 } from '../utils/sortRightPanelState.js';
 import {
@@ -1476,7 +1478,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       sanitizeDraftFields(form, configs),
       { configs, photoId: target.id }
     );
-    const result = confirmArchiveSuggestion(currentSuggestion);
+    const result = confirmArchiveSuggestion(currentSuggestion, configs);
     setArchiveSuggestionsByPhoto((current) => ({
       ...current,
       [target.id]: {
@@ -1577,7 +1579,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       setStatus({ type: 'error', text: '请先选择已套用归档信息的待预览照片。' });
       return;
     }
-    const missing = validateSortForm(form);
+    const missing = validateSortForm(form, configs);
     if (missing.length) {
       setStatus({ type: 'error', text: `请补全必填项：${missing.join('、')}` });
       return;
@@ -2790,14 +2792,10 @@ function reconcileForm(current, configs) {
   const watermarkCategory = categories.includes(current.watermarkCategory) ? current.watermarkCategory : '';
   return {
     ...current,
-    project: pick(current.project, configs.projects),
+    project: (configs.projects || []).includes(current.project) ? current.project : '',
     watermarkCategory,
     workContent: (configs.watermarkCategories?.[watermarkCategory]?.items || []).includes(current.workContent) ? current.workContent : ''
   };
-}
-
-function pick(value, options = []) {
-  return options.includes(value) ? value : (options[0] || value || '');
 }
 
 function normalizeArchiveInfo(form) {
@@ -2810,38 +2808,6 @@ function normalizeArchiveInfo(form) {
     date: form.date,
     keywords: form.keywords,
     remark: form.remark
-  };
-}
-
-function validateRequiredArchiveFields(form = {}, configs = {}) {
-  const missing = [];
-  const safeConfigs = configs || {};
-  const date = String(form.date || '').trim();
-  const watermarkCategory = String(form.watermarkCategory || '').trim();
-  const workContent = String(form.workContent || '').trim();
-  const categories = Object.keys(safeConfigs.watermarkCategories || {});
-  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00Z`) : null;
-  const dateValid = Boolean(parsedDate && !Number.isNaN(parsedDate.getTime()) && parsedDate.toISOString().slice(0, 10) === date);
-  const categoryValid = Boolean(watermarkCategory) && categories.includes(watermarkCategory);
-  const workOptions = categoryValid ? (safeConfigs.watermarkCategories?.[watermarkCategory]?.items || []) : [];
-
-  if (!dateValid) missing.push('日期');
-  if (!categoryValid) missing.push('归档分类');
-  if (!workContent || !workOptions.includes(workContent)) missing.push('工作内容');
-  return missing;
-}
-
-function buildCurrentPhotoArchiveServiceForm(archiveInfo, configs = {}) {
-  const project = archiveInfo.project || configs.projects?.[0] || '未设置项目';
-  const workContent = archiveInfo.workContent;
-  return {
-    ...defaultForm,
-    ...archiveInfo,
-    project,
-    watermarkCategory: archiveInfo.watermarkCategory || archiveInfo.archiveCategory,
-    workContent,
-    location: archiveInfo.location,
-    date: archiveInfo.date
   };
 }
 
@@ -3346,7 +3312,6 @@ function buildArchiveSuggestionContext({ configs, form, photoFolder, archiveRoot
   return {
     configs,
     currentProject: form.project,
-    defaultProject: configs.projects?.[0] || '',
     photoFolder,
     archiveRoot,
     photo
