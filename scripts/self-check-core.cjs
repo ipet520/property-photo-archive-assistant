@@ -3,9 +3,22 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { buildArchivePreview, archivePhotos } = require('../electron/services/archiveService.cjs');
+const {
+  buildArchivePreview,
+  archivePhotos,
+  recoverPendingArchiveTransactions
+} = require('../electron/services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('../electron/services/archivePackageService.cjs');
 const { matchArchivedPhotos } = require('../electron/services/archiveFingerprintService.cjs');
+const {
+  buildArchiveOperationKey,
+  buildArchiveSourceIdentity,
+  getArchiveTransactionDirectory
+} = require('../electron/services/archiveTransactionService.cjs');
+const {
+  getLedgerPath,
+  recoverLedgerSwapArtifacts
+} = require('../electron/services/excelService.cjs');
 const { loadDashboardData } = require('../electron/services/dashboardService.cjs');
 const { getDataMaintenanceReport } = require('../electron/services/dataMaintenanceService.cjs');
 const { loadLedgerRecords } = require('../electron/services/ledgerQueryService.cjs');
@@ -67,6 +80,7 @@ async function main() {
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
+    await checkArchiveTransactionRecovery(path.join(temporaryRoot, 'archive-transaction'));
     await checkSourceContracts();
     console.log('核心流程自检通过：OCR、马克来源清单、来源元数据、下载与结构化导入、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
@@ -1813,6 +1827,294 @@ async function checkArchiveFlow(root) {
   await checkDownstreamPages({ root, archiveRoot, ledgerRecord: ledger.records[0] });
 }
 
+async function checkArchiveTransactionRecovery(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '归档事务自检必须使用系统临时目录'
+  );
+
+  const single = await createArchiveTransactionTestPlan(path.join(root, 'single'), { count: 1, tag: 'single' });
+  const singleResult = await archivePhotos({ archiveRoot: single.archiveRoot, items: single.preview });
+  assert.equal(singleResult.status, 'committed', '单张照片应完整提交');
+  assert.equal(singleResult.committedCount, 1, '单张照片应提交一条台账');
+  const singleTransaction = JSON.parse(await fs.readFile(
+    path.join(getArchiveTransactionDirectory(single.archiveRoot), `${singleResult.transactionId}.json`),
+    'utf8'
+  ));
+  assert.equal(path.isAbsolute(singleTransaction.items[0].targetRelativePath), false, '事务日志不得保存绝对目标路径');
+  assert.equal(Object.prototype.hasOwnProperty.call(singleTransaction.items[0], 'targetPath'), false, '事务日志不得持久化 targetPath');
+
+  const multiple = await createArchiveTransactionTestPlan(path.join(root, 'multiple'), { count: 3, tag: 'multiple' });
+  const multipleResult = await archivePhotos({ archiveRoot: multiple.archiveRoot, items: multiple.preview });
+  assert.equal(multipleResult.committedCount, 3, '多张照片应全部提交');
+  assert.equal((await loadLedgerRecords(multiple.archiveRoot)).records.length, 3, '多张归档应写入三条台账');
+
+  const firstFailure = await createArchiveTransactionTestPlan(path.join(root, 'first-failure'), { count: 2, tag: 'first-failure' });
+  const firstFailureResult = await archivePhotos(
+    { archiveRoot: firstFailure.archiveRoot, items: firstFailure.preview },
+    { copyFile: createSelectiveCopyFailure('source-1.jpg') }
+  );
+  assert.equal(firstFailureResult.status, 'partial', '首张复制失败时其余照片应正常提交');
+  assert.equal(firstFailureResult.items[0].stage, 'copy_failed', '首张复制失败应返回逐项失败');
+  assert.equal(firstFailureResult.committedCount, 1, '首张失败时第二张应正常提交');
+
+  const middleFailure = await createArchiveTransactionTestPlan(path.join(root, 'middle-failure'), { count: 3, tag: 'middle-failure' });
+  const middleFailureResult = await archivePhotos(
+    { archiveRoot: middleFailure.archiveRoot, items: middleFailure.preview },
+    { copyFile: createSelectiveCopyFailure('source-2.jpg') }
+  );
+  assert.equal(middleFailureResult.items[1].stage, 'copy_failed', '中间照片复制失败应准确定位');
+  assert.equal(middleFailureResult.committedCount, 2, '中间照片失败不应阻止其他成功项写入台账');
+  assert.equal((await loadLedgerRecords(middleFailure.archiveRoot)).records.length, 2, '中间失败时台账只写成功项');
+
+  const ledgerRetry = await createArchiveTransactionTestPlan(path.join(root, 'ledger-retry'), { count: 1, tag: 'ledger-retry' });
+  const ledgerPendingResult = await archivePhotos(
+    { archiveRoot: ledgerRetry.archiveRoot, items: ledgerRetry.preview },
+    { excelOptions: { hooks: { writeWorkbook: async () => { throw createInjectedError('EPERM'); } } } }
+  );
+  assert.equal(ledgerPendingResult.status, 'ledger_pending', 'Excel 首次失败时应保留 ledger_pending');
+  assert.equal(ledgerPendingResult.pendingLedgerCount, 1, 'Excel 失败应逐项返回待补记');
+  assert.equal((await listArchiveTestImages(ledgerRetry.archiveRoot)).length, 1, 'Excel 失败后归档照片必须保留');
+  const frozenName = path.basename(ledgerPendingResult.items[0].targetPath);
+  const ledgerRetryResult = await archivePhotos({
+    archiveRoot: ledgerRetry.archiveRoot,
+    transactionId: ledgerPendingResult.transactionId,
+    items: ledgerRetry.preview
+  });
+  assert.equal(ledgerRetryResult.status, 'committed', 'Excel 恢复后应补记同一事务');
+  assert.equal(path.basename(ledgerRetryResult.items[0].targetPath), frozenName, '重试必须复用冻结目标路径');
+  assert.equal((await listArchiveTestImages(ledgerRetry.archiveRoot)).some((name) => /_01\./i.test(name)), false, '重试不得生成 _01');
+
+  const restart = await createArchiveTransactionTestPlan(path.join(root, 'restart'), { count: 1, tag: 'restart' });
+  const restartPending = await archivePhotos(
+    { archiveRoot: restart.archiveRoot, items: restart.preview },
+    { excelOptions: { hooks: { writeWorkbook: async () => { throw createInjectedError('EPERM'); } } } }
+  );
+  assert.equal(restartPending.pendingLedgerCount, 1, '进程重启场景应先形成待补记事务');
+  const archiveServicePath = require.resolve('../electron/services/archiveService.cjs');
+  const transactionServicePath = require.resolve('../electron/services/archiveTransactionService.cjs');
+  delete require.cache[archiveServicePath];
+  delete require.cache[transactionServicePath];
+  const restartedArchiveService = require('../electron/services/archiveService.cjs');
+  const restartRecovery = await restartedArchiveService.recoverPendingArchiveTransactions(restart.archiveRoot);
+  assert.equal(restartRecovery.committedCount, 1, '删除 require cache 后应能从磁盘事务恢复台账');
+  assert.equal((await listArchiveTestImages(restart.archiveRoot)).length, 1, '重启恢复不得重复复制照片');
+
+  const conflict = await createArchiveTransactionTestPlan(path.join(root, 'conflict'), { count: 1, tag: 'conflict' });
+  const unknownContent = Buffer.from('unknown-existing-target');
+  const conflictResult = await archivePhotos(
+    { archiveRoot: conflict.archiveRoot, items: conflict.preview },
+    {
+      copyFile: async (_sourcePath, targetPath) => {
+        await fs.writeFile(targetPath, unknownContent);
+        throw createInjectedError('EEXIST');
+      }
+    }
+  );
+  assert.equal(conflictResult.conflictCount, 1, '冻结目标存在不同内容时应返回 target_conflict');
+  assert.equal(conflictResult.items[0].stage, 'target_conflict', '冲突项状态必须明确');
+  assert.deepEqual(await fs.readFile(conflictResult.items[0].targetPath), unknownContent, '未知目标文件不得覆盖或删除');
+  assert.equal(firstFailureResult.failedCount, 1, 'partial 返回的失败数量应准确');
+  assert.equal(firstFailureResult.committedCount, 1, 'partial 返回的成功数量应准确');
+
+  const occupied = await createArchiveTransactionTestPlan(path.join(root, 'occupied'), { count: 1, tag: 'occupied-base' });
+  await archivePhotos({ archiveRoot: occupied.archiveRoot, items: occupied.preview });
+  const ledgerBeforeOccupied = await fs.readFile(getLedgerPath(occupied.archiveRoot));
+  const occupiedNext = await createArchiveTransactionTestPlan(path.join(root, 'occupied-next'), {
+    archiveRoot: occupied.archiveRoot,
+    count: 1,
+    tag: 'occupied-next',
+    formPatch: { workContent: '第二项工作' }
+  });
+  const occupiedResult = await archivePhotos(
+    { archiveRoot: occupied.archiveRoot, items: occupiedNext.preview },
+    { excelOptions: { hooks: { afterBackup: async () => { throw createInjectedError('EPERM'); } } } }
+  );
+  assert.equal(occupiedResult.pendingLedgerCount, 1, 'Excel 被占用时应保留 ledger_pending');
+  assert.deepEqual(await fs.readFile(getLedgerPath(occupied.archiveRoot)), ledgerBeforeOccupied, 'Excel 写入失败时旧台账必须保持完整');
+
+  const corruptLedger = await createArchiveTransactionTestPlan(path.join(root, 'corrupt-ledger'), { count: 1, tag: 'corrupt-ledger' });
+  await fs.mkdir(corruptLedger.archiveRoot, { recursive: true });
+  const corruptLedgerBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00]);
+  await fs.writeFile(getLedgerPath(corruptLedger.archiveRoot), corruptLedgerBytes);
+  const corruptLedgerResult = await archivePhotos({ archiveRoot: corruptLedger.archiveRoot, items: corruptLedger.preview });
+  assert.equal(corruptLedgerResult.pendingLedgerCount, 1, '损坏台账应拒绝覆盖并保留待补记');
+  assert.deepEqual(await fs.readFile(getLedgerPath(corruptLedger.archiveRoot)), corruptLedgerBytes, '损坏台账内容不得被覆盖');
+
+  const corruptTransactionRoot = path.join(root, 'corrupt-transaction');
+  const corruptTransactionDirectory = getArchiveTransactionDirectory(corruptTransactionRoot);
+  await fs.mkdir(corruptTransactionDirectory, { recursive: true });
+  const corruptTransactionPath = path.join(corruptTransactionDirectory, '00000000-0000-4000-8000-000000000000.json');
+  await fs.writeFile(corruptTransactionPath, '{"schemaVersion":1,"items":', 'utf8');
+  const corruptTransactionBytes = await fs.readFile(corruptTransactionPath);
+  const corruptTransactionRecovery = await recoverPendingArchiveTransactions(corruptTransactionRoot);
+  assert.equal(corruptTransactionRecovery.errors.length, 1, '损坏事务日志应返回安全错误');
+  assert.deepEqual(await fs.readFile(corruptTransactionPath), corruptTransactionBytes, '损坏事务日志不得被覆盖');
+
+  assert.deepEqual(await listLedgerSwapFiles(single.archiveRoot), [], '正常提交后不得遗留 Excel 临时文件或 backup');
+  assert.doesNotThrow(() => JSON.stringify(multipleResult), '归档返回结构必须可 JSON 序列化');
+
+  const concurrent = await createArchiveTransactionTestPlan(path.join(root, 'concurrent'), { count: 1, tag: 'concurrent' });
+  const concurrentResults = await Promise.all([
+    archivePhotos({ archiveRoot: concurrent.archiveRoot, items: concurrent.preview }),
+    archivePhotos({ archiveRoot: concurrent.archiveRoot, items: concurrent.preview })
+  ]);
+  assert.equal(concurrentResults[0].transactionId, concurrentResults[1].transactionId, '并发重复归档必须复用同一事务');
+  assert.equal((await listArchiveTestImages(concurrent.archiveRoot)).length, 1, '并发重复归档只能生成一份文件');
+  assert.equal((await loadLedgerRecords(concurrent.archiveRoot)).records.length, 1, '并发重复归档只能生成一行台账');
+
+  const localIdentityPath = path.join(root, 'identity', 'photo.jpg');
+  const localHash = 'a'.repeat(64);
+  const localIdentity = buildArchiveSourceIdentity({ sourceSha256: localHash, originalPath: localIdentityPath });
+  assert.equal(localIdentity.startsWith(`local:${localHash}:`), true, '本地照片身份必须包含 SHA-256 和规范化路径');
+  assert.equal(
+    buildArchiveSourceIdentity({ sourceKey: 'marki_api:12345:moment-1', sourceSha256: localHash, originalPath: localIdentityPath }),
+    'marki:marki_api:12345:moment-1',
+    'Marki 照片身份必须优先使用 sourceKey'
+  );
+
+  for (const testPlan of [single, multiple, firstFailure, middleFailure, ledgerRetry, restart, conflict, occupied, occupiedNext, corruptLedger, concurrent]) {
+    for (const source of testPlan.sources) {
+      assert.deepEqual(await fs.readFile(source.path), source.content, '归档事务不得移动、删除或修改原图');
+    }
+  }
+
+  const ledgerAlreadyWritten = await createArchiveTransactionTestPlan(path.join(root, 'ledger-already-written'), {
+    count: 1,
+    tag: 'ledger-already-written'
+  });
+  const ledgerAlreadyPending = await archivePhotos(
+    { archiveRoot: ledgerAlreadyWritten.archiveRoot, items: ledgerAlreadyWritten.preview },
+    { hooks: { afterLedgerAppend: async () => { throw createInjectedError('SIMULATED_EXIT'); } } }
+  );
+  assert.equal(ledgerAlreadyPending.pendingLedgerCount, 1, 'Excel 已写而事务未更新时应保持 ledger_pending');
+  assert.equal((await loadLedgerRecords(ledgerAlreadyWritten.archiveRoot)).records.length, 1, '模拟退出前 Excel 行应已经写入');
+  const ledgerAlreadyRecovered = await archivePhotos({
+    archiveRoot: ledgerAlreadyWritten.archiveRoot,
+    transactionId: ledgerAlreadyPending.transactionId,
+    items: ledgerAlreadyWritten.preview
+  });
+  assert.equal(ledgerAlreadyRecovered.status, 'committed', '恢复时应通过归档路径发现已存在台账行');
+  assert.equal((await loadLedgerRecords(ledgerAlreadyWritten.archiveRoot)).records.length, 1, '补记恢复不得重复追加 Excel 行');
+
+  const committedRepeat = await archivePhotos({
+    archiveRoot: ledgerAlreadyWritten.archiveRoot,
+    transactionId: ledgerAlreadyRecovered.transactionId,
+    items: ledgerAlreadyWritten.preview
+  });
+  assert.equal(committedRepeat.transactionId, ledgerAlreadyRecovered.transactionId, 'committed 事务再次调用应返回原事务');
+  assert.equal((await listArchiveTestImages(ledgerAlreadyWritten.archiveRoot)).length, 1, 'committed 事务再次调用不得复制第二份文件');
+
+  const operationIdentityItems = [
+    {
+      sourceIdentity: localIdentity,
+      ledgerRow: { project: '项目', watermarkCategory: '分类', workContent: '工作 A', date: '2026-07-17', location: '现场' }
+    },
+    {
+      sourceIdentity: 'marki:marki_api:12345:moment-1',
+      ledgerRow: { project: '项目', watermarkCategory: '分类', workContent: '工作 A', date: '2026-07-17', location: '现场' }
+    }
+  ];
+  const operationKey = buildArchiveOperationKey(operationIdentityItems);
+  assert.equal(operationKey, buildArchiveOperationKey([...operationIdentityItems].reverse()), '照片输入顺序变化不得改变 operationKey');
+  assert.notEqual(
+    operationKey,
+    buildArchiveOperationKey(operationIdentityItems.map((item) => ({
+      ...item,
+      ledgerRow: { ...item.ledgerRow, workContent: '工作 B' }
+    }))),
+    '不同归档信息必须生成不同 operationKey'
+  );
+
+  const swapRecovery = await createArchiveTransactionTestPlan(path.join(root, 'swap-recovery'), { count: 1, tag: 'swap-recovery' });
+  await archivePhotos({ archiveRoot: swapRecovery.archiveRoot, items: swapRecovery.preview });
+  const swapLedgerPath = getLedgerPath(swapRecovery.archiveRoot);
+  const swapBackupPath = path.join(swapRecovery.archiveRoot, '.photo-ledger-swap-manual.backup.xlsx');
+  const swapLedgerBytes = await fs.readFile(swapLedgerPath);
+  await fs.rename(swapLedgerPath, swapBackupPath);
+  const swapRecoveryResult = await recoverLedgerSwapArtifacts(swapRecovery.archiveRoot);
+  assert.equal(swapRecoveryResult.recovered, true, '可恢复替换中断后应从唯一有效 backup 恢复台账');
+  assert.deepEqual(await fs.readFile(swapLedgerPath), swapLedgerBytes, '恢复后的台账必须与原台账一致');
+  assert.deepEqual(await listLedgerSwapFiles(swapRecovery.archiveRoot), [], '台账恢复成功后不得遗留交换文件');
+}
+
+async function createArchiveTransactionTestPlan(root, options = {}) {
+  const count = Number(options.count) || 1;
+  const tag = String(options.tag || 'test');
+  const sourceDirectory = path.join(root, `source-${tag}`);
+  const archiveRoot = options.archiveRoot || path.join(root, 'archive');
+  await fs.mkdir(sourceDirectory, { recursive: true });
+  const form = {
+    project: '事务测试项目',
+    watermarkCategory: '事务测试分类',
+    workContent: '事务测试工作',
+    date: '2026-07-17',
+    location: '现场',
+    keywords: '',
+    remark: '',
+    ...(options.formPatch || {})
+  };
+  const photos = [];
+  const sources = [];
+  for (let index = 0; index < count; index += 1) {
+    const sourcePath = path.join(sourceDirectory, `source-${index + 1}.jpg`);
+    const content = Buffer.from(`archive-transaction-${tag}-${index + 1}`);
+    await fs.writeFile(sourcePath, content);
+    photos.push({
+      id: `${tag}-photo-${index + 1}`,
+      path: sourcePath,
+      name: path.basename(sourcePath),
+      extension: '.jpg',
+      sourceType: options.sourceKeys?.[index] ? 'marki_api' : 'local_folder',
+      sourceKey: options.sourceKeys?.[index] || ''
+    });
+    sources.push({ path: sourcePath, content });
+  }
+  const preview = await buildArchivePreview({ form, photos, archiveRoot });
+  return { root, archiveRoot, form, photos, preview, sources };
+}
+
+function createSelectiveCopyFailure(blockedName) {
+  return async (sourcePath, targetPath, mode) => {
+    if (path.basename(sourcePath) === blockedName) throw createInjectedError('EACCES');
+    return fs.copyFile(sourcePath, targetPath, mode);
+  };
+}
+
+function createInjectedError(code) {
+  const error = new Error('injected_failure');
+  error.code = code;
+  return error;
+}
+
+async function listArchiveTestImages(root) {
+  const files = [];
+  async function walk(directory) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await walk(fullPath);
+      else if (/\.(jpe?g|png|webp)$/i.test(entry.name)) files.push(entry.name);
+    }
+  }
+  await walk(root);
+  return files.sort();
+}
+
+async function listLedgerSwapFiles(archiveRoot) {
+  const entries = await fs.readdir(archiveRoot, { withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith('.photo-ledger-swap-'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
 async function checkDownstreamPages({ root, archiveRoot, ledgerRecord }) {
   const documentsPath = path.join(root, 'documents');
   const packageTargetRoot = path.join(root, 'packages');
@@ -1884,6 +2186,8 @@ async function checkSourceContracts() {
   const handledChannels = new Set([...mainSource.matchAll(/ipcMain\.handle\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
   const missingHandlers = [...invokedChannels].filter((channel) => !handledChannels.has(channel));
   assert.deepEqual(missingHandlers, [], `preload 中存在无主进程处理器的 IPC：${missingHandlers.join(', ')}`);
+  assert.equal(invokedChannels.has('archive:recoverPendingTransactions'), true, 'preload 应暴露最小归档事务恢复接口');
+  assert.equal(workspaceSource.includes('recoverPendingArchiveTransactions'), true, '工作台应在归档根目录可用时恢复待补记事务');
   assert.equal(workspaceSource.includes("return selectedSessionFolder || defaultPhotoFolder;"), true, '手工选择的照片目录应优先于默认目录');
   assert.equal(workspaceSource.includes('|| pagePhotos[0] || photos[0] || null'), false, '空筛选组不得显示组外照片');
   assert.equal(workspaceSource.includes("['assigned', '待预览']"), false, '状态筛选不应重新出现冗余的“待预览”组');

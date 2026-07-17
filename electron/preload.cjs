@@ -94,6 +94,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   },
   buildArchivePreview: (payload) => ipcRenderer.invoke('archive:buildPreview', payload),
   archivePhotos: (archivePlan) => ipcRenderer.invoke('archive:archivePhotos', archivePlan),
+  recoverPendingArchiveTransactions: (archiveRoot) => ipcRenderer.invoke('archive:recoverPendingTransactions', archiveRoot),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   updateLastPhotoFolder: (folderPath) => ipcRenderer.invoke('settings:updateLastPhotoFolder', folderPath),

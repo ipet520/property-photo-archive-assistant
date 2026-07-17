@@ -1,10 +1,34 @@
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const dayjs = require('dayjs');
-const { appendLedgerRows } = require('./excelService.cjs');
+const { appendLedgerRows, LedgerWriteError } = require('./excelService.cjs');
 const { recordArchivedPhotoFingerprints } = require('./archiveFingerprintService.cjs');
+const {
+  ArchiveTransactionError,
+  buildArchiveOperationKey,
+  buildArchiveSourceIdentity,
+  calculateArchiveTransactionState,
+  createArchiveTransaction,
+  findArchiveTransactionByOperationKey,
+  hashFile,
+  listPendingArchiveTransactions,
+  loadArchiveTransaction,
+  resolveArchiveTargetPath,
+  saveArchiveTransaction,
+  toArchiveTargetRelativePath,
+  withArchiveTransactionLock
+} = require('./archiveTransactionService.cjs');
 
 const ILLEGAL_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
+class ArchiveServiceError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'ArchiveServiceError';
+    this.code = code;
+  }
+}
 
 async function buildArchivePreview(payload) {
   const { form, photos, archiveRoot } = payload;
@@ -27,6 +51,9 @@ async function buildArchivePreview(payload) {
       originalName: photo.name || photo.originalName,
       previewUrl: photo.previewUrl,
       extension: photo.extension,
+      sourceType: photo.sourceType || (photo.sourceKey ? 'marki_api' : 'local_folder'),
+      sourceKey: photo.sourceKey || '',
+      sourceMetadataRef: photo.sourceMetadataRef || '',
       newFileName: path.basename(targetPath),
       targetDirectory,
       targetPath,
@@ -38,61 +65,480 @@ async function buildArchivePreview(payload) {
   return previewItems;
 }
 
-async function archivePhotos(archivePlan) {
-  if (!archivePlan?.archiveRoot) {
-    throw new Error('缺少归档根目录');
-  }
-  if (!Array.isArray(archivePlan.items) || archivePlan.items.length === 0) {
-    throw new Error('没有可归档的照片');
+async function archivePhotos(archivePlan, options = {}) {
+  validateArchivePlan(archivePlan);
+  const archiveRoot = path.resolve(archivePlan.archiveRoot);
+  const suppliedTransactionId = String(archivePlan.transactionId || '').trim();
+
+  if (suppliedTransactionId) {
+    const loaded = await loadArchiveTransaction(archiveRoot, suppliedTransactionId);
+    return withArchiveTransactionLock(`operation:${loaded.operationKey}`, async () => {
+      const transaction = await loadArchiveTransaction(archiveRoot, suppliedTransactionId);
+      return processArchiveTransaction(archiveRoot, transaction, { ...options, allowCopy: true });
+    });
   }
 
-  const archivedAt = dayjs().format('YYYY-MM-DD HH:mm:ss');
+  let preparedItems;
+  try {
+    preparedItems = await prepareArchiveItems(archiveRoot, archivePlan.items, options);
+  } catch (error) {
+    return buildPreflightFailureResult(archivePlan.items, error);
+  }
+  const operationKey = buildArchiveOperationKey(preparedItems);
+  return withArchiveTransactionLock(`operation:${operationKey}`, async () => {
+    let transaction = await findArchiveTransactionByOperationKey(archiveRoot, operationKey);
+    if (!transaction) {
+      const transactionItems = await freezeArchiveTargets(archiveRoot, preparedItems);
+      transaction = createArchiveTransaction({ operationKey, items: transactionItems });
+      transaction = await saveArchiveTransaction(archiveRoot, transaction, { verifyExisting: false });
+    }
+    return processArchiveTransaction(archiveRoot, transaction, { ...options, allowCopy: true });
+  });
+}
+
+async function recoverPendingArchiveTransactions(archiveRoot, options = {}) {
+  const root = path.resolve(String(archiveRoot || '').trim());
+  if (!String(archiveRoot || '').trim()) {
+    throw new ArchiveServiceError('archive_root_missing', '缺少归档根目录。');
+  }
+  const pending = await listPendingArchiveTransactions(root);
+  const recoveryErrors = [...pending.errors];
   const results = [];
-
-  for (const item of archivePlan.items) {
+  for (const candidate of pending.transactions) {
     try {
-      await fs.mkdir(item.targetDirectory, { recursive: true });
-      const finalTargetPath = await resolveUniquePath(item.targetPath);
-      await fs.copyFile(item.sourcePath, finalTargetPath);
-
-      const finalFileName = path.basename(finalTargetPath);
-      results.push({
-        ...item,
-        newFileName: finalFileName,
-        targetPath: finalTargetPath,
-        status: '归档成功',
-        error: '',
-        archivedAt
+      const result = await withArchiveTransactionLock(`operation:${candidate.operationKey}`, async () => {
+        const transaction = await loadArchiveTransaction(root, candidate.transactionId);
+        return processArchiveTransaction(root, transaction, { ...options, allowCopy: false });
       });
+      results.push(result);
     } catch (error) {
-      results.push({
-        ...item,
-        status: '归档失败',
-        error: error.message,
-        archivedAt
+      recoveryErrors.push({
+        transactionId: candidate.transactionId,
+        errorCode: /^(archive|ledger)_/.test(String(error.code || '')) ? error.code : 'archive_recovery_failed',
+        message: error instanceof ArchiveTransactionError || error instanceof ArchiveServiceError || error instanceof LedgerWriteError
+          ? error.message
+          : '归档事务恢复失败，请稍后重试。'
       });
     }
   }
-
-  const successfulResults = results.filter((item) => item.status === '归档成功');
-  let fingerprintIndexWarning = '';
-  if (successfulResults.length > 0) {
-    await appendLedgerRows(archivePlan.archiveRoot, successfulResults);
-    try {
-      await recordArchivedPhotoFingerprints(archivePlan.archiveRoot, successfulResults);
-    } catch (error) {
-      fingerprintIndexWarning = `照片已归档，但内容指纹索引更新失败：${error.message}`;
-      console.warn(`[archive-fingerprint] ${fingerprintIndexWarning}`);
-    }
-  }
-
   return {
-    success: results.every((item) => item.status === '归档成功'),
-    total: results.length,
-    successCount: results.filter((item) => item.status === '归档成功').length,
-    failedCount: results.filter((item) => item.status === '归档失败').length,
+    success: recoveryErrors.length === 0,
+    recoveredTransactionCount: results.filter((result) => result.committedCount > 0).length,
+    transactionCount: results.length,
+    committedCount: results.reduce((sum, result) => sum + result.committedCount, 0),
+    pendingLedgerCount: results.reduce((sum, result) => sum + result.pendingLedgerCount, 0),
+    retryRequiredCount: results.reduce(
+      (sum, result) => sum + result.items.filter((item) => ['planned', 'copying', 'copy_failed'].includes(item.stage)).length,
+      0
+    ),
+    conflictCount: results.reduce((sum, result) => sum + result.conflictCount, 0),
+    errors: recoveryErrors,
+    transactions: results
+  };
+}
+
+async function prepareArchiveItems(archiveRoot, items, options = {}) {
+  const prepared = [];
+  for (const item of items) {
+    const sourcePath = path.resolve(String(item.sourcePath || '').trim());
+    let stat;
+    let sourceSha256;
+    try {
+      stat = await fs.stat(sourcePath);
+      if (!stat.isFile()) throw new Error('not_file');
+      sourceSha256 = await (options.hashFile || hashFile)(sourcePath);
+    } catch {
+      throw new ArchiveServiceError('archive_source_unreadable', '无法读取原始照片，归档尚未开始。');
+    }
+    const sourceKey = String(item.sourceKey || '').trim();
+    const sourceIdentity = buildArchiveSourceIdentity({
+      sourceKey,
+      sourceSha256,
+      originalPath: sourcePath
+    });
+    const ledgerRow = buildLedgerRow(item);
+    prepared.push({
+      photoId: String(item.id || item.photoId || '').trim(),
+      sourceType: String(item.sourceType || '').trim() || (sourceKey ? 'marki_api' : 'local_folder'),
+      sourceKey,
+      sourceIdentity,
+      originalPath: sourcePath,
+      originalName: String(item.originalName || path.basename(sourcePath)).trim(),
+      sourceSize: stat.size,
+      sourceSha256,
+      targetCandidatePath: resolveSafeTargetCandidate(archiveRoot, item.targetPath),
+      ledgerRow
+    });
+  }
+  return prepared;
+}
+
+async function freezeArchiveTargets(archiveRoot, preparedItems) {
+  const reservedPaths = new Set();
+  const frozen = [];
+  for (const item of preparedItems) {
+    const targetPath = await resolveUniquePath(item.targetCandidatePath, reservedPaths);
+    reservedPaths.add(normalizePathKey(targetPath));
+    frozen.push({
+      photoId: item.photoId,
+      sourceType: item.sourceType,
+      sourceKey: item.sourceKey,
+      sourceIdentity: item.sourceIdentity,
+      originalPath: item.originalPath,
+      originalName: item.originalName,
+      sourceSize: item.sourceSize,
+      sourceSha256: item.sourceSha256,
+      targetRelativePath: toArchiveTargetRelativePath(archiveRoot, targetPath),
+      targetSize: null,
+      targetSha256: '',
+      ledgerRow: {
+        ...item.ledgerRow,
+        newFileName: path.basename(targetPath)
+      }
+    });
+  }
+  return frozen;
+}
+
+async function processArchiveTransaction(archiveRoot, inputTransaction, options = {}) {
+  let transaction = inputTransaction;
+  const copyFile = options.copyFile || fs.copyFile.bind(fs);
+
+  for (let index = 0; index < transaction.items.length; index += 1) {
+    const item = transaction.items[index];
+    if (item.stage === 'committed') continue;
+    const targetPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
+    const existing = await inspectFrozenTarget(targetPath, item, options);
+
+    if (existing.exists) {
+      if (!existing.matches) {
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'target_conflict',
+          errorCode: 'archive_target_conflict',
+          errorMessage: '归档目标位置存在其他文件，已拒绝覆盖。'
+        });
+        continue;
+      }
+      transaction = await markItemLedgerPending(archiveRoot, transaction, index, existing);
+      continue;
+    }
+
+    if (!options.allowCopy) {
+      if (['copied', 'ledger_pending'].includes(item.stage)) {
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'copy_failed',
+          errorCode: 'archive_target_missing',
+          errorMessage: '已记录的归档文件不存在，需要人工重新执行归档。'
+        });
+      } else {
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          errorCode: 'archive_retry_required',
+          errorMessage: '该照片尚未完成复制，需要用户重新执行归档。'
+        });
+      }
+      continue;
+    }
+
+    transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+      stage: 'copying',
+      errorCode: '',
+      errorMessage: ''
+    });
+    try {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await copyFile(item.originalPath, targetPath, fsSync.constants.COPYFILE_EXCL);
+      const copied = await inspectFrozenTarget(targetPath, item, options);
+      if (!copied.exists || !copied.matches) {
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'target_conflict',
+          errorCode: 'archive_copy_verification_failed',
+          errorMessage: '照片复制后校验失败，已停止后续台账写入。'
+        });
+        continue;
+      }
+      transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+        stage: 'copied',
+        targetSize: copied.size,
+        targetSha256: copied.sha256,
+        copiedAt: new Date().toISOString(),
+        errorCode: '',
+        errorMessage: ''
+      });
+      transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+        stage: 'ledger_pending'
+      });
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        const concurrent = await inspectFrozenTarget(targetPath, item, options);
+        if (concurrent.exists && concurrent.matches) {
+          transaction = await markItemLedgerPending(archiveRoot, transaction, index, concurrent);
+          continue;
+        }
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'target_conflict',
+          errorCode: 'archive_target_conflict',
+          errorMessage: '归档目标位置存在其他文件，已拒绝覆盖。'
+        });
+        continue;
+      }
+      transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+        stage: 'copy_failed',
+        errorCode: normalizeCopyErrorCode(error),
+        errorMessage: '照片复制失败，原图保持不变，可稍后重试。'
+      });
+    }
+  }
+
+  const ledgerPendingIndexes = transaction.items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.stage === 'ledger_pending');
+  if (ledgerPendingIndexes.length > 0) {
+    try {
+      const ledgerResult = await appendLedgerRows(
+        archiveRoot,
+        ledgerPendingIndexes.map(({ item }) => buildLedgerCommitInput(archiveRoot, item)),
+        options.excelOptions || {}
+      );
+      if (typeof options.hooks?.afterLedgerAppend === 'function') {
+        await options.hooks.afterLedgerAppend(ledgerResult);
+      }
+      const committedKeys = new Set(ledgerResult.committedArchivePaths.map(normalizePathKey));
+      for (const { item, index } of ledgerPendingIndexes) {
+        const targetPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
+        if (!committedKeys.has(normalizePathKey(targetPath))) continue;
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'committed',
+          committedAt: new Date().toISOString(),
+          errorCode: '',
+          errorMessage: ''
+        });
+      }
+    } catch (error) {
+      const safeError = normalizeLedgerError(error);
+      for (const { index } of ledgerPendingIndexes) {
+        transaction = await updateTransactionItem(archiveRoot, transaction, index, {
+          stage: 'ledger_pending',
+          errorCode: safeError.code,
+          errorMessage: safeError.message
+        });
+      }
+    }
+  }
+
+  let fingerprintIndexWarning = '';
+  const committedInputs = transaction.items
+    .filter((item) => item.stage === 'committed')
+    .map((item) => buildLedgerCommitInput(archiveRoot, item));
+  if (committedInputs.length > 0) {
+    try {
+      await recordArchivedPhotoFingerprints(archiveRoot, committedInputs);
+    } catch {
+      fingerprintIndexWarning = '照片和台账已归档，但内容指纹索引暂未更新，可稍后重新扫描恢复。';
+      console.warn('[archive-fingerprint] committed archive fingerprint update deferred');
+    }
+  }
+  return buildArchiveTransactionResult(archiveRoot, transaction, fingerprintIndexWarning);
+}
+
+async function markItemLedgerPending(archiveRoot, transaction, index, inspected) {
+  let next = transaction;
+  if (!['copied', 'ledger_pending'].includes(transaction.items[index].stage)) {
+    next = await updateTransactionItem(archiveRoot, next, index, {
+      stage: 'copied',
+      targetSize: inspected.size,
+      targetSha256: inspected.sha256,
+      copiedAt: transaction.items[index].copiedAt || new Date().toISOString(),
+      errorCode: '',
+      errorMessage: ''
+    });
+  }
+  return updateTransactionItem(archiveRoot, next, index, {
+    stage: 'ledger_pending',
+    targetSize: inspected.size,
+    targetSha256: inspected.sha256,
+    errorCode: '',
+    errorMessage: ''
+  });
+}
+
+async function updateTransactionItem(archiveRoot, transaction, index, patch) {
+  const next = JSON.parse(JSON.stringify(transaction));
+  next.items[index] = { ...next.items[index], ...patch };
+  next.state = calculateArchiveTransactionState(next.items);
+  return saveArchiveTransaction(archiveRoot, next);
+}
+
+async function inspectFrozenTarget(targetPath, item, options = {}) {
+  try {
+    const stat = await fs.stat(targetPath);
+    if (!stat.isFile()) return { exists: true, matches: false, size: stat.size, sha256: '' };
+    const sha256 = await (options.hashFile || hashFile)(targetPath);
+    return {
+      exists: true,
+      matches: stat.size === Number(item.sourceSize) && sha256 === item.sourceSha256,
+      size: stat.size,
+      sha256
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') return { exists: false, matches: false, size: 0, sha256: '' };
+    return { exists: true, matches: false, size: 0, sha256: '' };
+  }
+}
+
+function buildLedgerRow(item) {
+  return {
+    date: String(item.date || '').trim(),
+    project: String(item.project || '').trim(),
+    watermarkCategory: String(item.watermarkCategory || '').trim(),
+    workContent: String(item.workContent || '').trim(),
+    location: String(item.location || '').trim() || '现场',
+    newFileName: String(item.newFileName || '').trim(),
+    originalName: String(item.originalName || '').trim(),
+    keywords: String(item.keywords || '').trim(),
+    remark: String(item.remark || '').trim(),
+    archivedAt: dayjs().format('YYYY-MM-DD HH:mm:ss')
+  };
+}
+
+function buildLedgerCommitInput(archiveRoot, item) {
+  const targetPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
+  return {
+    ...item.ledgerRow,
+    id: item.photoId,
+    photoId: item.photoId,
+    sourceKey: item.sourceKey,
+    targetPath,
+    newFileName: path.basename(targetPath),
+    targetSize: item.targetSize,
+    targetSha256: item.targetSha256 || item.sourceSha256,
+    sourceSize: item.sourceSize,
+    sourceSha256: item.sourceSha256,
+    status: '归档成功'
+  };
+}
+
+function buildArchiveTransactionResult(archiveRoot, transaction, fingerprintIndexWarning = '') {
+  const items = transaction.items.map((item) => {
+    const archivedPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
+    const committed = item.stage === 'committed';
+    const pending = item.stage === 'ledger_pending';
+    const failed = item.stage === 'copy_failed';
+    const conflict = item.stage === 'target_conflict';
+    return {
+      id: item.photoId,
+      photoId: item.photoId,
+      sourceKey: item.sourceKey,
+      stage: item.stage,
+      status: committed ? '归档成功' : pending ? '台账待补记' : conflict ? '目标冲突' : failed ? '归档失败' : '待重试',
+      archivedPath,
+      targetPath: archivedPath,
+      newFileName: path.basename(archivedPath),
+      originalName: item.originalName,
+      recoverable: pending,
+      errorCode: item.errorCode,
+      message: item.errorMessage,
+      error: item.errorMessage,
+      archivedAt: item.ledgerRow.archivedAt,
+      ...item.ledgerRow
+    };
+  });
+  const committedCount = items.filter((item) => item.stage === 'committed').length;
+  const pendingLedgerCount = items.filter((item) => item.stage === 'ledger_pending').length;
+  const failedCount = items.filter((item) => item.stage === 'copy_failed').length;
+  const conflictCount = items.filter((item) => item.stage === 'target_conflict').length;
+  const copiedCount = committedCount + pendingLedgerCount;
+  const status = pendingLedgerCount > 0
+    ? 'ledger_pending'
+    : committedCount === items.length
+      ? 'committed'
+      : committedCount > 0
+        ? 'partial'
+        : 'failed';
+  return {
+    success: status === 'committed',
+    recoverable: pendingLedgerCount > 0,
+    transactionId: transaction.transactionId,
+    status,
+    inputCount: items.length,
+    total: items.length,
+    copiedCount,
+    committedCount,
+    successCount: committedCount,
+    pendingLedgerCount,
+    failedCount,
+    conflictCount,
     fingerprintIndexWarning,
+    items
+  };
+}
+
+function buildPreflightFailureResult(items, error) {
+  const errorCode = error?.code || 'archive_preflight_failed';
+  const message = error instanceof ArchiveServiceError
+    ? error.message
+    : '归档前检查失败，照片尚未复制。';
+  const results = items.map((item) => ({
+    id: String(item.id || item.photoId || '').trim(),
+    photoId: String(item.id || item.photoId || '').trim(),
+    sourceKey: String(item.sourceKey || '').trim(),
+    stage: 'copy_failed',
+    status: '归档失败',
+    archivedPath: '',
+    targetPath: String(item.targetPath || '').trim(),
+    newFileName: String(item.newFileName || '').trim(),
+    originalName: String(item.originalName || '').trim(),
+    recoverable: false,
+    errorCode,
+    message,
+    error: message
+  }));
+  return {
+    success: false,
+    recoverable: false,
+    transactionId: '',
+    status: 'failed',
+    inputCount: results.length,
+    total: results.length,
+    copiedCount: 0,
+    committedCount: 0,
+    successCount: 0,
+    pendingLedgerCount: 0,
+    failedCount: results.length,
+    conflictCount: 0,
+    fingerprintIndexWarning: '',
     items: results
+  };
+}
+
+function validateArchivePlan(archivePlan) {
+  if (!archivePlan?.archiveRoot) throw new ArchiveServiceError('archive_root_missing', '缺少归档根目录。');
+  if (!Array.isArray(archivePlan.items) || archivePlan.items.length === 0) {
+    throw new ArchiveServiceError('archive_items_missing', '没有可归档的照片。');
+  }
+}
+
+function resolveSafeTargetCandidate(archiveRoot, targetPath) {
+  const root = path.resolve(archiveRoot);
+  const target = path.resolve(String(targetPath || ''));
+  const relative = path.relative(root, target);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ArchiveServiceError('archive_target_invalid', '归档目标路径无效。');
+  }
+  return target;
+}
+
+function normalizeCopyErrorCode(error) {
+  if (error?.code === 'EACCES' || error?.code === 'EPERM') return 'archive_copy_permission_denied';
+  if (error?.code === 'ENOSPC') return 'archive_copy_disk_full';
+  if (error?.code === 'ENOENT') return 'archive_source_missing';
+  return 'archive_copy_failed';
+}
+
+function normalizeLedgerError(error) {
+  if (error instanceof LedgerWriteError) return { code: error.code, message: error.message };
+  return {
+    code: 'ledger_write_failed',
+    message: '台账暂时无法写入，照片文件已保留，可稍后重试补记。'
   };
 }
 
@@ -186,4 +632,9 @@ async function exists(targetPath) {
   }
 }
 
-module.exports = { buildArchivePreview, archivePhotos };
+module.exports = {
+  ArchiveServiceError,
+  archivePhotos,
+  buildArchivePreview,
+  recoverPendingArchiveTransactions
+};

@@ -112,6 +112,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const cachedSessionRef = useRef(sortWorkspaceSessionCache);
   const sessionSnapshotRef = useRef(cachedSessionRef.current);
   const hasHydratedSessionRef = useRef(false);
+  const recoveredArchiveRootsRef = useRef(new Set());
   const cachedSession = cachedSessionRef.current || {};
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [configs, setConfigs] = useState(null);
@@ -189,6 +190,57 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    const normalizedRoot = String(archiveRoot || '').trim();
+    if (!isSessionHydrated || !normalizedRoot || recoveredArchiveRootsRef.current.has(normalizedRoot)) return undefined;
+    recoveredArchiveRootsRef.current.add(normalizedRoot);
+    let active = true;
+    void (async () => {
+      if (typeof window.archiveAssistant.recoverPendingArchiveTransactions !== 'function') return;
+      const recovery = await window.archiveAssistant.recoverPendingArchiveTransactions(normalizedRoot);
+      if (!active) return;
+      if (recovery?.committedCount > 0 && photos.length > 0) {
+        try {
+          const matchResult = await window.archiveAssistant.matchArchivedPhotos(normalizedRoot, photos.map((photo) => ({
+            id: photo.id,
+            path: photo.originalPath,
+            size: photo.size
+          })));
+          const matches = matchResult?.matches || {};
+          setPhotos((current) => current.map((photo) => (
+            matches[photo.id] ? buildArchivedScannedPhoto(photo, matches[photo.id]) : photo
+          )));
+        } catch (error) {
+          void recordRuntimeLog({
+            page: '照片分拣工作台',
+            operation: '恢复归档事务后核对照片',
+            errorType: '归档状态核对',
+            summary: error.message || '归档状态核对失败',
+            error
+          });
+        }
+      }
+      if (recovery?.pendingLedgerCount > 0) {
+        setStatus({ type: 'warning', text: `检测到 ${recovery.pendingLedgerCount} 张照片已复制但台账仍待补记，可重新点击归档恢复。` });
+      } else if (recovery?.committedCount > 0) {
+        setStatus({ type: 'success', text: `已恢复 ${recovery.committedCount} 张照片的归档台账记录。` });
+      } else if (Array.isArray(recovery?.errors) && recovery.errors.length > 0) {
+        setStatus({ type: 'warning', text: '检测到归档事务记录异常，已停止自动恢复，请导出运行日志后人工核查。' });
+      }
+    })().catch((error) => {
+      if (!active) return;
+      void recordRuntimeLog({
+        page: '照片分拣工作台',
+        operation: '恢复待处理归档事务',
+        errorType: '归档事务恢复',
+        summary: error.message || '归档事务恢复失败',
+        error
+      });
+      setStatus({ type: 'warning', text: '待处理归档事务暂未恢复，可稍后重新进入工作台重试。' });
+    });
+    return () => { active = false; };
+  }, [archiveRoot, isSessionHydrated]);
 
   useEffect(() => {
     if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
@@ -1776,7 +1828,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
           name: photo.originalName,
           extension: photo.extension,
           size: photo.size,
-          previewUrl: photo.previewUrl
+          previewUrl: photo.previewUrl,
+          sourceType: photo.sourceType,
+          sourceKey: photo.sourceKey,
+          sourceMetadataRef: photo.sourceMetadataRef
         }))
       });
       const previewMap = new Map(preview.map((item) => [item.id, item]));
@@ -1875,7 +1930,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
           name: photo.originalName,
           extension: photo.extension,
           size: photo.size,
-          previewUrl: photo.previewUrl
+          previewUrl: photo.previewUrl,
+          sourceType: photo.sourceType,
+          sourceKey: photo.sourceKey,
+          sourceMetadataRef: photo.sourceMetadataRef
         }))
       });
       const previewMap = new Map(preview.map((item) => [item.id, item]));
@@ -1907,6 +1965,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   function cancelSortPreview() {
     if (previewPhotos.length === 0) {
       setStatus({ type: 'warning', text: '当前没有可取消的归档预览。' });
+      return;
+    }
+    const pendingLedgerCount = previewPhotos.filter((photo) => photo.archiveResult?.stage === 'ledger_pending').length;
+    if (pendingLedgerCount > 0) {
+      setStatus({ type: 'warning', text: `有 ${pendingLedgerCount} 张照片已经复制、台账待补记，请先重新归档完成恢复。` });
       return;
     }
     const cancelledCount = previewPhotos.length;
@@ -1976,31 +2039,56 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     invalidateBatchPreparationUndo();
     setIsBusy(true);
     try {
-      const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewPhotos.map((photo) => photo.previewInfo) });
-      const resultMap = new Map(result.items.map((item) => [item.id, item]));
+      const archiveGroups = groupPreviewPhotosByTransaction(previewPhotos);
+      const groupResults = [];
+      for (const group of archiveGroups) {
+        const result = await window.archiveAssistant.archivePhotos({
+          archiveRoot,
+          transactionId: group.transactionId,
+          items: group.photos.map((photo) => photo.previewInfo)
+        });
+        groupResults.push(result);
+      }
+      const result = mergeArchiveTransactionResults(groupResults);
+      const resultMap = new Map(result.items.map((item) => [item.photoId || item.id, item]));
       const archivedAt = new Date().toISOString();
       setPhotos((current) => current.map((photo) => {
         const item = resultMap.get(photo.id);
         if (!item) return photo;
-        const success = item.status === '归档成功';
-        return { ...photo, sortStatus: success ? 'archived' : 'failed', archiveResult: item, previewInfo: item, archiveMethod: '手动分拣', archivedAt: success ? archivedAt : '' };
+        const committed = item.stage === 'committed' || item.status === '归档成功';
+        return {
+          ...photo,
+          sortStatus: committed ? 'archived' : 'previewed',
+          archiveResult: item,
+          previewInfo: committed ? item : { ...photo.previewInfo, transactionId: item.transactionId },
+          archiveMethod: committed ? '手动分拣' : photo.archiveMethod,
+          archivedAt: committed ? archivedAt : photo.archivedAt
+        };
       }));
       setSelectedIds([]);
       setShowConfirm(false);
-      const firstSuccessfulItem = result.items.find((item) => item.status === '归档成功');
-      const firstFailedItem = result.items.find((item) => item.status === '归档失败');
-      switchStatusFilter(firstSuccessfulItem ? 'archived' : 'failed');
+      const firstCommittedItem = result.items.find((item) => item.stage === 'committed');
+      const firstPendingItem = result.items.find((item) => item.stage === 'ledger_pending');
+      const firstFailedItem = result.items.find((item) => ['copy_failed', 'target_conflict'].includes(item.stage));
+      switchStatusFilter(firstCommittedItem ? 'archived' : 'previewed');
       setSmartSortViewMode('statusFilter');
       setActiveSmartSortGroupId('');
-      setActivePhotoId(firstSuccessfulItem?.id || firstFailedItem?.id || '');
+      setActivePhotoId(firstCommittedItem?.photoId || firstPendingItem?.photoId || firstFailedItem?.photoId || '');
       setPage(1);
       setHasUnsavedChanges(true);
       const fingerprintWarning = String(result.fingerprintIndexWarning || '').trim();
+      const summary = result.pendingLedgerCount > 0
+        ? `照片复制已完成 ${result.copiedCount} 张，其中 ${result.pendingLedgerCount} 张台账待补记；可直接重新点击归档恢复。`
+        : result.status === 'partial'
+          ? `归档部分完成：成功 ${result.committedCount} 张，复制失败 ${result.failedCount} 张，目标冲突 ${result.conflictCount} 张。`
+          : result.status === 'committed'
+            ? `归档完成，已复制 ${result.committedCount} 张照片并安全追加 Excel 台账，原图仍保留。`
+            : `归档未完成：复制失败 ${result.failedCount} 张，目标冲突 ${result.conflictCount} 张。`;
       setStatus({
-        type: result.success && !fingerprintWarning ? 'success' : 'warning',
-        text: result.success
-          ? `归档完成，已复制 ${result.successCount} 张照片并追加 Excel 台账，原图仍保留。${fingerprintWarning ? ` ${fingerprintWarning}` : ''}`
-          : `归档完成但存在失败：成功 ${result.successCount} 张，失败 ${result.failedCount} 张。`
+        type: result.status === 'committed' && !fingerprintWarning
+          ? 'success'
+          : (result.committedCount > 0 || result.pendingLedgerCount > 0 ? 'warning' : 'error'),
+        text: `${summary}${fingerprintWarning ? ` ${fingerprintWarning}` : ''}`
       });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '确认归档', errorType: '确认归档失败', summary: error.message, error });
@@ -2886,11 +2974,65 @@ function restoreSnapshotEntries(currentEntries = {}, snapshotEntries = {}, photo
   return next;
 }
 
+function groupPreviewPhotosByTransaction(photos = []) {
+  const groups = new Map();
+  photos.forEach((photo) => {
+    const transactionId = String(
+      photo.archiveResult?.transactionId
+      || photo.previewInfo?.transactionId
+      || ''
+    ).trim();
+    const key = transactionId || '__new__';
+    const group = groups.get(key) || { transactionId, photos: [] };
+    group.photos.push(photo);
+    groups.set(key, group);
+  });
+  return Array.from(groups.values());
+}
+
+function mergeArchiveTransactionResults(results = []) {
+  const safeResults = results.filter(Boolean);
+  const items = safeResults.flatMap((result) => (result.items || []).map((item) => ({
+    ...item,
+    transactionId: item.transactionId || result.transactionId || ''
+  })));
+  const committedCount = safeResults.reduce((sum, result) => sum + Number(result.committedCount || 0), 0);
+  const pendingLedgerCount = safeResults.reduce((sum, result) => sum + Number(result.pendingLedgerCount || 0), 0);
+  const failedCount = safeResults.reduce((sum, result) => sum + Number(result.failedCount || 0), 0);
+  const conflictCount = safeResults.reduce((sum, result) => sum + Number(result.conflictCount || 0), 0);
+  const copiedCount = safeResults.reduce((sum, result) => sum + Number(result.copiedCount || 0), 0);
+  const inputCount = safeResults.reduce((sum, result) => sum + Number(result.inputCount || result.total || 0), 0);
+  const status = pendingLedgerCount > 0
+    ? 'ledger_pending'
+    : committedCount === inputCount && inputCount > 0
+      ? 'committed'
+      : committedCount > 0
+        ? 'partial'
+        : 'failed';
+  return {
+    success: status === 'committed',
+    recoverable: pendingLedgerCount > 0,
+    status,
+    inputCount,
+    copiedCount,
+    committedCount,
+    successCount: committedCount,
+    pendingLedgerCount,
+    failedCount,
+    conflictCount,
+    message: safeResults.find((result) => result.message)?.message || '',
+    fingerprintIndexWarning: safeResults.map((result) => result.fingerprintIndexWarning).filter(Boolean).join(' '),
+    items
+  };
+}
+
 function getPhotoWorkflowStatus(photo, { recognitionResult = null, requiredFieldsComplete } = {}) {
   if (!photo) return '暂无当前照片';
   if (photo.originalMissing) return '原图缺失';
   const status = photo.sortStatus || 'unassigned';
   if (status === 'archived' || photo.archiveResult?.status === '归档成功' || photo.archiveResult?.success === true) return '已归档';
+  if (photo.archiveResult?.stage === 'ledger_pending') return '台账待补记';
+  if (photo.archiveResult?.stage === 'target_conflict') return '目标冲突';
   if (status === 'ignored') return '已忽略';
   if (status === 'failed' || status === 'archive_failed' || photo.archiveResult?.status === '归档失败' || photo.archiveResult?.success === false) return '归档失败';
   if (status === 'previewed') return '已生成预览';

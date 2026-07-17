@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages } = require('./services/fileService.cjs');
-const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
+const { buildArchivePreview, archivePhotos, recoverPendingArchiveTransactions } = require('./services/archiveService.cjs');
 const { matchArchivedPhotos } = require('./services/archiveFingerprintService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs');
@@ -282,6 +282,63 @@ async function safeRecognitionCall(action, fallback) {
   } catch (error) {
     return fallback(error);
   }
+}
+
+async function safeArchiveCall(action, fallback) {
+  try {
+    return await action();
+  } catch (error) {
+    return fallback(error);
+  }
+}
+
+function createArchiveIpcErrorResult(error = {}, inputCount = 0) {
+  const safeCode = /^(archive|ledger)_/.test(String(error.code || ''))
+    ? String(error.code)
+    : 'archive_ipc_failed';
+  const safeMessage = safeCode === 'archive_ipc_failed'
+    ? '归档服务调用失败，请重试。'
+    : String(error.message || '归档服务调用失败，请重试。');
+  return {
+    success: false,
+    recoverable: false,
+    transactionId: '',
+    status: 'failed',
+    inputCount,
+    total: inputCount,
+    copiedCount: 0,
+    committedCount: 0,
+    successCount: 0,
+    pendingLedgerCount: 0,
+    failedCount: inputCount,
+    conflictCount: 0,
+    fingerprintIndexWarning: '',
+    errorCode: safeCode,
+    message: safeMessage,
+    items: []
+  };
+}
+
+function createArchiveRecoveryIpcError(error = {}) {
+  const safeCode = /^(archive|ledger)_/.test(String(error.code || ''))
+    ? String(error.code)
+    : 'archive_recovery_failed';
+  return {
+    success: false,
+    recoveredTransactionCount: 0,
+    transactionCount: 0,
+    committedCount: 0,
+    pendingLedgerCount: 0,
+    retryRequiredCount: 0,
+    conflictCount: 0,
+    errors: [{
+      errorCode: safeCode,
+      message: safeCode === 'archive_recovery_failed'
+        ? '归档恢复服务调用失败，请稍后重试。'
+        : String(error.message || '归档恢复服务调用失败，请稍后重试。')
+    }],
+    transactions: []
+  };
 }
 
 function createRecognitionErrorStatus(error = {}) {
@@ -734,7 +791,14 @@ ipcMain.handle('configs:import', async () => {
   return { success: true, sourceFile: result.filePaths[0], ...imported };
 });
 ipcMain.handle('archive:buildPreview', async (_event, payload) => buildArchivePreview(payload));
-ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => archivePhotos(archivePlan));
+ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchiveCall(
+  () => archivePhotos(archivePlan),
+  (error) => createArchiveIpcErrorResult(error, Array.isArray(archivePlan?.items) ? archivePlan.items.length : 0)
+));
+ipcMain.handle('archive:recoverPendingTransactions', async (_event, archiveRoot) => safeArchiveCall(
+  () => recoverPendingArchiveTransactions(archiveRoot),
+  createArchiveRecoveryIpcError
+));
 
 ipcMain.handle('sortDraft:save', async (_event, draft) => {
   const draftsDir = path.join(getWritableDocumentsPath(), appDataFolderName, 'sort-drafts');
