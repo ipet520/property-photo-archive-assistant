@@ -298,8 +298,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const safePage = Math.min(page, totalPages);
   const pagePhotos = visiblePhotos.slice((safePage - 1) * pageSize, safePage * pageSize);
   const selectedPhotos = photos.filter((photo) => selectedIds.includes(photo.id));
-  const activePhoto = photos.find((photo) => photo.id === activePhotoId) || null;
-  const primaryPhoto = activePhoto || selectedPhotos[0] || pagePhotos[0] || null;
+  const activePhoto = pagePhotos.find((photo) => photo.id === activePhotoId) || null;
+  const selectedPagePhoto = pagePhotos.find((photo) => selectedIds.includes(photo.id)) || null;
+  const primaryPhoto = activePhoto || selectedPagePhoto || pagePhotos[0] || null;
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
   const pendingCount = photos.filter((photo) => !['assigned', 'previewed', 'archived', 'ignored'].includes(photo.sortStatus)).length;
@@ -416,6 +417,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   }, [activePhotoId, photos]);
 
   useEffect(() => {
+    const currentPhotoId = currentPanelPhoto?.id || '';
+    if (currentPhotoId !== activePhotoId) setActivePhotoId(currentPhotoId);
+  }, [activePhotoId, currentPanelPhoto?.id]);
+
+  useEffect(() => {
     if (photos.length === 0 && smartSortResult) {
       resetSmartSortState({ type: 'idle', text: '' });
     }
@@ -494,7 +500,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
       return;
     }
     setForm(reconcileForm(defaultForm, configs));
-  }, [currentPanelPhoto?.id, configs, archiveSuggestionsByPhoto]);
+  }, [currentPanelPhoto, configs, archiveSuggestionsByPhoto]);
 
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
@@ -1143,18 +1149,30 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
     });
   }
 
+  function activatePhotoFromPreview(photo) {
+    if (!photo) return;
+    setActivePhotoId(photo.id);
+    window.requestAnimationFrame(() => {
+      const browser = photoBrowserRef.current;
+      if (!browser) return;
+      const target = Array.from(browser.querySelectorAll('[data-photo-id]'))
+        .find((element) => element.dataset.photoId === photo.id);
+      target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }
+
   function showPreviousPhoto() {
     if (!canShowPreviousPhoto) return;
     const previousPhoto = pagePhotos[currentPagePhotoIndex - 1];
     if (!previousPhoto) return;
-    setActivePhotoId(previousPhoto.id);
+    activatePhotoFromPreview(previousPhoto);
   }
 
   function showNextPhoto() {
     if (!canShowNextPhoto) return;
     const nextPhoto = pagePhotos[currentPagePhotoIndex + 1];
     if (!nextPhoto) return;
-    setActivePhotoId(nextPhoto.id);
+    activatePhotoFromPreview(nextPhoto);
   }
 
   function applyStatusFilter(nextFilter) {
@@ -2103,6 +2121,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                 photo={photo}
                 recognitionResult={recognitionResultsByPhoto[photo.id]}
                 selected={selectedIds.includes(photo.id)}
+                current={currentPanelPhoto?.id === photo.id}
                 onClick={(event) => handlePhotoClick(photo, event)}
                 onSelect={() => togglePhotoSelection(photo.id)}
               />
@@ -2113,8 +2132,19 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                 </thead>
                 <tbody>
                   {pagePhotos.map((photo) => (
-                    <tr key={photo.id} className={selectedIds.includes(photo.id) ? 'selected' : ''} onClick={(event) => handlePhotoClick(photo, event)}>
-                      <td><StatusBadge photo={photo} recognitionResult={recognitionResultsByPhoto[photo.id]} /></td>
+                    <tr
+                      key={photo.id}
+                      data-photo-id={photo.id}
+                      className={[selectedIds.includes(photo.id) ? 'selected' : '', currentPanelPhoto?.id === photo.id ? 'current' : ''].filter(Boolean).join(' ')}
+                      aria-current={currentPanelPhoto?.id === photo.id ? 'true' : undefined}
+                      onClick={(event) => handlePhotoClick(photo, event)}
+                    >
+                      <td>
+                        <div className="sort-list-status-cell">
+                          {currentPanelPhoto?.id === photo.id && <span className="sort-list-current-marker">当前</span>}
+                          <StatusBadge photo={photo} recognitionResult={recognitionResultsByPhoto[photo.id]} />
+                        </div>
+                      </td>
                       <td aria-label={photo.originalName}>{isPreviewAuditList ? <PreviewFileNames photo={photo} /> : photo.originalName}</td>
                       <td>{isPreviewAuditList ? (photo.previewInfo?.date || photo.archiveInfo?.date || '-') : formatDateTime(photo.modifiedAt)}</td>
                       <td>{formatFileSize(photo.size)}</td>
@@ -2198,7 +2228,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                     <div className="sort-current-preview">
                       {currentPanelPhoto.previewUrl ? (
                         <div className="sort-current-preview-media">
-                          <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} onLoad={applyCurrentPreviewAspectRatio} />
+                          <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
                           <div className="sort-current-preview-nav" aria-hidden={false}>
                             <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-prev" onClick={showPreviousPhoto} disabled={!canShowPreviousPhoto} aria-label="上一张" title="上一张">‹</button>
                             <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-next" onClick={showNextPhoto} disabled={!canShowNextPhoto} aria-label="下一张" title="下一张">›</button>
@@ -2227,7 +2257,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
                     <div className="sort-current-preview">
                       {currentPanelPhoto.previewUrl ? (
                         <div className="sort-current-preview-media">
-                          <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} onLoad={applyCurrentPreviewAspectRatio} />
+                          <img src={currentPanelPhoto.previewUrl} alt={currentPanelPhoto.originalName} />
                           <div className="sort-current-preview-nav" aria-hidden={false}>
                             <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-prev" onClick={showPreviousPhoto} disabled={!canShowPreviousPhoto} aria-label="上一张" title="上一张">‹</button>
                             <button type="button" className="sort-current-preview-nav-btn sort-current-preview-nav-next" onClick={showNextPhoto} disabled={!canShowNextPhoto} aria-label="下一张" title="下一张">›</button>
@@ -2615,7 +2645,7 @@ function SortSection({ title, action, description = '', children, scrollable = f
   );
 }
 
-function PhotoCard({ photo, recognitionResult, selected, onClick, onSelect }) {
+function PhotoCard({ photo, recognitionResult, selected, current, onClick, onSelect }) {
   const gridSummary = buildGridPhotoSummary(photo);
   const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
   const handleSelectClick = (event) => {
@@ -2629,9 +2659,17 @@ function PhotoCard({ photo, recognitionResult, selected, onClick, onSelect }) {
     onSelect();
   };
   return (
-    <button type="button" className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''}`} onClick={onClick} aria-label={photo.originalName || '照片卡片'}>
+    <button
+      type="button"
+      data-photo-id={photo.id}
+      className={`sort-photo-card ${photo.sortStatus || ''} ${selected ? 'selected' : ''} ${current ? 'current' : ''}`}
+      onClick={onClick}
+      aria-label={photo.originalName || '照片卡片'}
+      aria-current={current ? 'true' : undefined}
+    >
       <div className="sort-thumb-wrap">
         {photo.originalMissing ? <span className="sort-missing-thumb">原图缺失</span> : <ThumbnailHoverPreview src={photo.previewUrl} alt={photo.originalName} />}
+        {current && <span className="sort-current-marker">当前</span>}
         <span className="sort-ext">{photo.extension?.replace('.', '').toUpperCase()}</span>
         <span
           className={`sort-check ${selected ? 'selected' : 'idle'}`}
@@ -2773,13 +2811,6 @@ function PreviewSortSummary({ photo }) {
       {supplemental && <small>{supplemental}</small>}
     </div>
   );
-}
-
-function applyCurrentPreviewAspectRatio(event) {
-  const image = event.currentTarget;
-  const media = image.parentElement;
-  if (!media || !image.naturalWidth || !image.naturalHeight) return;
-  media.style.setProperty('--photo-aspect', `${image.naturalWidth} / ${image.naturalHeight}`);
 }
 
 function StatusBadge({ photo, recognitionResult }) {

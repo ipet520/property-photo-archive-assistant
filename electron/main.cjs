@@ -2,7 +2,6 @@ const electron = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { ocrComponentVersion } = require('../package.json');
 const { scanImages } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos } = require('./services/archiveService.cjs');
 const { matchArchivedPhotos } = require('./services/archiveFingerprintService.cjs');
@@ -159,6 +158,7 @@ function createWindow() {
     minHeight: MIN_WINDOW_HEIGHT,
     title: '物业工作照片归档助手',
     icon: appIconPath,
+    autoHideMenuBar: true,
     backgroundColor: '#f6f7fb',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -167,6 +167,7 @@ function createWindow() {
       sandbox: false
     }
   });
+  mainWindow.setMenuBarVisibility(false);
 
   if (!windowState.hasSavedState || windowState.isMaximized) {
     mainWindow.maximize();
@@ -386,83 +387,13 @@ async function recordOcrRuntimeLog(photo = {}, result = {}) {
   }
 }
 
-function createChineseMenu() {
-  const template = [
-    {
-      label: '文件',
-      submenu: [
-        { role: 'quit', label: '退出' }
-      ]
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { role: 'undo', label: '撤销' },
-        { role: 'redo', label: '重做' },
-        { type: 'separator' },
-        { role: 'cut', label: '剪切' },
-        { role: 'copy', label: '复制' },
-        { role: 'paste', label: '粘贴' },
-        { role: 'selectAll', label: '全选' }
-      ]
-    },
-    {
-      label: '视图',
-      submenu: [
-        { role: 'reload', label: '重新加载' },
-        { role: 'forceReload', label: '强制重新加载' },
-        { role: 'toggleDevTools', label: '开发者工具' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: '实际大小' },
-        { role: 'zoomIn', label: '放大' },
-        { role: 'zoomOut', label: '缩小' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: '全屏' }
-      ]
-    },
-    {
-      label: '设置',
-      submenu: [
-        {
-          label: '配置管理中心',
-          click: () => {
-            const targetWindow = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
-            if (targetWindow) {
-              targetWindow.webContents.send('app:openConfigManager');
-            }
-          }
-        }
-      ]
-    },
-    {
-      label: '窗口',
-      submenu: [
-        { role: 'minimize', label: '最小化' },
-        { role: 'close', label: '关闭窗口' }
-      ]
-    },
-    {
-      label: '帮助',
-      submenu: [
-        {
-          label: '关于物业工作照片归档助手',
-          click: () => dialog.showMessageBox({
-            type: 'info',
-            title: '关于',
-            message: '物业工作照片归档助手',
-            detail: `本地照片归档整理工具。\n软件版本 ${app.getVersion()}\nRapidOCR 版本 ${ocrComponentVersion}`
-          })
-        }
-      ]
-    }
-  ];
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+function disableNativeMenu() {
+  Menu.setApplicationMenu(null);
 }
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.property.photo.archive.assistant');
-  createChineseMenu();
+  disableNativeMenu();
 
   protocol.handle('local-photo', (request) => {
     const url = new URL(request.url);
