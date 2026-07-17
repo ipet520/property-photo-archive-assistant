@@ -7,7 +7,18 @@ const SOURCE_MANIFEST_FILE_NAME = 'source-manifest.json';
 const SOURCE_MANIFEST_VERSION = 1;
 const SOURCE_TYPE = 'marki_api';
 const INITIAL_IMPORT_STATUS = 'discovered';
-const IMPORT_STATUSES = Object.freeze([INITIAL_IMPORT_STATUS]);
+const IMPORT_STATUSES = Object.freeze([
+  INITIAL_IMPORT_STATUS,
+  'downloading',
+  'imported',
+  'download_failed'
+]);
+const IMPORT_STATUS_TRANSITIONS = Object.freeze({
+  discovered: Object.freeze(['downloading']),
+  downloading: Object.freeze(['downloading', 'imported', 'download_failed']),
+  imported: Object.freeze([]),
+  download_failed: Object.freeze(['downloading'])
+});
 const MAX_BATCH_SIZE = 5000;
 const manifestWriteQueues = new Map();
 
@@ -65,6 +76,9 @@ async function upsertMarkiSourceRecords(documentsPath, orgId, sourceRecords = []
         const record = {
           ...input,
           importStatus: INITIAL_IMPORT_STATUS,
+          downloadAttemptCount: 0,
+          downloadInfo: null,
+          lastDownloadError: null,
           createdAt: now,
           updatedAt: now
         };
@@ -109,6 +123,67 @@ async function upsertMarkiSourceRecords(documentsPath, orgId, sourceRecords = []
       unchangedCount,
       totalCount: Object.keys(manifest.records).length,
       items
+    };
+  });
+}
+
+async function updateMarkiSourceImportStatus(
+  documentsPath,
+  orgId,
+  sourceKey,
+  nextStatus,
+  details = {},
+  options = {}
+) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const normalizedSourceKey = normalizeSourceKey(normalizedOrgId, sourceKey);
+  const normalizedNextStatus = String(nextStatus || '').trim();
+  if (!IMPORT_STATUSES.includes(normalizedNextStatus)) {
+    throw createManifestError('invalid_import_status', '来源记录状态无效。');
+  }
+  const manifestPath = getMarkiSourceManifestPath(documentsPath, normalizedOrgId);
+  return withManifestWriteLock(manifestPath, async () => {
+    const manifest = await loadMarkiSourceManifest(documentsPath, normalizedOrgId);
+    const existing = manifest.records[normalizedSourceKey];
+    if (!existing) {
+      throw createManifestError('source_record_not_found', '未找到对应的马克来源记录。');
+    }
+    const allowedNextStatuses = IMPORT_STATUS_TRANSITIONS[existing.importStatus] || [];
+    if (!allowedNextStatuses.includes(normalizedNextStatus)) {
+      throw createManifestError(
+        'invalid_import_status_transition',
+        `来源记录不能从 ${existing.importStatus} 变更为 ${normalizedNextStatus}。`
+      );
+    }
+
+    const now = resolveNow(options);
+    const nextRecord = {
+      ...existing,
+      importStatus: normalizedNextStatus,
+      updatedAt: now
+    };
+    if (normalizedNextStatus === 'downloading') {
+      nextRecord.downloadAttemptCount = existing.downloadAttemptCount + 1;
+      nextRecord.downloadInfo = null;
+      nextRecord.lastDownloadError = null;
+    } else if (normalizedNextStatus === 'imported') {
+      nextRecord.downloadInfo = normalizeDownloadInfo(details.downloadInfo);
+      nextRecord.lastDownloadError = null;
+    } else if (normalizedNextStatus === 'download_failed') {
+      nextRecord.downloadInfo = null;
+      nextRecord.lastDownloadError = normalizeDownloadError(details.error, now);
+    }
+    validateDownloadState(nextRecord);
+    manifest.records[normalizedSourceKey] = nextRecord;
+    manifest.updatedAt = now;
+    await writeMarkiSourceManifest(manifestPath, manifest);
+    return {
+      success: true,
+      orgId: normalizedOrgId,
+      sourceKey: normalizedSourceKey,
+      previousStatus: existing.importStatus,
+      importStatus: normalizedNextStatus,
+      record: cloneJson(nextRecord)
     };
   });
 }
@@ -236,7 +311,7 @@ function normalizeStoredManifest(input, expectedOrgId) {
     if (!IMPORT_STATUSES.includes(importStatus)) {
       throw createManifestError('marki_source_manifest_invalid', '来源记录状态无效。');
     }
-    records[normalizedSourceKey] = {
+    const normalizedRecord = {
       sourceKey: normalizedSourceKey,
       sourceType: SOURCE_TYPE,
       orgId: expectedOrgId,
@@ -246,9 +321,16 @@ function normalizeStoredManifest(input, expectedOrgId) {
       postTime: normalizeTimestamp(value.postTime),
       markName: normalizeText(value.markName, 200),
       importStatus,
+      downloadAttemptCount: normalizeNonNegativeInteger(value.downloadAttemptCount),
+      downloadInfo: value.downloadInfo == null ? null : normalizeDownloadInfo(value.downloadInfo),
+      lastDownloadError: value.lastDownloadError == null
+        ? null
+        : normalizeDownloadError(value.lastDownloadError),
       createdAt: normalizeIsoDate(value.createdAt),
       updatedAt: normalizeIsoDate(value.updatedAt)
     };
+    validateDownloadState(normalizedRecord);
+    records[normalizedSourceKey] = normalizedRecord;
   }
   return {
     version: SOURCE_MANIFEST_VERSION,
@@ -350,6 +432,89 @@ function normalizeText(value, maxLength) {
   return text.slice(0, maxLength);
 }
 
+function normalizeNonNegativeInteger(value) {
+  const number = Number(value ?? 0);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载次数无效。');
+  }
+  return number;
+}
+
+function normalizeDownloadInfo(input) {
+  if (!isPlainObject(input)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载信息无效。');
+  }
+  const relativePath = String(input.relativePath || '').trim().replaceAll('\\', '/');
+  const pathParts = relativePath.split('/');
+  if (
+    !relativePath
+    || path.isAbsolute(relativePath)
+    || pathParts.some((part) => !part || part === '.' || part === '..')
+    || /[\u0000-\u001f\u007f]/.test(relativePath)
+  ) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载路径无效。');
+  }
+  const fileName = String(input.fileName || '').trim();
+  if (!/^[A-Za-z0-9_-]+\.jpg$/i.test(fileName)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载文件名无效。');
+  }
+  const size = normalizePositiveInteger(input.size, '来源记录下载文件大小无效。');
+  const width = normalizePositiveInteger(input.width, '来源记录图片宽度无效。');
+  const height = normalizePositiveInteger(input.height, '来源记录图片高度无效。');
+  const sha256 = String(input.sha256 || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录文件摘要无效。');
+  }
+  return {
+    relativePath,
+    fileName,
+    size,
+    width,
+    height,
+    sha256,
+    completedAt: normalizeIsoDate(input.completedAt)
+  };
+}
+
+function normalizeDownloadError(input, fallbackAt = '') {
+  if (!isPlainObject(input)) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载错误无效。');
+  }
+  const code = String(input.code || '').trim();
+  const message = normalizeText(input.message, 300);
+  if (!/^[a-z0-9_]{1,100}$/.test(code) || !message) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载错误无效。');
+  }
+  return {
+    code,
+    message,
+    at: normalizeIsoDate(input.at || fallbackAt)
+  };
+}
+
+function normalizePositiveInteger(value, message) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw createManifestError('marki_source_manifest_invalid', message);
+  }
+  return number;
+}
+
+function validateDownloadState(record) {
+  const attemptCount = record.downloadAttemptCount;
+  const hasDownloadInfo = record.downloadInfo !== null;
+  const hasDownloadError = record.lastDownloadError !== null;
+  const valid = {
+    discovered: attemptCount === 0 && !hasDownloadInfo && !hasDownloadError,
+    downloading: attemptCount > 0 && !hasDownloadInfo && !hasDownloadError,
+    imported: attemptCount > 0 && hasDownloadInfo && !hasDownloadError,
+    download_failed: attemptCount > 0 && !hasDownloadInfo && hasDownloadError
+  };
+  if (!valid[record.importStatus]) {
+    throw createManifestError('marki_source_manifest_invalid', '来源记录下载状态与明细不一致。');
+  }
+}
+
 function normalizeIsoDate(value, allowEmpty = false) {
   const text = String(value || '').trim();
   if (!text && allowEmpty) return '';
@@ -409,5 +574,6 @@ module.exports = {
   getMarkiSourceRecordByKey,
   hasMarkiSourceKey,
   loadMarkiSourceManifest,
+  updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 };
