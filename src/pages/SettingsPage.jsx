@@ -8,6 +8,14 @@ import {
   getSafeRecognitionConfig,
   updateRecognitionConfig
 } from '../utils/recognitionClient.js';
+import {
+  clearMarkiConfig,
+  getMarkiConfigStatus,
+  listMarkiMembers,
+  listMarkiTeams,
+  saveMarkiConfig,
+  testMarkiConnection
+} from '../utils/markiClient.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SETTING_TABS = [
@@ -15,6 +23,7 @@ const SETTING_TABS = [
   { key: 'defaultPaths', label: '默认目录' },
   { key: 'packageSettings', label: '资料包设置' },
   { key: 'recognition', label: '识别服务配置' },
+  { key: 'marki', label: '马克平台' },
   { key: 'backup', label: '设置备份与导入' },
   { key: 'systemInfo', label: '系统信息' }
 ];
@@ -50,6 +59,15 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   const [recognitionMessage, setRecognitionMessage] = useState({ type: 'idle', text: '' });
   const [secretDrafts, setSecretDrafts] = useState({});
   const [clearedSecrets, setClearedSecrets] = useState({});
+  const [markiStatus, setMarkiStatus] = useState(null);
+  const [markiOrgId, setMarkiOrgId] = useState('');
+  const [markiKeyDraft, setMarkiKeyDraft] = useState('');
+  const [markiMessage, setMarkiMessage] = useState({ type: 'idle', text: '' });
+  const [markiBusy, setMarkiBusy] = useState('');
+  const [markiTeams, setMarkiTeams] = useState([]);
+  const [markiSelectedTeamId, setMarkiSelectedTeamId] = useState('');
+  const [markiMembers, setMarkiMembers] = useState([]);
+  const [markiMemberPage, setMarkiMemberPage] = useState({ next: '', hasMore: false, total: null });
   const appPaths = archiveState.appPaths || {};
   const configPaths = archiveState.configPaths || {};
 
@@ -64,6 +82,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
 
   useEffect(() => {
     void loadRecognitionSettings();
+    void loadMarkiStatus();
   }, []);
 
   useEffect(() => {
@@ -72,6 +91,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       'settings-default-paths': 'defaultPaths',
       'settings-package': 'packageSettings',
       'settings-recognition': 'recognition',
+      'settings-marki': 'marki',
       'settings-backup': 'backup',
       'settings-system-info': 'systemInfo'
     }[navigationRequest?.action];
@@ -210,6 +230,117 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
       recordRuntimeLog({ page: '系统设置', operation: '诊断识别服务配置', errorType: '配置诊断失败', summary: error.message, error });
       setRecognitionMessage({ type: 'error', text: `识别配置诊断失败：${error.message}` });
     }
+  }
+
+  async function loadMarkiStatus() {
+    const result = await getMarkiConfigStatus();
+    setMarkiStatus(result);
+    setMarkiOrgId(result?.orgId || '');
+    if (!result?.success && result?.error?.message) {
+      setMarkiMessage({ type: 'error', text: result.error.message });
+    }
+  }
+
+  async function handleSaveMarkiConfig() {
+    if (!/^\d+$/.test(markiOrgId.trim())) {
+      setMarkiMessage({ type: 'error', text: '请输入有效的数字组织 ID。' });
+      return;
+    }
+    if (!markiKeyDraft.trim()) {
+      setMarkiMessage({ type: 'error', text: '请输入组织 KEY；已保存的 KEY 不会回显。' });
+      return;
+    }
+    setMarkiBusy('save');
+    const result = await saveMarkiConfig({ orgId: markiOrgId.trim(), key: markiKeyDraft.trim() });
+    setMarkiBusy('');
+    if (!result?.success) {
+      setMarkiMessage({ type: 'error', text: result?.error?.message || '马克平台配置保存失败。' });
+      return;
+    }
+    setMarkiStatus(result);
+    setMarkiKeyDraft('');
+    setMarkiTeams([]);
+    setMarkiSelectedTeamId('');
+    setMarkiMembers([]);
+    setMarkiMessage({ type: 'success', text: '组织信息已使用 Windows 安全加密保存。' });
+  }
+
+  async function handleClearMarkiConfig() {
+    if (!window.confirm('清除后需要重新输入组织 ID 和组织 KEY，是否继续？')) return;
+    setMarkiBusy('clear');
+    const result = await clearMarkiConfig();
+    setMarkiBusy('');
+    if (!result?.success) {
+      setMarkiMessage({ type: 'error', text: result?.error?.message || '马克平台配置清除失败。' });
+      return;
+    }
+    setMarkiStatus(result);
+    setMarkiOrgId('');
+    setMarkiKeyDraft('');
+    setMarkiTeams([]);
+    setMarkiSelectedTeamId('');
+    setMarkiMembers([]);
+    setMarkiMemberPage({ next: '', hasMore: false, total: null });
+    setMarkiMessage({ type: 'success', text: '马克平台安全配置已清除。' });
+  }
+
+  async function handleTestMarkiConnection() {
+    setMarkiBusy('test');
+    const result = await testMarkiConnection();
+    setMarkiBusy('');
+    if (!result?.success) {
+      setMarkiMessage({ type: 'error', text: result?.error?.message || '马克平台连接失败。' });
+      return;
+    }
+    setMarkiStatus((current) => ({
+      ...(current || {}),
+      connectionStatus: 'connected',
+      lastCheckedAt: result.checkedAt,
+      lastTraceId: result.traceId
+    }));
+    setMarkiMessage({ type: 'success', text: `连接成功，当前组织包含 ${result.teamCount} 个团队。` });
+  }
+
+  async function handleLoadMarkiTeams() {
+    setMarkiBusy('teams');
+    const result = await listMarkiTeams();
+    setMarkiBusy('');
+    if (!result?.success) {
+      setMarkiMessage({ type: 'error', text: result?.error?.message || '团队列表读取失败。' });
+      return;
+    }
+    setMarkiTeams(result.teams || []);
+    setMarkiSelectedTeamId('');
+    setMarkiMembers([]);
+    setMarkiMemberPage({ next: '', hasMore: false, total: null });
+    setMarkiMessage({ type: 'success', text: `已读取 ${result.teams?.length || 0} 个团队，请选择团队后读取成员。` });
+  }
+
+  async function handleLoadMarkiMembers(append = false) {
+    if (!markiSelectedTeamId) {
+      setMarkiMessage({ type: 'error', text: '请先选择团队。' });
+      return;
+    }
+    setMarkiBusy(append ? 'members-more' : 'members');
+    const result = await listMarkiMembers({
+      teamId: markiSelectedTeamId,
+      next: append ? markiMemberPage.next : ''
+    });
+    setMarkiBusy('');
+    if (!result?.success) {
+      setMarkiMessage({ type: 'error', text: result?.error?.message || '成员列表读取失败。' });
+      return;
+    }
+    setMarkiMembers((current) => append ? dedupeMarkiMembers([...current, ...(result.members || [])]) : (result.members || []));
+    setMarkiMemberPage({
+      next: result.next || '',
+      hasMore: result.hasMore === true,
+      total: result.total
+    });
+    setMarkiMessage({
+      type: 'success',
+      text: result.hasMore ? '成员已读取，仍有下一页。' : '成员列表已读取完毕。'
+    });
   }
 
   async function saveSettings() {
@@ -421,6 +552,32 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
             />
           )}
 
+          {activeTab === 'marki' && (
+            <MarkiSettingsPanel
+              status={markiStatus}
+              orgId={markiOrgId}
+              keyDraft={markiKeyDraft}
+              message={markiMessage}
+              busy={markiBusy}
+              teams={markiTeams}
+              selectedTeamId={markiSelectedTeamId}
+              members={markiMembers}
+              memberPage={markiMemberPage}
+              onOrgIdChange={setMarkiOrgId}
+              onKeyChange={setMarkiKeyDraft}
+              onSave={handleSaveMarkiConfig}
+              onClear={handleClearMarkiConfig}
+              onTest={handleTestMarkiConnection}
+              onLoadTeams={handleLoadMarkiTeams}
+              onTeamChange={(value) => {
+                setMarkiSelectedTeamId(value);
+                setMarkiMembers([]);
+                setMarkiMemberPage({ next: '', hasMore: false, total: null });
+              }}
+              onLoadMembers={handleLoadMarkiMembers}
+            />
+          )}
+
           {activeTab === 'backup' && (
             <div className="settings-module">
               <header>
@@ -465,6 +622,169 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
             </div>
           )}
         </main>
+      </section>
+    </div>
+  );
+}
+
+function MarkiSettingsPanel({
+  status,
+  orgId,
+  keyDraft,
+  message,
+  busy,
+  teams,
+  selectedTeamId,
+  members,
+  memberPage,
+  onOrgIdChange,
+  onKeyChange,
+  onSave,
+  onClear,
+  onTest,
+  onLoadTeams,
+  onTeamChange,
+  onLoadMembers
+}) {
+  const configured = status?.configured === true;
+  const connectionLabel = status?.connectionStatus === 'connected'
+    ? '已连接'
+    : (configured ? '尚未测试' : '未配置');
+  return (
+    <div className="settings-module marki-settings-module">
+      <header>
+        <p className="eyebrow">马克开放平台</p>
+        <h2>组织连接与只读数据检查</h2>
+        <p>本阶段只读取团队和成员信息，不下载照片、不修改马克平台数据，也不会自动进入归档流程。</p>
+      </header>
+
+      <div className="settings-protection-note">
+        组织 KEY 由主进程使用 Windows 安全加密保存，不会回显，也不会进入设置导出、备份文件、运行日志或照片草稿。便携版移动到其他电脑后需要重新配置。
+      </div>
+
+      <div className="settings-form-grid recognition-root-grid marki-status-grid">
+        <div className="recognition-status-card">
+          <span>配置状态</span>
+          <strong>{configured ? '已安全配置' : '未配置'}</strong>
+          <small>{status?.updatedAt ? `更新于 ${formatMarkiDateTime(status.updatedAt)}` : '尚未保存组织信息'}</small>
+        </div>
+        <div className="recognition-status-card">
+          <span>系统加密</span>
+          <strong>{status?.encryptionAvailable === false ? '不可用' : '可用'}</strong>
+          <small>凭证与当前 Windows 用户和设备绑定</small>
+        </div>
+        <div className="recognition-status-card">
+          <span>连接状态</span>
+          <strong>{connectionLabel}</strong>
+          <small>{status?.lastCheckedAt ? `检查于 ${formatMarkiDateTime(status.lastCheckedAt)}` : '保存后可执行连接测试'}</small>
+        </div>
+      </div>
+
+      <div className="settings-form-grid marki-config-form">
+        <label>
+          <span>组织 ID</span>
+          <input
+            inputMode="numeric"
+            value={orgId}
+            onChange={(event) => onOrgIdChange(event.target.value.replace(/\D/g, ''))}
+            placeholder="请输入数字组织 ID"
+          />
+        </label>
+        <label>
+          <span>组织 KEY</span>
+          <input
+            type="password"
+            value={keyDraft}
+            onChange={(event) => onKeyChange(event.target.value)}
+            autoComplete="new-password"
+            placeholder={configured ? '已安全保存；更换时重新输入' : '请输入组织 KEY'}
+          />
+        </label>
+      </div>
+
+      <div className="settings-action-grid marki-action-grid">
+        <button className="primary" type="button" onClick={onSave} disabled={Boolean(busy)}>
+          {busy === 'save' ? '正在保存...' : '保存安全配置'}
+        </button>
+        <button type="button" onClick={onTest} disabled={!configured || Boolean(busy)}>
+          {busy === 'test' ? '正在连接...' : '测试连接'}
+        </button>
+        <button type="button" onClick={onLoadTeams} disabled={!configured || Boolean(busy)}>
+          {busy === 'teams' ? '正在读取...' : '读取团队'}
+        </button>
+        <button className="danger" type="button" onClick={onClear} disabled={!configured || Boolean(busy)}>
+          清除配置
+        </button>
+      </div>
+
+      {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
+
+      <section className="marki-directory-section">
+        <header>
+          <div>
+            <h3>团队与成员检查</h3>
+            <p>团队不会自动选中，确认团队后再读取对应成员。电话号码不会传到页面。</p>
+          </div>
+          <span>{teams.length ? `${teams.length} 个团队` : '尚未读取团队'}</span>
+        </header>
+        <div className="marki-team-controls">
+          <label>
+            <span>团队</span>
+            <select value={selectedTeamId} onChange={(event) => onTeamChange(event.target.value)} disabled={!teams.length}>
+              <option value="">请选择团队</option>
+              {teams.map((team) => (
+                <option key={team.teamId} value={team.teamId}>{team.teamName || `团队 ${team.teamId}`}</option>
+              ))}
+            </select>
+          </label>
+          <button type="button" onClick={() => onLoadMembers(false)} disabled={!selectedTeamId || Boolean(busy)}>
+            {busy === 'members' ? '正在读取...' : '读取成员'}
+          </button>
+        </div>
+
+        <div className="marki-member-summary">
+          <span>已读取 {members.length} 人</span>
+          <span>{memberPage.total !== null && Number.isFinite(Number(memberPage.total)) ? `团队共 ${memberPage.total} 人` : '总人数将在第一页返回'}</span>
+          <span>{memberPage.hasMore ? '仍有下一页' : (members.length ? '已读取完毕' : '等待查询')}</span>
+        </div>
+
+        {members.length > 0 ? (
+          <div className="marki-member-table-wrap">
+            <table className="marki-member-table">
+              <thead>
+                <tr>
+                  <th>成员</th>
+                  <th>UID</th>
+                  <th>成员类型</th>
+                  <th>加入时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((member) => (
+                  <tr key={member.uid}>
+                    <td>{member.nickname || '未命名成员'}</td>
+                    <td>{member.uid}</td>
+                    <td>{formatMarkiMemberType(member.memberType)}</td>
+                    <td>{formatMarkiUnixTime(member.joinTime)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="marki-empty-state">选择团队并读取成员后，将在这里显示用于照片筛选的成员名单。</div>
+        )}
+
+        {memberPage.hasMore && (
+          <button
+            className="marki-load-more"
+            type="button"
+            onClick={() => onLoadMembers(true)}
+            disabled={Boolean(busy)}
+          >
+            {busy === 'members-more' ? '正在读取下一页...' : '读取下一页'}
+          </button>
+        )}
       </section>
     </div>
   );
@@ -750,6 +1070,32 @@ function InfoRow({ label, value, onCopy, onOpen }) {
 function parentDir(filePath) {
   if (!filePath) return '';
   return String(filePath).replace(/[\\/][^\\/]*$/, '');
+}
+
+function dedupeMarkiMembers(members = []) {
+  return Array.from(new Map(members.map((member) => [String(member.uid || ''), member])).values());
+}
+
+function formatMarkiDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '时间未知';
+  return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatMarkiUnixTime(value) {
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '未知';
+  return formatMarkiDateTime(timestamp * 1000);
+}
+
+function formatMarkiMemberType(value) {
+  return {
+    1: '主管理员',
+    2: '管理员',
+    3: '普通成员',
+    4: '未注册成员',
+    5: '未注册管理员'
+  }[Number(value)] || '未知';
 }
 
 function createEmptyRecognitionConfig() {

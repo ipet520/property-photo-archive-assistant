@@ -103,8 +103,20 @@ const {
   setDefaultArchiveRoot,
   validatePathExists
 } = require('./services/settingsService.cjs');
+const {
+  clearMarkiCredentials,
+  getMarkiCredentialStatus,
+  loadMarkiCredentials,
+  saveMarkiCredentials
+} = require('./services/markiCredentialService.cjs');
+const {
+  listMarkiMembers,
+  listMarkiTeams,
+  testMarkiConnection,
+  toSafeMarkiError
+} = require('./services/markiApiService.cjs');
 
-const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, shell, screen } = electron;
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const appDataFolderName = '物业工作照片归档助手';
 const runtimeDir = resolveRuntimeDir();
@@ -834,6 +846,27 @@ ipcMain.handle('settings:updateLastArchiveRoot', async (_event, folderPath) => u
 ipcMain.handle('settings:setDefaultArchiveRoot', async (_event, folderPath) => setDefaultArchiveRoot(getWritableDocumentsPath(), folderPath));
 ipcMain.handle('system:validatePathExists', async (_event, targetPath) => validatePathExists(targetPath));
 
+ipcMain.handle('marki:getConfigStatus', async () => getMarkiCredentialStatus(app.getPath('userData'), safeStorage));
+ipcMain.handle('marki:saveConfig', async (_event, input) => {
+  try {
+    return await saveMarkiCredentials(app.getPath('userData'), safeStorage, input);
+  } catch (error) {
+    return { success: false, error: toSafeMarkiError(error) };
+  }
+});
+ipcMain.handle('marki:clearConfig', async () => {
+  try {
+    return await clearMarkiCredentials(app.getPath('userData'), safeStorage);
+  } catch (error) {
+    return { success: false, error: toSafeMarkiError(error) };
+  }
+});
+ipcMain.handle('marki:testConnection', async () => safeMarkiCall((credentials) => testMarkiConnection(credentials)));
+ipcMain.handle('marki:listTeams', async () => safeMarkiCall((credentials) => listMarkiTeams(credentials)));
+ipcMain.handle('marki:listMembers', async (_event, input) => safeMarkiCall(
+  (credentials) => listMarkiMembers(credentials, input)
+));
+
 ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
   const ledgerPath = getLedgerPath(archiveRoot);
   const error = await shell.openPath(ledgerPath);
@@ -982,6 +1015,19 @@ ipcMain.handle('app:getPaths', async () => ({
   documents: app.getPath('documents'),
   writableDocuments: getWritableDocumentsPath()
 }));
+
+async function safeMarkiCall(callback) {
+  try {
+    const credentials = await loadMarkiCredentials(app.getPath('userData'), safeStorage);
+    return await callback(credentials);
+  } catch (error) {
+    return {
+      success: false,
+      connectionStatus: 'error',
+      error: toSafeMarkiError(error)
+    };
+  }
+}
 
 function createFileTimestamp(date) {
   const pad = (value) => String(value).padStart(2, '0');

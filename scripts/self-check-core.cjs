@@ -9,6 +9,16 @@ const { loadDashboardData } = require('../electron/services/dashboardService.cjs
 const { getDataMaintenanceReport } = require('../electron/services/dataMaintenanceService.cjs');
 const { loadLedgerRecords } = require('../electron/services/ledgerQueryService.cjs');
 const { getRecognitionStatus } = require('../electron/services/recognitionService.cjs');
+const {
+  buildMarkiPostSignature,
+  listMarkiMembers,
+  listMarkiTeams
+} = require('../electron/services/markiApiService.cjs');
+const {
+  getMarkiCredentialStatus,
+  loadMarkiCredentials,
+  saveMarkiCredentials
+} = require('../electron/services/markiCredentialService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -18,6 +28,7 @@ async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'photo-archive-self-check-'));
   try {
     await checkRecognitionEngine(temporaryRoot);
+    await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
@@ -27,6 +38,101 @@ async function main() {
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
+}
+
+async function checkMarkiFoundation(root) {
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`protected:${value}`, 'utf8'),
+    decryptString: (value) => value.toString('utf8').replace(/^protected:/, '')
+  };
+  const saved = await saveMarkiCredentials(root, safeStorage, {
+    orgId: '12345',
+    key: 'key123'
+  });
+  assert.equal(saved.success, true, '马克组织 KEY 应能通过安全存储服务保存');
+  assert.equal(Object.hasOwn(saved, 'key'), false, '安全配置保存结果不得返回组织 KEY');
+  const storedSource = await fs.readFile(path.join(root, 'marki-credentials.json'), 'utf8');
+  assert.equal(storedSource.includes('key123'), false, '马克凭证文件不得包含组织 KEY 明文');
+
+  const status = await getMarkiCredentialStatus(root, safeStorage);
+  assert.equal(status.configured, true, '马克配置状态应显示已配置');
+  assert.equal(Object.hasOwn(status, 'key'), false, '马克配置状态不得返回组织 KEY');
+  const credentials = await loadMarkiCredentials(root, safeStorage);
+  assert.equal(credentials.key, 'key123', '主进程内部应能解密组织 KEY');
+
+  const officialPostSign = buildMarkiPostSignature({
+    orgId: '12345',
+    key: 'key123',
+    timestamp: '1635160057',
+    traceId: 'a1635160057',
+    bodyText: '{"teamId":123,"start":"2020-01-20 00:00:00","end":"2020-10-20 00:00:00"}'
+  });
+  assert.equal(officialPostSign, '3d98774688237fb831d16ba13ac5341c', '马克 POST 签名必须与官方样例一致');
+
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    if (url.endsWith('/marki/org/team')) {
+      return createJsonResponse({
+        code: 0,
+        msg: 'ok',
+        traceId: 'team-trace',
+        data: {
+          teamOrgList: [{
+            teamId: 10001,
+            teamName: '测试团队',
+            createUID: 12345,
+            manageUIDs: [12345],
+            createTime: 1627290520,
+            parentTeam: 10000,
+            OrganizeId: 12345
+          }]
+        }
+      });
+    }
+    return createJsonResponse({
+      code: 0,
+      msg: 'ok',
+      traceId: 'member-trace',
+      data: {
+        regTotal: 1,
+        unRegTotal: 0,
+        total: 1,
+        memberList: [{
+          uid: 12345,
+          nickname: '测试成员',
+          phone: '13800000000',
+          joinTime: 1632384679,
+          memberType: 1
+        }],
+        next: '2|-1',
+        hasMore: false
+      }
+    });
+  };
+  const requestOptions = {
+    fetchImpl,
+    baseUrl: 'https://marki.test',
+    now: () => 1635160057000,
+    traceId: 'test-trace'
+  };
+  const teams = await listMarkiTeams(credentials, requestOptions);
+  assert.equal(teams.teams[0].teamId, '10001', '团队列表应保留稳定的字符串 ID');
+  const members = await listMarkiMembers(credentials, { teamId: '10001' }, requestOptions);
+  assert.equal(members.members[0].nickname, '测试成员', '成员列表应返回昵称供查询筛选');
+  assert.equal(Object.hasOwn(members.members[0], 'phone'), false, '成员电话号码不得返回前端');
+  assert.equal(requests[0].options.body, undefined, '团队列表 POST 请求不应发送业务参数');
+  assert.equal(requests[1].options.body, '{"teamId":10001}', '成员列表请求体应保持稳定 JSON 格式');
+  assert.equal(requests.every((item) => item.options.headers.sign && !item.options.headers.key), true, '请求头只应包含签名，不得发送组织 KEY');
+}
+
+function createJsonResponse(payload) {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => payload
+  };
 }
 
 async function checkMaintenanceRecommendations(root) {

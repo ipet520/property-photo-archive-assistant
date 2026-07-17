@@ -717,6 +717,141 @@ button.primary {
   line-height: 1.7;
 }
 
+.marki-settings-module {
+  gap: 18px;
+}
+
+.marki-status-grid {
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.marki-config-form {
+  align-items: end;
+}
+
+.marki-action-grid {
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+}
+
+.marki-action-grid button:disabled,
+.marki-team-controls button:disabled,
+.marki-load-more:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.marki-directory-section {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.marki-directory-section > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.marki-directory-section > header div {
+  display: grid;
+  gap: 5px;
+}
+
+.marki-directory-section > header span,
+.marki-member-summary span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.marki-team-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.marki-team-controls label {
+  display: grid;
+  gap: 7px;
+  color: var(--navy);
+  font-weight: 700;
+}
+
+.marki-team-controls select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.marki-team-controls button,
+.marki-load-more {
+  min-height: 40px;
+  padding: 9px 14px;
+  color: var(--navy);
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.marki-member-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  padding: 10px 12px;
+  border: 1px solid #dce5ec;
+  border-radius: 8px;
+  background: #f7fafc;
+}
+
+.marki-member-table-wrap {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.marki-member-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.marki-member-table th,
+.marki-member-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.marki-member-table th {
+  color: var(--navy);
+  background: #f4f7fa;
+  font-size: 13px;
+}
+
+.marki-member-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.marki-empty-state {
+  padding: 24px 16px;
+  color: var(--muted);
+  border: 1px dashed #c8d5df;
+  border-radius: 8px;
+  background: #fbfcfd;
+  text-align: center;
+}
+
+.marki-load-more {
+  justify-self: start;
+}
+
 .settings-impact-note {
   padding: 12px 14px;
   border: 1px solid #b7d4ff;

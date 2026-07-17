@@ -61,6 +61,14 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     clearFormPatchDraftsByPhoto: (photoInput) => ipcRenderer.invoke('recognition:clearFormPatchDraftsByPhoto', photoInput),
     clearAllFormPatchDrafts: () => ipcRenderer.invoke('recognition:clearAllFormPatchDrafts')
   },
+  marki: {
+    getConfigStatus: () => ipcRenderer.invoke('marki:getConfigStatus'),
+    saveConfig: (input) => ipcRenderer.invoke('marki:saveConfig', input),
+    clearConfig: () => ipcRenderer.invoke('marki:clearConfig'),
+    testConnection: () => ipcRenderer.invoke('marki:testConnection'),
+    listTeams: () => ipcRenderer.invoke('marki:listTeams'),
+    listMembers: (input) => ipcRenderer.invoke('marki:listMembers', input)
+  },
   smartSort: {
     generateGroups: (input) => ipcRenderer.invoke('smartSort:generateGroups', input),
     getGroupingResult: () => ipcRenderer.invoke('smartSort:getGroupingResult'),
