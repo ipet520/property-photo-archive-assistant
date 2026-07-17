@@ -2814,14 +2814,38 @@ async function checkMarkiImportBatchService(root) {
     const consumeHandler = mainSource.match(
       /ipcMain\.handle\('marki:consume-import-batch'[\s\S]*?\n\)\);/
     )?.[0] || '';
+    const localCallWrapper = mainSource.match(
+      /async function safeMarkiLocalCall\(callback\) \{[\s\S]*?\n\}/
+    )?.[0] || '';
     for (const handler of [getHandler, consumeHandler]) {
       assert.equal(Boolean(handler), true, '主进程必须注册马克批次查询和消费 IPC');
       assert.equal(handler.includes("app.getPath('userData')"), true, '批次 IPC 必须固定使用 app.getPath(userData)');
-      assert.equal(handler.includes('safeMarkiCall'), true, '批次 IPC 必须使用 safeMarkiCall');
+      assert.equal(handler.includes('safeMarkiLocalCall'), true, '本地批次 IPC 必须使用 safeMarkiLocalCall');
+      assert.equal(handler.includes('safeMarkiCall('), false, '本地批次 IPC 不得读取马克组织凭证');
       assert.equal(handler.includes('getWritableDocumentsPath'), false, '批次 IPC 不得使用 Documents 路径');
       assert.equal(handler.includes('documentsPath'), false, '批次 IPC 不得接受 documentsPath');
       assert.equal(handler.includes('userDataPath'), false, '批次 IPC 不得接受 userDataPath');
     }
+    assert.equal(Boolean(localCallWrapper), true, '主进程应提供本地马克调用安全包装');
+    assert.equal(localCallWrapper.includes('loadMarkiCredentials'), false, '本地马克调用包装不得加载组织凭证');
+    assert.equal(localCallWrapper.includes('safeStorage'), false, '本地马克调用包装不得访问 safeStorage');
+    assert.equal(localCallWrapper.includes('toSafeMarkiError(error)'), true, '本地马克调用包装应统一收口安全错误');
+    assert.equal(localCallWrapper.includes('return await callback();'), true, '本地马克调用成功时应原样返回服务结果');
+    assert.equal(
+      mainSource.includes("ipcMain.handle('marki:testConnection', async () => safeMarkiCall("),
+      true,
+      '马克连接测试必须继续使用联网安全包装'
+    );
+    assert.equal(
+      mainSource.includes("ipcMain.handle('marki:listTeams', async () => safeMarkiCall("),
+      true,
+      '马克团队查询必须继续使用联网安全包装'
+    );
+    assert.equal(
+      /ipcMain\.handle\('marki:listMembers'[\s\S]*?safeMarkiCall\(/.test(mainSource),
+      true,
+      '马克成员查询必须继续使用联网安全包装'
+    );
     assert.equal(
       /marki:get-import-batch', async \(_event, batchId\)/.test(getHandler),
       true,

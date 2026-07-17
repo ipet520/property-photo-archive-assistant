@@ -868,10 +868,10 @@ ipcMain.handle('marki:listTeams', async () => safeMarkiCall((credentials) => lis
 ipcMain.handle('marki:listMembers', async (_event, input) => safeMarkiCall(
   (credentials) => listMarkiMembers(credentials, input)
 ));
-ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiCall(
+ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiLocalCall(
   () => getMarkiImportBatch(app.getPath('userData'), batchId)
 ));
-ipcMain.handle('marki:consume-import-batch', async (_event, batchId) => safeMarkiCall(
+ipcMain.handle('marki:consume-import-batch', async (_event, batchId) => safeMarkiLocalCall(
   () => consumeMarkiImportBatch(app.getPath('userData'), batchId)
 ));
 
@@ -1032,6 +1032,17 @@ async function safeMarkiCall(callback) {
     return {
       success: false,
       connectionStatus: 'error',
+      error: toSafeMarkiError(error)
+    };
+  }
+}
+
+async function safeMarkiLocalCall(callback) {
+  try {
+    return await callback();
+  } catch (error) {
+    return {
+      success: false,
       error: toSafeMarkiError(error)
     };
   }
