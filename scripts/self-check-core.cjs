@@ -63,6 +63,9 @@ const {
   loadMarkiSourceMetadata,
   saveMarkiSourceMetadata
 } = require('../electron/services/markiSourceMetadataService.cjs');
+const {
+  prepareMarkiStructuredImport
+} = require('../electron/services/markiImportOrchestratorService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -86,13 +89,14 @@ async function main() {
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
     await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
+    await checkMarkiImportOrchestrator(path.join(temporaryRoot, 'marki-orchestrator'));
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkArchiveTransactionRecovery(path.join(temporaryRoot, 'archive-transaction'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载与结构化导入、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载、结构化导入与主进程编排、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -2003,6 +2007,292 @@ async function checkRecognitionEngine(userDataDir) {
   assert.equal(localProvider?.available, true, `本地 OCR 引擎不可用：${localProvider?.reason || status.reason || '未知原因'}`);
   assert.equal(localProvider?.engine, 'rapidocr', '本地 OCR 引擎应为 RapidOCR');
   assert.match(String(localProvider?.componentVersion || ''), /2026\.7\.2.*v3\.9\.1/i, 'OCR 组件版本号未统一');
+}
+
+async function checkMarkiImportOrchestrator(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '马克导入编排自检必须使用系统临时目录'
+  );
+  const orgId = '12345';
+  const loadedConfigs = deepFreeze({
+    projects: ['潇湘新区二期'],
+    watermarkCategories: {
+      '工程类专用': { items: ['设施巡查'] }
+    }
+  });
+  const buildItem = (index) => {
+    const suffix = String(index).padStart(3, '0');
+    const momentId = `orchestrator-${suffix}`;
+    return {
+      moment: {
+        id: momentId,
+        uid: 20000 + index,
+        teamId: 10001,
+        momentType: 1,
+        markName: '工程类专用',
+        content: JSON.stringify([
+          ['日期', '2026-07-17'],
+          ['小区名称', '潇湘新区二期'],
+          ['工作内容', '设施巡查'],
+          ['上传人', `测试人员${suffix}`],
+          ['防伪码', `SAFE-${suffix}`]
+        ]),
+        lng: 103.8,
+        lat: 25.5,
+        postTime: Math.floor(Date.parse('2026-07-17T03:00:00Z') / 1000),
+        url: `https://private.example/${momentId}.jpg`
+      },
+      download: {
+        success: true,
+        sourceKey: buildMarkiSourceKey(orgId, momentId),
+        importStatus: 'imported',
+        localPath: path.join(root, 'downloads', `${momentId}.jpg`),
+        fileName: `${momentId}.jpg`,
+        size: 4096 + index,
+        width: 1080,
+        height: 1440,
+        completedAt: '2026-07-17T03:01:00.000Z'
+      }
+    };
+  };
+  const items = deepFreeze(Array.from({ length: 10 }, (_, index) => buildItem(index + 1)));
+  const inputSnapshot = JSON.stringify(items);
+  const firstNow = () => new Date('2026-07-17T04:00:00.000Z');
+  const retryNow = () => new Date('2026-07-17T05:00:00.000Z');
+
+  await fs.mkdir(root, { recursive: true });
+  try {
+    const successRoot = path.join(root, 'all-success');
+    const configLoadPaths = [];
+    const successResult = await prepareMarkiStructuredImport({
+      documentsPath: successRoot,
+      orgId,
+      items,
+      configs: {
+        projects: ['不得使用的前端项目'],
+        watermarkCategories: {}
+      }
+    }, {
+      loadConfigs: async (documentsPath) => {
+        configLoadPaths.push(documentsPath);
+        return loadedConfigs;
+      },
+      batchId: 'marki-orchestrator-success',
+      now: firstNow
+    });
+    assert.equal(JSON.stringify(items), inputSnapshot, '马克导入编排不得修改输入照片列表');
+    assert.equal(configLoadPaths.length, 1, '马克导入编排应只加载一次正式配置');
+    assert.equal(configLoadPaths[0], successRoot, '马克导入编排必须使用传入的 Documents 路径加载配置');
+    assert.equal(successResult.success, true, '十条来源元数据全部保存时编排应成功');
+    assert.equal(successResult.batchId, 'marki-orchestrator-success', '编排结果应返回 bundle 批次 ID');
+    assert.equal(successResult.inputCount, 10, '编排结果应返回原始输入数量');
+    assert.equal(successResult.metadataSavedCount, 10, '十条来源元数据应全部保存');
+    assert.equal(successResult.failedCount, 0, '全部保存成功时失败数应为零');
+    assert.deepEqual(successResult.failures, [], '全部保存成功时不应返回失败项');
+    assert.deepEqual(
+      Object.keys(successResult.workbenchImportPackage),
+      [
+        'batchId',
+        'photos',
+        'recognitionResultsByPhoto',
+        'watermarkRecordsByPhoto',
+        'archiveSuggestionsByPhoto'
+      ],
+      '编排交付的工作台导入包必须严格保持五字段'
+    );
+    const firstPhoto = successResult.workbenchImportPackage.photos[0];
+    const firstSuggestion = successResult.workbenchImportPackage
+      .archiveSuggestionsByPhoto[firstPhoto.id];
+    assert.equal(
+      firstSuggestion.suggestedFields.project,
+      '潇湘新区二期',
+      '正式归档项目必须来自 loadConfigs 返回的配置'
+    );
+    assert.equal(
+      JSON.stringify(successResult.workbenchImportPackage).includes('不得使用的前端项目'),
+      false,
+      '编排服务不得使用输入中的前端项目配置'
+    );
+    for (const item of items) {
+      const stored = await loadMarkiSourceMetadata(
+        successRoot,
+        orgId,
+        item.moment.id
+      );
+      assert.equal(Boolean(stored), true, '全部成功时每张照片都应写入来源元数据');
+    }
+
+    const partialRoot = path.join(root, 'partial-failure');
+    const saveAttempts = [];
+    const partialResult = await prepareMarkiStructuredImport({
+      documentsPath: partialRoot,
+      orgId,
+      items
+    }, {
+      loadConfigs: async () => loadedConfigs,
+      saveSourceMetadata: async (documentsPath, record, saveOptions) => {
+        saveAttempts.push(record.sourceMetadataRef);
+        if (record.momentId === 'orchestrator-006') {
+          const error = new Error(`存储失败 ${documentsPath} https://private.example secret-content`);
+          error.code = 'marki_source_metadata_save_failed';
+          error.parsedEntries = record.parsedEntries;
+          throw error;
+        }
+        return saveMarkiSourceMetadata(documentsPath, record, saveOptions);
+      },
+      batchId: 'marki-orchestrator-partial',
+      now: firstNow
+    });
+    assert.equal(saveAttempts.length, 10, '第六条失败后仍必须尝试全部十条元数据');
+    assert.equal(partialResult.success, false, '存在来源元数据失败时整批应失败');
+    assert.equal(partialResult.metadataSavedCount, 9, '第六条失败时应有九条成功');
+    assert.equal(partialResult.failedCount, 1, '第六条失败时应汇总一条失败');
+    assert.equal(partialResult.workbenchImportPackage, null, '部分失败时必须扣留工作台导入包');
+    assert.deepEqual(
+      Object.keys(partialResult.failures[0]),
+      ['sourceMetadataRef', 'sourceKey', 'code', 'message'],
+      '单条失败只允许返回安全字段白名单'
+    );
+    assert.equal(
+      partialResult.failures[0].sourceMetadataRef,
+      buildMarkiSourceMetadataRef(orgId, 'orchestrator-006'),
+      '失败汇总应准确关联第六条来源元数据'
+    );
+    const serializedFailures = JSON.stringify(partialResult.failures);
+    for (const forbidden of [
+      partialRoot,
+      'private.example',
+      'secret-content',
+      'parsedEntries',
+      'antiCounterfeitCode',
+      'SAFE-006',
+      'stack'
+    ]) {
+      assert.equal(
+        serializedFailures.includes(forbidden),
+        false,
+        `失败汇总不得包含敏感内容 ${forbidden}`
+      );
+    }
+    assert.doesNotThrow(
+      () => JSON.parse(JSON.stringify(partialResult)),
+      '编排失败结果必须可 JSON 序列化'
+    );
+
+    for (const item of items) {
+      const stored = await loadMarkiSourceMetadata(partialRoot, orgId, item.moment.id);
+      assert.equal(
+        Boolean(stored),
+        item.moment.id !== 'orchestrator-006',
+        '第六条失败不得回滚其他成功记录，后续记录仍应保存'
+      );
+    }
+    const beforeRetry = await loadMarkiSourceMetadata(
+      partialRoot,
+      orgId,
+      'orchestrator-001'
+    );
+    const retryResult = await prepareMarkiStructuredImport({
+      documentsPath: partialRoot,
+      orgId,
+      items
+    }, {
+      loadConfigs: async () => loadedConfigs,
+      batchId: 'marki-orchestrator-retry',
+      now: retryNow
+    });
+    assert.equal(retryResult.success, true, '修复单条失败后整批重试应成功');
+    assert.equal(retryResult.metadataSavedCount, 10, '幂等重试应成功提交全部十条记录');
+    assert.equal(retryResult.failedCount, 0, '幂等重试后不应保留失败项');
+    assert.equal(Boolean(retryResult.workbenchImportPackage), true, '幂等重试成功后应恢复交付工作台包');
+    const afterRetry = await loadMarkiSourceMetadata(
+      partialRoot,
+      orgId,
+      'orchestrator-001'
+    );
+    assert.equal(afterRetry.createdAt, beforeRetry.createdAt, '幂等重试必须保留来源元数据 createdAt');
+    assert.equal(
+      Date.parse(afterRetry.updatedAt) > Date.parse(beforeRetry.updatedAt),
+      true,
+      '幂等重试应合理更新来源元数据 updatedAt'
+    );
+    const metadataDirectory = path.dirname(getMarkiSourceMetadataPath(
+      partialRoot,
+      orgId,
+      'orchestrator-001'
+    ));
+    const metadataFiles = (await fs.readdir(metadataDirectory))
+      .filter((fileName) => fileName.endsWith('.json'));
+    assert.equal(metadataFiles.length, 10, '幂等重试不得生成重复来源元数据文件');
+
+    const deduplicationRoot = path.join(root, 'deduplication');
+    const deduplicationSaves = [];
+    const deduplicationResult = await prepareMarkiStructuredImport({
+      documentsPath: deduplicationRoot,
+      orgId,
+      items: [items[0], items[0], items[1]]
+    }, {
+      loadConfigs: async () => loadedConfigs,
+      saveSourceMetadata: async (documentsPath, record, saveOptions) => {
+        deduplicationSaves.push(record.sourceKey);
+        return saveMarkiSourceMetadata(documentsPath, record, saveOptions);
+      },
+      batchId: 'marki-orchestrator-deduplication',
+      now: firstNow
+    });
+    assert.equal(deduplicationSaves.length, 2, '批内重复 sourceKey 不得重复保存元数据');
+    assert.deepEqual(
+      deduplicationResult.deduplication,
+      {
+        inputCount: 3,
+        uniqueCount: 2,
+        duplicateCount: 1,
+        skippedItems: [{
+          sourceKey: items[0].download.sourceKey,
+          keptInputIndex: 0,
+          skippedInputIndex: 1
+        }]
+      },
+      '编排结果必须原样保留 bundle 的批内去重统计'
+    );
+
+    await assert.rejects(
+      () => prepareMarkiStructuredImport({ documentsPath: '', orgId, items }),
+      (error) => (
+        error?.code === 'marki_import_documents_path_invalid'
+        && !String(error.message).includes(root)
+      ),
+      '无效 Documents 路径应返回安全领域错误'
+    );
+    await assert.rejects(
+      () => prepareMarkiStructuredImport({ documentsPath: root, orgId, items: null }),
+      (error) => error?.code === 'marki_import_items_invalid',
+      '非数组照片列表应返回安全领域错误'
+    );
+    await assert.rejects(
+      () => prepareMarkiStructuredImport({ documentsPath: root, orgId, items }, {
+        loadConfigs: async () => loadedConfigs,
+        buildStructuredImportBundle: () => {
+          throw new Error(`${root} https://private.example secret-content`);
+        }
+      }),
+      (error) => (
+        error?.code === 'marki_import_bundle_build_failed'
+        && !String(error.message).includes(root)
+        && !String(error.message).includes('private.example')
+      ),
+      'bundle 构建失败应收口为不泄露内部数据的领域错误'
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+  await assert.rejects(
+    () => fs.access(root),
+    (error) => error?.code === 'ENOENT',
+    '马克导入编排自检结束后应清理自身临时目录'
+  );
 }
 
 async function checkCurrentFormContract() {
