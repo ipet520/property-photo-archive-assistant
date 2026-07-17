@@ -14,10 +14,10 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
   }
   if (currentPage === PAGE_KEYS.quickArchive) {
     // 旧的独立快归入口已取消；历史导航请求统一回到照片分拣工作台。
-    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} />;
+    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
-    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} />;
+    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
       return <ArchiveRecordsPage archiveState={archiveState} navigationRequest={navigationRequest} />;

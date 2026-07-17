@@ -99,6 +99,7 @@ async function main() {
     await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
     await checkMarkiImportOrchestrator(path.join(temporaryRoot, 'marki-orchestrator'));
     await checkMarkiImportBatchService(path.join(temporaryRoot, 'marki-import-batches'));
+    await checkMarkiWorkbenchImport();
     await checkCurrentFormContract();
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
@@ -2893,6 +2894,461 @@ async function checkMarkiImportBatchService(root) {
   );
   scenarioCount += 1;
   assert.equal(scenarioCount, 23, '马克导入批次服务应完整执行 23 个自检场景');
+}
+
+async function checkMarkiWorkbenchImport() {
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiWorkbenchImport.js')
+  ).href;
+  const { mergeMarkiWorkbenchImportPackage } = await import(
+    `${moduleUrl}?selfcheck=${Date.now()}`
+  );
+  const makePhoto = (id, sourceKey = `marki_api:12345:${id}`) => ({
+    id,
+    sourceType: 'marki_api',
+    sourceKey,
+    originalPath: `C:\\marki-import\\${id}.jpg`,
+    originalName: `${id}.jpg`,
+    sortStatus: 'recognized'
+  });
+  const makePackage = (photos, batchId = 'marki-workbench-self-check') => {
+    const recognitionResultsByPhoto = {};
+    const watermarkRecordsByPhoto = {};
+    const archiveSuggestionsByPhoto = {};
+    for (const photo of photos) {
+      recognitionResultsByPhoto[photo.id] = { photoId: photo.id, status: 'recognized' };
+      watermarkRecordsByPhoto[photo.id] = { photoId: photo.id, workContent: `内容-${photo.id}` };
+      archiveSuggestionsByPhoto[photo.id] = { photoId: photo.id, status: 'suggestion_ready' };
+    }
+    return {
+      batchId,
+      photos,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto
+    };
+  };
+  const makeState = (overrides = {}) => ({
+    photos: [],
+    recognitionResultsByPhoto: {},
+    watermarkRecordsByPhoto: {},
+    archiveSuggestionsByPhoto: {},
+    selectedIds: [],
+    activePhotoId: '',
+    ...overrides
+  });
+  const copyJson = (value) => JSON.parse(JSON.stringify(value));
+  let scenarioCount = 0;
+
+  {
+    const photos = [makePhoto('marki-1'), makePhoto('marki-2'), makePhoto('marki-3')];
+    const result = mergeMarkiWorkbenchImportPackage(makeState(), makePackage(photos));
+    assert.deepEqual(result.photos, photos, '空工作台应按输入顺序追加三张马克照片');
+    assert.equal(result.stats.addedCount, 3, '空工作台应新增三张照片');
+    scenarioCount += 1;
+  }
+
+  {
+    const localPhoto = {
+      id: 'local-1',
+      originalPath: 'C:\\photos\\local-1.jpg',
+      archiveInfo: { project: '原项目' },
+      previewInfo: { targetName: '原预览.jpg' },
+      archiveResult: { success: true },
+      sortStatus: 'archived'
+    };
+    const incoming = makePhoto('marki-4');
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [localPhoto] }),
+      makePackage([incoming])
+    );
+    assert.equal(result.photos[0], localPhoto, '旧照片对象必须原样保留');
+    assert.equal(result.photos[1], incoming, '新照片只能追加到旧数组末尾');
+    assert.deepEqual(result.photos[0].archiveInfo, { project: '原项目' }, '旧归档信息不得改变');
+    scenarioCount += 1;
+  }
+
+  {
+    const incoming = makePhoto('marki-map');
+    const packageValue = makePackage([incoming]);
+    const result = mergeMarkiWorkbenchImportPackage(makeState(), packageValue);
+    assert.equal(
+      result.recognitionResultsByPhoto[incoming.id],
+      packageValue.recognitionResultsByPhoto[incoming.id],
+      '识别结果映射应随接受照片追加'
+    );
+    assert.equal(
+      result.watermarkRecordsByPhoto[incoming.id],
+      packageValue.watermarkRecordsByPhoto[incoming.id],
+      '水印记录映射应随接受照片追加'
+    );
+    assert.equal(
+      result.archiveSuggestionsByPhoto[incoming.id],
+      packageValue.archiveSuggestionsByPhoto[incoming.id],
+      '归档建议映射应随接受照片追加'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const protectedId = 'protected-map-id';
+    const state = makeState({
+      recognitionResultsByPhoto: { [protectedId]: { old: 'recognition' } },
+      watermarkRecordsByPhoto: { [protectedId]: { old: 'watermark' } },
+      archiveSuggestionsByPhoto: { [protectedId]: { old: 'suggestion' } }
+    });
+    const result = mergeMarkiWorkbenchImportPackage(state, makePackage([makePhoto(protectedId)]));
+    assert.equal(result.stats.conflictCount, 1, '旧映射键占用的照片 ID 应按冲突跳过');
+    assert.equal(result.recognitionResultsByPhoto[protectedId].old, 'recognition', '旧识别结果键不得覆盖');
+    assert.equal(result.watermarkRecordsByPhoto[protectedId].old, 'watermark', '旧水印记录键不得覆盖');
+    assert.equal(result.archiveSuggestionsByPhoto[protectedId].old, 'suggestion', '旧归档建议键不得覆盖');
+    scenarioCount += 1;
+  }
+
+  {
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ selectedIds: ['local-1'] }),
+      makePackage([makePhoto('marki-selected-1'), makePhoto('marki-selected-2')])
+    );
+    assert.deepEqual(
+      result.selectedIds,
+      ['local-1', 'marki-selected-1', 'marki-selected-2'],
+      '新增照片应在保留原选择顺序后自动加入选择'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ activePhotoId: 'local-active' }),
+      makePackage([makePhoto('marki-active-1'), makePhoto('marki-active-2')])
+    );
+    assert.equal(result.activePhotoId, 'marki-active-1', '当前照片应切换到第一张新增照片');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('marki-duplicate-same', 'marki_api:12345:duplicate-same');
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [existing] }),
+      makePackage([makePhoto(existing.id, existing.sourceKey)])
+    );
+    assert.equal(result.stats.duplicateCount, 1, '相同 sourceKey 和相同 ID 应判定重复');
+    assert.equal(result.stats.skippedItems[0].reason, 'duplicate_source_key', '重复原因应固定');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('existing-source-owner', 'marki_api:12345:shared-source');
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [existing] }),
+      makePackage([makePhoto('incoming-other-id', existing.sourceKey)])
+    );
+    assert.equal(result.stats.duplicateCount, 1, '相同 sourceKey 和不同 ID 仍应判定重复');
+    assert.equal(result.stats.skippedItems[0].existingPhotoId, existing.id, '重复项应指向已存在照片');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('shared-photo-id', 'marki_api:12345:existing-source');
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [existing] }),
+      makePackage([makePhoto(existing.id, 'marki_api:12345:new-source')])
+    );
+    assert.equal(result.stats.conflictCount, 1, '相同 ID 和不同 sourceKey 应判定冲突');
+    assert.equal(result.stats.skippedItems[0].reason, 'conflicting_photo_id', 'ID 冲突原因应固定');
+    scenarioCount += 1;
+  }
+
+  {
+    const localPhoto = { id: 'local-without-source', originalPath: 'C:\\photos\\local.jpg', sortStatus: 'assigned' };
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [localPhoto] }),
+      makePackage([makePhoto('marki-after-local')])
+    );
+    assert.equal(result.photos[0], localPhoto, '没有 sourceKey 的本地照片必须保留');
+    assert.equal(result.photos[0].sourceKey, undefined, '不得给旧本地照片补写 sourceKey');
+    scenarioCount += 1;
+  }
+
+  {
+    const first = makePhoto('batch-first', 'marki_api:12345:batch-shared');
+    const second = makePhoto('batch-second', first.sourceKey);
+    const result = mergeMarkiWorkbenchImportPackage(makeState(), makePackage([first, second]));
+    assert.deepEqual(result.addedPhotoIds, [first.id], '同批 sourceKey 重复只能接受第一张');
+    assert.equal(result.stats.duplicateCount, 1, '同批重复应计入 duplicateCount');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('duplicate-map-existing', 'marki_api:12345:duplicate-map');
+    const duplicate = makePhoto('duplicate-map-incoming', existing.sourceKey);
+    const packageValue = makePackage([duplicate]);
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [existing] }),
+      packageValue
+    );
+    assert.equal(Object.hasOwn(result.recognitionResultsByPhoto, duplicate.id), false, '重复照片识别映射必须同步跳过');
+    assert.equal(Object.hasOwn(result.watermarkRecordsByPhoto, duplicate.id), false, '重复照片水印映射必须同步跳过');
+    assert.equal(Object.hasOwn(result.archiveSuggestionsByPhoto, duplicate.id), false, '重复照片建议映射必须同步跳过');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('conflict-map-id', 'marki_api:12345:old-conflict');
+    const conflict = makePhoto(existing.id, 'marki_api:12345:new-conflict');
+    const oldRecognition = { old: true };
+    const oldWatermark = { old: true };
+    const oldSuggestion = { old: true };
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({
+        photos: [existing],
+        recognitionResultsByPhoto: { [existing.id]: oldRecognition },
+        watermarkRecordsByPhoto: { [existing.id]: oldWatermark },
+        archiveSuggestionsByPhoto: { [existing.id]: oldSuggestion }
+      }),
+      makePackage([conflict])
+    );
+    assert.equal(result.recognitionResultsByPhoto[existing.id], oldRecognition, '冲突照片识别映射不得覆盖');
+    assert.equal(result.watermarkRecordsByPhoto[existing.id], oldWatermark, '冲突照片水印映射不得覆盖');
+    assert.equal(result.archiveSuggestionsByPhoto[existing.id], oldSuggestion, '冲突照片建议映射不得覆盖');
+    scenarioCount += 1;
+  }
+
+  {
+    const existing = makePhoto('all-duplicate-existing', 'marki_api:12345:all-duplicate');
+    const state = makeState({
+      photos: [existing],
+      recognitionResultsByPhoto: { [existing.id]: { old: true } },
+      watermarkRecordsByPhoto: { [existing.id]: { old: true } },
+      archiveSuggestionsByPhoto: { [existing.id]: { old: true } },
+      selectedIds: [existing.id],
+      activePhotoId: existing.id
+    });
+    const result = mergeMarkiWorkbenchImportPackage(
+      state,
+      makePackage([makePhoto('all-duplicate-incoming', existing.sourceKey)])
+    );
+    assert.equal(result.photos, state.photos, '全部重复时照片数组应保持不变');
+    assert.equal(result.recognitionResultsByPhoto, state.recognitionResultsByPhoto, '全部重复时识别映射应保持不变');
+    assert.equal(result.watermarkRecordsByPhoto, state.watermarkRecordsByPhoto, '全部重复时水印映射应保持不变');
+    assert.equal(result.archiveSuggestionsByPhoto, state.archiveSuggestionsByPhoto, '全部重复时建议映射应保持不变');
+    assert.equal(result.selectedIds, state.selectedIds, '全部重复时选择应保持不变');
+    assert.equal(result.activePhotoId, state.activePhotoId, '全部重复时当前照片应保持不变');
+    scenarioCount += 1;
+  }
+
+  {
+    const state = makeState({
+      photos: [{ id: 'immutable-local', originalPath: 'C:\\photos\\immutable.jpg' }],
+      selectedIds: ['immutable-local'],
+      activePhotoId: 'immutable-local'
+    });
+    const packageValue = makePackage([makePhoto('immutable-marki')]);
+    const stateSnapshot = copyJson(state);
+    const packageSnapshot = copyJson(packageValue);
+    mergeMarkiWorkbenchImportPackage(state, packageValue);
+    assert.deepEqual(state, stateSnapshot, '纯合并不得修改当前状态输入');
+    assert.deepEqual(packageValue, packageSnapshot, '纯合并不得修改工作台包输入');
+    scenarioCount += 1;
+  }
+
+  {
+    const packageValue = { ...makePackage([makePhoto('extra-field')]), extra: true };
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), packageValue),
+      (error) => error?.code === 'marki_workbench_package_invalid',
+      '工作台包多出第六个顶层字段时必须拒绝'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('missing-source-key');
+    delete photo.sourceKey;
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), makePackage([photo])),
+      (error) => error?.code === 'marki_workbench_photo_invalid',
+      '马克照片缺少 sourceKey 时必须拒绝'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('wrong-source-type');
+    photo.sourceType = 'local_folder';
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), makePackage([photo])),
+      (error) => error?.code === 'marki_workbench_photo_invalid',
+      '非 marki_api 照片必须拒绝'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('missing-map-id');
+    const packageValue = makePackage([photo]);
+    delete packageValue.watermarkRecordsByPhoto[photo.id];
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), packageValue),
+      (error) => error?.code === 'marki_workbench_mapping_invalid',
+      '任一 ByPhoto 映射缺少照片 ID 时必须拒绝'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const packageValue = makePackage([makePhoto('orphan-map-owner')]);
+    packageValue.archiveSuggestionsByPhoto.orphan = { status: 'suggestion_ready' };
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), packageValue),
+      (error) => error?.code === 'marki_workbench_mapping_invalid',
+      'ByPhoto 映射存在孤立照片 ID 时必须拒绝'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const packageValue = makePackage([makePhoto('special-key')]);
+    packageValue.photos[0].payload = JSON.parse('{"__proto__":{"polluted":true}}');
+    assert.throws(
+      () => mergeMarkiWorkbenchImportPackage(makeState(), packageValue),
+      (error) => error?.code === 'marki_workbench_special_key_rejected',
+      '工作台包中的特殊对象键必须拒绝'
+    );
+    assert.equal({}.polluted, undefined, '特殊键检查不得污染对象原型');
+    scenarioCount += 1;
+  }
+
+  {
+    const existingDuplicate = makePhoto('stats-existing', 'marki_api:12345:stats-duplicate');
+    const accepted = makePhoto('stats-added', 'marki_api:12345:stats-added');
+    const duplicate = makePhoto('stats-duplicate-new-id', existingDuplicate.sourceKey);
+    const conflict = makePhoto(existingDuplicate.id, 'marki_api:12345:stats-conflict');
+    const result = mergeMarkiWorkbenchImportPackage(
+      makeState({ photos: [existingDuplicate] }),
+      makePackage([accepted, duplicate, conflict])
+    );
+    assert.deepEqual(
+      result.stats,
+      {
+        inputCount: 3,
+        addedCount: 1,
+        duplicateCount: 1,
+        conflictCount: 1,
+        skippedItems: [
+          {
+            photoId: duplicate.id,
+            sourceKey: duplicate.sourceKey,
+            reason: 'duplicate_source_key',
+            existingPhotoId: existingDuplicate.id
+          },
+          {
+            photoId: conflict.id,
+            sourceKey: conflict.sourceKey,
+            reason: 'conflicting_photo_id',
+            existingPhotoId: existingDuplicate.id
+          }
+        ]
+      },
+      'stats 和 skippedItems 应准确记录新增、重复与冲突'
+    );
+    scenarioCount += 1;
+  }
+
+  const mainRouterSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'MainRouter.jsx'),
+    'utf8'
+  );
+  const workspaceSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const glueStart = workspaceSource.indexOf("navigationRequest?.action !== 'appendMarkiImportBatch'");
+  const glueEnd = workspaceSource.indexOf('}, [isSessionHydrated, navigationRequest]);', glueStart);
+  const glueSource = workspaceSource.slice(glueStart, glueEnd);
+
+  assert.equal(
+    (mainRouterSource.match(/<SortWorkspacePage[^>]*navigationRequest=\{navigationRequest\}[^>]*\/>/g) || []).length,
+    2,
+    'MainRouter 的两个工作台入口都应传递 navigationRequest'
+  );
+  scenarioCount += 1;
+
+  assert.equal(glueStart >= 0, true, '工作台只应识别 appendMarkiImportBatch 导航动作');
+  assert.equal(
+    (workspaceSource.match(/appendMarkiImportBatch/g) || []).length,
+    1,
+    '工作台不得新增其他马克批次导航动作'
+  );
+  scenarioCount += 1;
+
+  assert.equal(
+    glueSource.indexOf('getImportBatch(batchId)') < glueSource.indexOf('mergeMarkiWorkbenchImportPackage(')
+      && glueSource.indexOf('mergeMarkiWorkbenchImportPackage(') < glueSource.indexOf('consumeImportBatch(batchId)'),
+    true,
+    '页面粘合层必须先查询、再合并、最后消费批次'
+  );
+  scenarioCount += 1;
+
+  const mergeCallIndex = glueSource.indexOf('mergeMarkiWorkbenchImportPackage(');
+  const consumeCallIndex = glueSource.indexOf('consumeImportBatch(batchId)');
+  const mergeFailureBoundary = glueSource.slice(mergeCallIndex, consumeCallIndex);
+  assert.equal(
+    /catch\s*\{[\s\S]*未修改当前工作台[\s\S]*return;[\s\S]*\}/.test(mergeFailureBoundary),
+    true,
+    '纯合并异常必须在消费前返回'
+  );
+  scenarioCount += 1;
+
+  const addedBranch = glueSource.slice(
+    glueSource.indexOf('if (merged.stats.addedCount > 0)'),
+    glueSource.indexOf('let consumeResult')
+  );
+  for (const expectedSetter of [
+    "setFilter('all')",
+    "setSearchText('')",
+    "setSmartSortViewMode('statusFilter')",
+    "setActiveSmartSortGroupId('')"
+  ]) {
+    assert.equal(addedBranch.includes(expectedSetter), true, `新增照片后应执行 ${expectedSetter}`);
+  }
+  scenarioCount += 1;
+
+  assert.equal(glueSource.includes('setSortMode('), false, '马克批次合并不得修改当前 sortMode');
+  scenarioCount += 1;
+
+  const consumeFailureBranch = glueSource.slice(
+    glueSource.indexOf('if (consumeResult?.success !== true)'),
+    glueSource.indexOf('const { addedCount, duplicateCount, conflictCount }')
+  );
+  assert.equal(
+    consumeFailureBranch.includes('照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。'),
+    true,
+    '消费失败应提示可依靠 sourceKey 幂等恢复'
+  );
+  assert.equal(
+    ['setPhotos(', 'setRecognitionResultsByPhoto(', 'setWatermarkRecordsByPhoto(', 'setArchiveSuggestionsByPhoto(']
+      .some((token) => consumeFailureBranch.includes(token)),
+    false,
+    '消费失败不得回滚已合并工作台状态'
+  );
+  scenarioCount += 1;
+
+  for (const forbidden of [
+    'console.',
+    'recordRuntimeLog',
+    'userDataPath',
+    'remoteUrl',
+    'rawContent',
+    'antiCounterfeitCode',
+    '.stack'
+  ]) {
+    assert.equal(glueSource.includes(forbidden), false, `页面批次处理不得记录或展示 ${forbidden}`);
+  }
+  scenarioCount += 1;
+
+  assert.equal(scenarioCount, 30, '马克批次进入工作台应完整执行 30 个自检场景');
 }
 
 async function checkCurrentFormContract() {

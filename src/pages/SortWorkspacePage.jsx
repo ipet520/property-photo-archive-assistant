@@ -6,6 +6,7 @@ import {
 } from '../constants/smartSort.js';
 import { OCR_COMPONENT_VERSION, PAGE_KEYS } from '../constants/app.js';
 import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
+import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import {
@@ -105,7 +106,7 @@ function normalizeStatusFilter(filter) {
   return filter === 'assigned' ? 'unarchived' : (filter || 'all');
 }
 
-export default function SortWorkspacePage({ archiveState, onNavigate }) {
+export default function SortWorkspacePage({ archiveState, onNavigate, navigationRequest }) {
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
   const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
@@ -113,6 +114,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const sessionSnapshotRef = useRef(cachedSessionRef.current);
   const hasHydratedSessionRef = useRef(false);
   const recoveredArchiveRootsRef = useRef(new Set());
+  const processedMarkiImportRequestNoncesRef = useRef(new Set());
+  const pendingMarkiFocusPhotoIdRef = useRef('');
+  const markiWorkbenchStateRef = useRef(null);
+  const isSortWorkspaceMountedRef = useRef(true);
   const cachedSession = cachedSessionRef.current || {};
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [configs, setConfigs] = useState(null);
@@ -151,6 +156,22 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   const [recognitionServiceStatus, setRecognitionServiceStatus] = useState(null);
   const [rightPanelMode, setRightPanelMode] = useState(() => ['form', 'recognition'].includes(cachedSession.rightPanelMode) ? cachedSession.rightPanelMode : 'form');
   const [batchPreparationUndo, setBatchPreparationUndo] = useState(() => cachedSession.batchPreparationUndo || null);
+
+  markiWorkbenchStateRef.current = {
+    photos,
+    recognitionResultsByPhoto,
+    watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto,
+    selectedIds,
+    activePhotoId
+  };
+
+  useEffect(() => {
+    isSortWorkspaceMountedRef.current = true;
+    return () => {
+      isSortWorkspaceMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -463,15 +484,146 @@ export default function SortWorkspacePage({ archiveState, onNavigate }) {
   }, [page, totalPages]);
 
   useEffect(() => {
+    const pendingPhotoId = pendingMarkiFocusPhotoIdRef.current;
+    if (!pendingPhotoId) return;
+    const visibleIndex = visiblePhotos.findIndex((photo) => photo.id === pendingPhotoId);
+    if (visibleIndex < 0) return;
+    const targetPage = Math.floor(visibleIndex / pageSize) + 1;
+    if (page !== targetPage) {
+      setPage(targetPage);
+      return;
+    }
+    if (activePhotoId !== pendingPhotoId) {
+      setActivePhotoId(pendingPhotoId);
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const target = Array.from(photoBrowserRef.current?.querySelectorAll('[data-photo-id]') || [])
+        .find((element) => element.dataset.photoId === pendingPhotoId);
+      target?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    pendingMarkiFocusPhotoIdRef.current = '';
+  }, [activePhotoId, page, pageSize, visiblePhotos]);
+
+  useEffect(() => {
     if (activePhotoId && !photos.some((photo) => photo.id === activePhotoId)) {
       setActivePhotoId('');
     }
   }, [activePhotoId, photos]);
 
   useEffect(() => {
+    if (pendingMarkiFocusPhotoIdRef.current) return;
     const currentPhotoId = currentPanelPhoto?.id || '';
     if (currentPhotoId !== activePhotoId) setActivePhotoId(currentPhotoId);
   }, [activePhotoId, currentPanelPhoto?.id]);
+
+  useEffect(() => {
+    if (!isSessionHydrated || navigationRequest?.action !== 'appendMarkiImportBatch') return undefined;
+    const batchId = typeof navigationRequest?.payload?.batchId === 'string'
+      ? navigationRequest.payload.batchId.trim()
+      : '';
+    const nonce = navigationRequest?.nonce;
+    if (!batchId || nonce === undefined || nonce === null || nonce === '') return undefined;
+    const nonceKey = `${typeof nonce}:${String(nonce)}`;
+    if (processedMarkiImportRequestNoncesRef.current.has(nonceKey)) return undefined;
+    processedMarkiImportRequestNoncesRef.current.add(nonceKey);
+
+    void (async () => {
+      const markiApi = window.archiveAssistant?.marki;
+      if (typeof markiApi?.getImportBatch !== 'function' || typeof markiApi?.consumeImportBatch !== 'function') {
+        if (isSortWorkspaceMountedRef.current) {
+          setStatus({ type: 'error', text: '马克导入批次服务暂不可用，请重新打开软件后再试。' });
+        }
+        return;
+      }
+
+      let batchResult;
+      try {
+        batchResult = await markiApi.getImportBatch(batchId);
+      } catch {
+        if (isSortWorkspaceMountedRef.current) {
+          setStatus({ type: 'error', text: '读取马克导入批次失败，请重试。' });
+        }
+        return;
+      }
+      if (!isSortWorkspaceMountedRef.current) return;
+      if (batchResult?.success === false) {
+        setStatus({ type: 'error', text: getSafeMarkiImportMessage(batchResult, '读取马克导入批次失败，请重试。') });
+        return;
+      }
+      if (batchResult?.status === 'preparing') {
+        setStatus({ type: 'idle', text: '导入批次仍在准备，请稍后重新发起导入。' });
+        return;
+      }
+      if (batchResult?.status === 'failed') {
+        setStatus({ type: 'warning', text: `马克导入批次处理失败 ${Number(batchResult.failedCount) || 0} 项，可重新发起导入。` });
+        return;
+      }
+      if (batchResult?.status === 'consumed') {
+        setStatus({ type: 'warning', text: '该马克导入批次已经处理。' });
+        return;
+      }
+      if (batchResult?.status !== 'ready' || !batchResult.workbenchImportPackage) {
+        setStatus({ type: 'error', text: '马克导入批次状态无效，请重新发起导入。' });
+        return;
+      }
+
+      let merged;
+      try {
+        merged = mergeMarkiWorkbenchImportPackage(
+          markiWorkbenchStateRef.current,
+          batchResult.workbenchImportPackage
+        );
+      } catch {
+        setStatus({ type: 'error', text: '马克工作台导入包校验失败，未修改当前工作台。' });
+        return;
+      }
+      if (!isSortWorkspaceMountedRef.current) return;
+
+      if (merged.stats.addedCount > 0) {
+        markiWorkbenchStateRef.current = merged;
+        pendingMarkiFocusPhotoIdRef.current = merged.addedPhotoIds[0];
+        setPhotos(merged.photos);
+        setRecognitionResultsByPhoto(merged.recognitionResultsByPhoto);
+        setWatermarkRecordsByPhoto(merged.watermarkRecordsByPhoto);
+        setArchiveSuggestionsByPhoto(merged.archiveSuggestionsByPhoto);
+        setSelectedIds(merged.selectedIds);
+        setActivePhotoId(merged.activePhotoId);
+        setFilter('all');
+        setSearchText('');
+        setSmartSortViewMode('statusFilter');
+        setActiveSmartSortGroupId('');
+        setHasUnsavedChanges(true);
+      }
+
+      let consumeResult;
+      try {
+        consumeResult = await markiApi.consumeImportBatch(batchId);
+      } catch {
+        consumeResult = { success: false };
+      }
+      if (!isSortWorkspaceMountedRef.current) return;
+      if (consumeResult?.success !== true) {
+        setStatus({
+          type: 'warning',
+          text: '照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。'
+        });
+        return;
+      }
+
+      const { addedCount, duplicateCount, conflictCount } = merged.stats;
+      if (addedCount === 0 && duplicateCount > 0 && conflictCount === 0) {
+        setStatus({ type: 'success', text: '本批照片均已存在，未重复追加。' });
+        return;
+      }
+      setStatus({
+        type: conflictCount > 0 ? 'warning' : 'success',
+        text: `已追加 ${addedCount} 张马克照片；跳过 ${duplicateCount} 张重复照片、${conflictCount} 张冲突照片。`
+      });
+    })();
+
+    return undefined;
+  }, [isSessionHydrated, navigationRequest]);
 
   useEffect(() => {
     if (photos.length === 0 && smartSortResult) {
@@ -3543,6 +3695,11 @@ function normalizeOcrDate(value = '') {
 
 function formatDisplayDate(value = '') {
   return String(value || '').replaceAll('-', '/');
+}
+
+function getSafeMarkiImportMessage(result, fallback) {
+  const message = typeof result?.error?.message === 'string' ? result.error.message.trim() : '';
+  return message || fallback;
 }
 
 function normalizeCompareText(value) {
