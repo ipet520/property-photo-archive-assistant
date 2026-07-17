@@ -515,6 +515,25 @@ npm.cmd install
 npm.cmd run dev
 ```
 
+### RapidOCR 运行时
+
+RapidOCR runner 不进入 Git 历史。全新 clone 在执行 `npm run dev`、`npm start`、`npm run verify`、`npm run dist` 或 `npm run package` 前，会通过统一的 `npm run ocr:ensure` 自动取得并校验运行时。
+
+- 固定版本：`2026.7.2-v3.9.1`
+- 固定资产：GitHub Release `rapidocr-runtime-2026.7.2-v3.9.1`
+- 清单：`vendor/ocr/rapidocr/runtime-manifest.json`
+- 安装位置：`vendor/ocr/rapidocr/rapidocr-runner.exe`
+- 校验方式：字节数和 SHA-256 必须同时与清单一致
+
+自动获取只使用清单中的固定公开 HTTPS Release 地址，不使用 `latest` 或分支地址。离线构建可把同版本 runner 放在任意本地位置，并在运行命令前设置：
+
+```powershell
+$env:RAPIDOCR_RUNNER_SOURCE = 'D:\offline\rapidocr-runner.exe'
+npm run verify
+```
+
+本地来源同样必须通过清单中的字节数和 SHA-256 校验。不要手工执行 `git add` 提交 runner EXE；发布人员应先执行 `npm run verify`，再执行 `npm run dist`。
+
 开发环境会把 Electron 运行数据写入项目内的 `.runtime` 目录；打包后会写入“用户文档/物业工作照片归档助手/.runtime”，避免写入程序安装目录或系统 AppData 目录导致权限问题。
 
 打包前可执行：
@@ -777,6 +796,7 @@ V1.5.0 在“归档记录”页新增“生成资料包”能力，用于把当�
 
 ```bash
 npm install
+npm run ocr:ensure
 npm run env:check
 
 构建验证：

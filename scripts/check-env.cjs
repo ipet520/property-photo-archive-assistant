@@ -1,6 +1,13 @@
 const { execSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const {
+  MANIFEST_RELATIVE_PATH,
+  loadRuntimeManifest,
+  resolveInstallPath,
+  verifyRunnerFile,
+  serializeRuntimeError
+} = require('./ensure-rapidocr-runner.cjs');
 
 function run(cmd) {
   try {
@@ -25,56 +32,85 @@ function check(condition, okMessage, failMessage) {
   }
 }
 
-console.log('\n=== 基础环境 ===');
+async function main() {
+  console.log('\n=== 基础环境 ===');
 
-const nodeVersion = process.version;
-const npmVersion = run('npm -v');
-const gitVersion = run('git --version');
+  const nodeVersion = process.version;
+  const npmVersion = run('npm -v');
+  const gitVersion = run('git --version');
 
-console.log(`Node: ${nodeVersion}`);
-console.log(`npm: ${npmVersion || '未检测到'}`);
-console.log(`Git: ${gitVersion || '未检测到'}`);
+  console.log(`Node: ${nodeVersion}`);
+  console.log(`npm: ${npmVersion || '未检测到'}`);
+  console.log(`Git: ${gitVersion || '未检测到'}`);
 
-check(/^v20\./.test(nodeVersion), 'Node 版本符合要求：20.x', '建议使用 Node.js 20 LTS');
-check(Boolean(npmVersion), 'npm 可用', 'npm 不可用，请检查 Node.js 安装');
-check(Boolean(gitVersion), 'Git 可用', 'Git 不可用，请安装 Git');
+  check(/^v20\./.test(nodeVersion), 'Node 版本符合要求：20.x', '建议使用 Node.js 20 LTS');
+  check(Boolean(npmVersion), 'npm 可用', 'npm 不可用，请检查 Node.js 安装');
+  check(Boolean(gitVersion), 'Git 可用', 'Git 不可用，请安装 Git');
 
-console.log('\n=== 项目文件 ===');
+  console.log('\n=== 项目文件 ===');
 
-check(exists('package.json'), 'package.json 存在', '缺少 package.json');
-check(exists('package-lock.json'), 'package-lock.json 存在', '缺少 package-lock.json');
-check(exists('electron/main.cjs'), 'electron/main.cjs 存在', '缺少 electron/main.cjs');
-check(exists('electron/preload.cjs'), 'electron/preload.cjs 存在', '缺少 electron/preload.cjs');
-check(exists('src'), 'src 目录存在', '缺少 src 目录');
+  check(exists('package.json'), 'package.json 存在', '缺少 package.json');
+  check(exists('package-lock.json'), 'package-lock.json 存在', '缺少 package-lock.json');
+  check(exists('electron/main.cjs'), 'electron/main.cjs 存在', '缺少 electron/main.cjs');
+  check(exists('electron/preload.cjs'), 'electron/preload.cjs 存在', '缺少 electron/preload.cjs');
+  check(exists('src'), 'src 目录存在', '缺少 src 目录');
 
-console.log('\n=== Electron 服务文件 ===');
+  console.log('\n=== Electron 服务文件 ===');
 
-check(
-  exists('electron/services/archivePackageService.cjs'),
-  '资料包导出服务文件存在',
-  '缺少 electron/services/archivePackageService.cjs'
-);
+  check(
+    exists('electron/services/archivePackageService.cjs'),
+    '资料包导出服务文件存在',
+    '缺少 electron/services/archivePackageService.cjs'
+  );
 
-console.log('\n=== 依赖状态 ===');
+  console.log('\n=== RapidOCR 运行时 ===');
 
-check(exists('node_modules'), 'node_modules 已存在', 'node_modules 不存在，请先运行 npm install');
+  try {
+    const repoRoot = process.cwd();
+    const manifestPath = path.join(repoRoot, ...MANIFEST_RELATIVE_PATH.split('/'));
+    const manifest = await loadRuntimeManifest(manifestPath);
+    const runnerPath = resolveInstallPath(repoRoot, manifest);
+    const verification = await verifyRunnerFile(runnerPath, manifest);
+    check(
+      verification.valid,
+      `RapidOCR runner ${manifest.version} 大小和 SHA-256 校验通过`,
+      verification.exists
+        ? 'RapidOCR runner 与固定清单不一致，请移走异常文件后执行 npm run ocr:ensure'
+        : '缺少 RapidOCR runner，请执行 npm run ocr:ensure'
+    );
+  } catch (error) {
+    const safeError = serializeRuntimeError(error);
+    check(false, '', `RapidOCR 运行时检查失败：${safeError.code} ${safeError.message}`);
+  }
 
-console.log('\n=== Git 状态 ===');
+  console.log('\n=== 依赖状态 ===');
 
-const gitStatus = run('git status --short');
+  check(exists('node_modules'), 'node_modules 已存在', 'node_modules 不存在，请先运行 npm install');
 
-if (gitStatus === null) {
-  console.log('⚠️ 当前目录可能不是 Git 仓库');
-} else if (gitStatus.length === 0) {
-  console.log('✅ Git 工作区干净');
-} else {
-  console.log('⚠️ Git 工作区存在未提交变更：');
-  console.log(gitStatus);
+  console.log('\n=== Git 状态 ===');
+
+  const gitStatus = run('git status --short');
+
+  if (gitStatus === null) {
+    console.log('⚠️ 当前目录可能不是 Git 仓库');
+  } else if (gitStatus.length === 0) {
+    console.log('✅ Git 工作区干净');
+  } else {
+    console.log('⚠️ Git 工作区存在未提交变更：');
+    console.log(gitStatus);
+  }
+
+  if (hasError) {
+    console.log('\n环境检查未完全通过，请先处理上面的 ❌ 项。');
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log('\n✅ 环境检查通过，可以继续开发、构建或交给 Codex。');
 }
 
-if (hasError) {
-  console.log('\n环境检查未完全通过，请先处理上面的 ❌ 项。');
-  process.exit(1);
-}
-
-console.log('\n✅ 环境检查通过，可以继续开发、构建或交给 Codex。');
+main().catch((error) => {
+  const safeError = serializeRuntimeError(error);
+  console.error(`环境检查失败：${safeError.code} ${safeError.message}`);
+  process.exitCode = 1;
+});

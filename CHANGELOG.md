@@ -1,5 +1,13 @@
 # 更新记录
 
+## 开发中修复
+
+- 恢复 GitHub 全新 clone 的 RapidOCR 构建可复现性，runner 继续排除在 Git 历史之外。
+- 将 Windows x64 runner 固定为独立 GitHub Release 资产，并提交固定版本、字节数和 SHA-256 运行时清单。
+- 新增统一的 `npm run ocr:ensure` 获取与严格校验流程，`dev`、`start`、`verify`、`dist` 和 `package` 在运行前共用同一机制。
+- 支持通过 `RAPIDOCR_RUNNER_SOURCE` 使用经过同一清单校验的离线本地来源。
+- 产品版本保持 V3.1.0，不修改软件版本号和 RapidOCR 组件版本。
+
 ## V3.1.0 核心流程与全局字段收口版
 
 - 收口照片分拣工作台主流程：进入智能分组时自动选择本组可处理照片，套用通过质检的表单后直接生成预览，取消预览返回原智能分组并保留撤销路径。

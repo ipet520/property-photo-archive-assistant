@@ -7,16 +7,17 @@
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "ocr:ensure": "node scripts/ensure-rapidocr-runner.cjs",
+    "dev": "npm run ocr:ensure && concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "build": "vite build",
-    "dist": "npm run build && cross-env ELECTRON_CACHE=.electron-cache ELECTRON_BUILDER_CACHE=.electron-builder-cache CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable nsis",
-    "package": "npm run dist",
-    "start": "electron .",
+    "dist": "npm run ocr:ensure && npm run build && cross-env ELECTRON_CACHE=.electron-cache ELECTRON_BUILDER_CACHE=.electron-builder-cache CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win portable nsis",
+    "package": "npm run ocr:ensure && npm run dist",
+    "start": "npm run ocr:ensure && electron .",
     "env:check": "node scripts/check-env.cjs",
     "self-check": "node scripts/self-check-core.cjs",
     "clean": "node scripts/clean.cjs",
     "reinstall": "npm run clean && npm install",
-    "verify": "npm run env:check && npm run self-check && npm run build"
+    "verify": "npm run ocr:ensure && npm run env:check && npm run self-check && npm run build"
   },
   "build": {
     "appId": "com.property.photo.archive.assistant",

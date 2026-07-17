@@ -21,6 +21,8 @@ tools/rapidocr-runner/dist/
 tools/rapidocr-runner/*.spec
 vendor/ocr/rapidocr/rapidocr-runner.exe
 vendor/ocr/rapidocr/rapidocr-runner-backup.exe
+vendor/ocr/rapidocr/*.part
+vendor/ocr/rapidocr/*.ensure.lock
 vendor/ocr/rapidocr/_internal/
 build/
 ocr-out.json

@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
 const {
   buildArchivePreview,
@@ -65,10 +67,18 @@ const { saveRectificationItem } = require('../electron/services/rectificationSer
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
 const { loadSummaryData } = require('../electron/services/summaryService.cjs');
+const {
+  validateRuntimeManifest,
+  ensureRapidOcrRunner,
+  resolveInstallPath,
+  serializeRuntimeError,
+  verifyRunnerFile
+} = require('./ensure-rapidocr-runner.cjs');
 
 async function main() {
   const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'photo-archive-self-check-'));
   try {
+    await checkRapidOcrRuntimeProvisioning(path.join(temporaryRoot, 'rapidocr-runtime'));
     await checkRecognitionEngine(temporaryRoot);
     await checkRecognitionModelCompatibility();
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
@@ -82,7 +92,7 @@ async function main() {
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
     await checkArchiveTransactionRecovery(path.join(temporaryRoot, 'archive-transaction'));
     await checkSourceContracts();
-    console.log('核心流程自检通过：OCR、马克来源清单、来源元数据、下载与结构化导入、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
+    console.log('核心流程自检通过：RapidOCR 运行时、OCR、马克来源清单、来源元数据、下载与结构化导入、智拣、表单、预览、归档、台账、指纹和 IPC 契约均正常。');
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
   }
@@ -1632,6 +1642,358 @@ async function checkMaintenanceRecommendations(root) {
   const invalidReport = await getDataMaintenanceReport({ documentsPath: invalidDocumentsPath, projectRoot: process.cwd() });
   assert.equal(invalidReport.suggestions.some((item) => item.title === '默认归档根目录不可用'), true, '失效归档根目录应明确提示');
   assert.equal(invalidReport.suggestions.some((item) => item.title === '未发现归档台账'), false, '归档根目录失效时不应重复提示未发现台账');
+}
+
+async function checkRapidOcrRuntimeProvisioning(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    'RapidOCR 运行时自检必须使用系统临时目录'
+  );
+  await fs.mkdir(root, { recursive: true });
+
+  const assetName = 'rapidocr-runner-2026.7.2-v3.9.1-win-x64.exe';
+  const releaseTag = 'rapidocr-runtime-2026.7.2-v3.9.1';
+  const installRelativePath = 'vendor/ocr/rapidocr/rapidocr-runner.exe';
+  const digest = (buffer) => createHash('sha256').update(buffer).digest('hex');
+  const buildManifest = (buffer, overrides = {}) => ({
+    schemaVersion: 1,
+    component: 'rapidocr-runner',
+    version: '2026.7.2-v3.9.1',
+    platform: 'win32',
+    arch: 'x64',
+    releaseTag,
+    assetName,
+    downloadUrl: `https://github.com/ipet520/property-photo-archive-assistant/releases/download/${releaseTag}/${assetName}`,
+    sha256: digest(buffer),
+    sizeBytes: buffer.length,
+    installRelativePath,
+    ...overrides
+  });
+  const createCase = async (name, expectedBytes, manifestOverrides = {}) => {
+    const repoRoot = path.join(root, name);
+    const manifest = buildManifest(expectedBytes, manifestOverrides);
+    const manifestPath = path.join(repoRoot, 'vendor', 'ocr', 'rapidocr', 'runtime-manifest.json');
+    await fs.mkdir(path.dirname(manifestPath), { recursive: true });
+    await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    return {
+      repoRoot,
+      manifest,
+      manifestPath,
+      installPath: path.join(repoRoot, ...installRelativePath.split('/'))
+    };
+  };
+  const response = (statusCode, chunks = [], headers = {}) => ({
+    statusCode,
+    headers,
+    stream: Readable.from(chunks)
+  });
+  const assertRejectCode = async (promise, expectedCode, message) => {
+    await assert.rejects(
+      promise,
+      (error) => {
+        assert.equal(error?.code, expectedCode, message);
+        assert.doesNotThrow(() => JSON.parse(JSON.stringify(error)), 'RapidOCR 错误应可安全 JSON 序列化');
+        assert.equal(JSON.stringify(error).includes(root), false, 'RapidOCR 错误不得暴露测试绝对路径');
+        return true;
+      }
+    );
+  };
+  const assertNoInstallArtifacts = async (installPath) => {
+    const directory = path.dirname(installPath);
+    const names = await fs.readdir(directory);
+    assert.equal(
+      names.some((name) => name.endsWith('.part') || name.endsWith('.ensure.lock')),
+      false,
+      'RapidOCR 安装结束后不得遗留 .part 或锁文件'
+    );
+  };
+
+  const validBytes = Buffer.from('rapidocr-test-runner-v1');
+  const validManifest = validateRuntimeManifest(buildManifest(validBytes));
+  assert.equal(validManifest.component, 'rapidocr-runner', '1. 合法清单应通过生产校验');
+
+  const missingField = buildManifest(validBytes);
+  delete missingField.sha256;
+  assert.throws(
+    () => validateRuntimeManifest(missingField),
+    (error) => error?.code === 'rapidocr_manifest_missing_field',
+    '2. 清单缺字段时应明确拒绝'
+  );
+  assert.throws(
+    () => validateRuntimeManifest(buildManifest(validBytes, {
+      downloadUrl: `http://github.com/ipet520/property-photo-archive-assistant/releases/download/${releaseTag}/${assetName}`
+    })),
+    (error) => error?.code === 'rapidocr_manifest_download_url_invalid',
+    '3. 非 HTTPS 清单地址应拒绝'
+  );
+  assert.throws(
+    () => validateRuntimeManifest(buildManifest(validBytes, { sha256: 'not-a-sha256' })),
+    (error) => error?.code === 'rapidocr_manifest_sha256_invalid',
+    '4. 非法 SHA-256 应拒绝'
+  );
+  assert.throws(
+    () => validateRuntimeManifest(buildManifest(validBytes, { sizeBytes: 0 })),
+    (error) => error?.code === 'rapidocr_manifest_size_invalid',
+    '5. 非法 sizeBytes 应拒绝'
+  );
+
+  const existingCase = await createCase('06-existing-valid', validBytes);
+  await fs.writeFile(existingCase.installPath, validBytes);
+  const existingResult = await ensureRapidOcrRunner({
+    repoRoot: existingCase.repoRoot,
+    manifestPath: existingCase.manifestPath,
+    env: {}
+  });
+  assert.deepEqual(
+    existingResult,
+    { version: '2026.7.2-v3.9.1', source: 'existing', verified: true },
+    '6. 已有合法 runner 应直接复用且不访问网络'
+  );
+
+  const sameSizeWrongBytes = Buffer.from('rapidocr-test-runner-v2');
+  assert.equal(sameSizeWrongBytes.length, validBytes.length, '错误哈希样本应保持相同字节数');
+  const wrongExistingCase = await createCase('07-existing-wrong-hash', validBytes);
+  await fs.writeFile(wrongExistingCase.installPath, sameSizeWrongBytes);
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: wrongExistingCase.repoRoot,
+      manifestPath: wrongExistingCase.manifestPath,
+      env: {}
+    }),
+    'rapidocr_existing_runner_invalid',
+    '7. 同大小但错误哈希的已有 runner 应拒绝'
+  );
+
+  const localSourceCase = await createCase('08-local-source-success', validBytes);
+  const localSourcePath = path.join(localSourceCase.repoRoot, 'offline-source.exe');
+  await fs.writeFile(localSourcePath, validBytes);
+  const localSourceResult = await ensureRapidOcrRunner({
+    repoRoot: localSourceCase.repoRoot,
+    manifestPath: localSourceCase.manifestPath,
+    env: { RAPIDOCR_RUNNER_SOURCE: localSourcePath }
+  });
+  assert.equal(localSourceResult.source, 'local-source', '8. 合法本地来源应完成原子安装');
+
+  const localSizeCase = await createCase('09-local-source-size', validBytes);
+  const localSizePath = path.join(localSizeCase.repoRoot, 'offline-source.exe');
+  await fs.writeFile(localSizePath, Buffer.from('short'));
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: localSizeCase.repoRoot,
+      manifestPath: localSizeCase.manifestPath,
+      env: { RAPIDOCR_RUNNER_SOURCE: localSizePath }
+    }),
+    'rapidocr_local_source_size_mismatch',
+    '9. 本地来源字节数不一致应拒绝'
+  );
+
+  const localHashCase = await createCase('10-local-source-hash', validBytes);
+  const localHashPath = path.join(localHashCase.repoRoot, 'offline-source.exe');
+  await fs.writeFile(localHashPath, sameSizeWrongBytes);
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: localHashCase.repoRoot,
+      manifestPath: localHashCase.manifestPath,
+      env: { RAPIDOCR_RUNNER_SOURCE: localHashPath }
+    }),
+    'rapidocr_local_source_hash_mismatch',
+    '10. 本地来源哈希不一致应拒绝'
+  );
+
+  const downloadCase = await createCase('11-download-success', validBytes);
+  let downloadRequestCount = 0;
+  const downloadResult = await ensureRapidOcrRunner({
+    repoRoot: downloadCase.repoRoot,
+    manifestPath: downloadCase.manifestPath,
+    env: {},
+    requestImpl: async () => {
+      downloadRequestCount += 1;
+      return response(200, [validBytes], { 'content-length': String(validBytes.length) });
+    }
+  });
+  assert.equal(downloadResult.source, 'release-download', '11. 受控下载应完成原子安装');
+  assert.equal(downloadRequestCount, 1, '正常下载只应请求一次');
+
+  const interruptedCase = await createCase('12-download-interrupted', validBytes);
+  const interruptedStream = Readable.from((async function* interrupted() {
+    yield validBytes.subarray(0, 5);
+    throw new Error('controlled interruption');
+  }()));
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: interruptedCase.repoRoot,
+      manifestPath: interruptedCase.manifestPath,
+      env: {},
+      requestImpl: async () => ({
+        statusCode: 200,
+        headers: {},
+        stream: interruptedStream
+      })
+    }),
+    'rapidocr_file_write_failed',
+    '12. 下载中断后应失败'
+  );
+  await assert.rejects(() => fs.access(interruptedCase.installPath), (error) => error?.code === 'ENOENT', '下载中断不得留下正式文件');
+
+  const overSizeCase = await createCase('13-download-over-size', validBytes);
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: overSizeCase.repoRoot,
+      manifestPath: overSizeCase.manifestPath,
+      env: {},
+      requestImpl: async () => response(200, [Buffer.concat([validBytes, Buffer.from('x')])])
+    }),
+    'rapidocr_download_size_exceeded',
+    '13. 下载超过清单字节数应立即失败'
+  );
+
+  const wrongHashDownloadCase = await createCase('14-download-wrong-hash', validBytes);
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: wrongHashDownloadCase.repoRoot,
+      manifestPath: wrongHashDownloadCase.manifestPath,
+      env: {},
+      requestImpl: async () => response(200, [sameSizeWrongBytes])
+    }),
+    'rapidocr_download_hash_mismatch',
+    '14. 下载完成但哈希不一致应失败'
+  );
+
+  const redirectLimitCase = await createCase('15-redirect-limit', validBytes);
+  let redirectRequestCount = 0;
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: redirectLimitCase.repoRoot,
+      manifestPath: redirectLimitCase.manifestPath,
+      env: {},
+      requestImpl: async () => {
+        redirectRequestCount += 1;
+        return response(302, [], { location: 'https://github.com/redirect-again' });
+      }
+    }),
+    'rapidocr_redirect_limit_exceeded',
+    '15. 重定向超过五次应失败'
+  );
+  assert.equal(redirectRequestCount, 6, '重定向上限测试应在发出第六跳前后受控终止');
+
+  const redirectHttpCase = await createCase('16-redirect-http', validBytes);
+  let insecureTargetRequests = 0;
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: redirectHttpCase.repoRoot,
+      manifestPath: redirectHttpCase.manifestPath,
+      env: {},
+      requestImpl: async () => {
+        insecureTargetRequests += 1;
+        return response(302, [], { location: 'http://example.invalid/runner.exe' });
+      }
+    }),
+    'rapidocr_redirect_protocol_not_allowed',
+    '16. HTTPS 重定向到 HTTP 应在请求前拒绝'
+  );
+  assert.equal(insecureTargetRequests, 1, 'HTTP 重定向目标不得被实际请求');
+
+  const concurrentCase = await createCase('17-concurrent', validBytes);
+  let concurrentRequestCount = 0;
+  const concurrentOptions = {
+    repoRoot: concurrentCase.repoRoot,
+    manifestPath: concurrentCase.manifestPath,
+    env: {},
+    requestImpl: async () => {
+      concurrentRequestCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return response(200, [validBytes]);
+    }
+  };
+  const concurrentResults = await Promise.all([
+    ensureRapidOcrRunner(concurrentOptions),
+    ensureRapidOcrRunner(concurrentOptions)
+  ]);
+  assert.equal(concurrentRequestCount, 1, '17. 同进程并发调用应只执行一次安装');
+  assert.deepEqual(concurrentResults[0], concurrentResults[1], '并发调用应共享同一安装结果');
+
+  for (const item of [
+    localSourceCase,
+    localSizeCase,
+    localHashCase,
+    downloadCase,
+    interruptedCase,
+    overSizeCase,
+    wrongHashDownloadCase,
+    redirectLimitCase,
+    redirectHttpCase,
+    concurrentCase
+  ]) {
+    await assertNoInstallArtifacts(item.installPath);
+  }
+  assert.ok(true, '18. 成功和失败后 .part 与锁文件均已清理');
+
+  assert.doesNotThrow(
+    () => JSON.parse(JSON.stringify(downloadResult)),
+    '19. RapidOCR 成功结果应可 JSON 序列化'
+  );
+  const serializedError = serializeRuntimeError(new Error('internal path should not escape'));
+  assert.deepEqual(
+    Object.keys(serializedError).sort(),
+    ['code', 'message'],
+    'RapidOCR 受控错误只应返回安全代码和短消息'
+  );
+
+  const explicitInvalidCase = await createCase('20-existing-invalid', validBytes);
+  await fs.writeFile(explicitInvalidCase.installPath, sameSizeWrongBytes);
+  const invalidVerification = await verifyRunnerFile(explicitInvalidCase.installPath, explicitInvalidCase.manifest);
+  assert.equal(invalidVerification.valid, false, '20. 已有错误文件不得被静默视为合法 runner');
+  await assertRejectCode(
+    ensureRapidOcrRunner({
+      repoRoot: explicitInvalidCase.repoRoot,
+      manifestPath: explicitInvalidCase.manifestPath,
+      env: {}
+    }),
+    'rapidocr_existing_runner_invalid',
+    '已有错误 runner 应要求人工处理'
+  );
+
+  assert.throws(
+    () => validateRuntimeManifest(buildManifest(validBytes, { installRelativePath: '../rapidocr-runner.exe' })),
+    (error) => error?.code === 'rapidocr_manifest_install_path_invalid',
+    '21. installRelativePath 路径穿越应拒绝'
+  );
+  assert.throws(
+    () => validateRuntimeManifest(buildManifest(validBytes, { installRelativePath: 'C:\\rapidocr-runner.exe' })),
+    (error) => error?.code === 'rapidocr_manifest_install_path_invalid',
+    '22. 清单中的绝对安装路径应拒绝'
+  );
+
+  const downloadedBytes = await fs.readFile(downloadCase.installPath);
+  assert.deepEqual(downloadedBytes, validBytes, '23. 成功安装后的文件字节应与下载来源完全一致');
+
+  const ensureModulePath = require.resolve('./ensure-rapidocr-runner.cjs');
+  delete require.cache[ensureModulePath];
+  const freshEnsureModule = require('./ensure-rapidocr-runner.cjs');
+  const freshResult = await freshEnsureModule.ensureRapidOcrRunner({
+    repoRoot: downloadCase.repoRoot,
+    manifestPath: downloadCase.manifestPath,
+    env: {}
+  });
+  assert.equal(freshResult.source, 'existing', '24. 删除 require cache 后仍应校验并复用已安装 runner');
+  assert.equal(
+    freshEnsureModule.resolveInstallPath(downloadCase.repoRoot, downloadCase.manifest),
+    resolveInstallPath(downloadCase.repoRoot, downloadCase.manifest),
+    '重新加载模块后安装路径规则应保持一致'
+  );
+
+  const cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'rapidocr-runtime-cleanup-'));
+  try {
+    await fs.writeFile(path.join(cleanupRoot, 'temporary.bin'), validBytes);
+  } finally {
+    await fs.rm(cleanupRoot, { recursive: true, force: true });
+  }
+  await assert.rejects(
+    () => fs.access(cleanupRoot),
+    (error) => error?.code === 'ENOENT',
+    '25. RapidOCR 自检专用临时目录最终应全部删除'
+  );
 }
 
 async function checkRecognitionEngine(userDataDir) {
