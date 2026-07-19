@@ -84,6 +84,7 @@ function normalizeGroup(group = {}) {
   const photos = Array.isArray(group.photos) ? group.photos.map(normalizePhoto).filter(Boolean) : [];
   return {
     id: String(group.id || ''),
+    groupKey: String(group.groupKey || ''),
     title: String(group.title || '分拣组'),
     status: group.status || 'pending',
     basis: group.basis || 'selection_order',
@@ -97,7 +98,9 @@ function normalizeGroup(group = {}) {
       hasCandidateFields: Boolean(group.summary?.hasCandidateFields),
       hasPatchDraft: Boolean(group.summary?.hasPatchDraft)
     },
-    suggestedFields: {},
+    suggestedFields: group.suggestedFields && typeof group.suggestedFields === 'object'
+      ? { ...group.suggestedFields }
+      : {},
     warnings: Array.isArray(group.warnings) ? group.warnings : [],
     errors: Array.isArray(group.errors) ? group.errors : [],
     createdAt: group.createdAt || '',
@@ -116,6 +119,13 @@ function normalizePhoto(photo = {}) {
     index: Number.isFinite(Number(photo.index)) ? Number(photo.index) : undefined,
     capturedAt: photo.capturedAt || null,
     modifiedAt: photo.modifiedAt || null,
+    sourceType: String(photo.sourceType || ''),
+    smartGrouping: photo.smartGrouping && typeof photo.smartGrouping === 'object'
+      ? {
+          ...photo.smartGrouping,
+          fields: { ...(photo.smartGrouping.fields || {}) }
+        }
+      : null,
     source: 'photo_list',
     createdAt: photo.createdAt || '',
     schemaVersion: 1

@@ -58,6 +58,53 @@ async function loadMarkiSourceManifest(documentsPath, orgId) {
   }
 }
 
+async function loadMarkiSourceManifestForRecovery(documentsPath, orgId) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const manifestPath = getMarkiSourceManifestPath(documentsPath, normalizedOrgId);
+  let parsed;
+  try {
+    parsed = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        orgId: normalizedOrgId,
+        records: [],
+        invalidRecords: []
+      };
+    }
+    throw createManifestError(
+      'marki_source_manifest_invalid',
+      '马克来源清单无法解析，已停止恢复以保护现有记录。'
+    );
+  }
+
+  if (!isPlainObject(parsed?.records)) {
+    throw createManifestError(
+      'marki_source_manifest_invalid',
+      '马克来源清单记录结构无效。'
+    );
+  }
+  normalizeStoredManifest({ ...parsed, records: {} }, normalizedOrgId);
+  const records = [];
+  const invalidRecords = [];
+  for (const [index, [sourceKey, value]] of Object.entries(parsed.records).entries()) {
+    try {
+      const normalized = normalizeStoredManifest({
+        ...parsed,
+        records: { [sourceKey]: value }
+      }, normalizedOrgId);
+      records.push(normalized.records[sourceKey]);
+    } catch {
+      invalidRecords.push({ index: index + 1 });
+    }
+  }
+  return {
+    orgId: normalizedOrgId,
+    records: cloneJson(records),
+    invalidRecords
+  };
+}
+
 async function upsertMarkiSourceRecords(documentsPath, orgId, sourceRecords = [], options = {}) {
   const normalizedOrgId = normalizeOrgId(orgId);
   const inputs = normalizeSourceRecordBatch(normalizedOrgId, sourceRecords);
@@ -574,6 +621,7 @@ module.exports = {
   getMarkiSourceRecordByKey,
   hasMarkiSourceKey,
   loadMarkiSourceManifest,
+  loadMarkiSourceManifestForRecovery,
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 };

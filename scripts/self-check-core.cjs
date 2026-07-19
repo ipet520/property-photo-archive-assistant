@@ -23,6 +23,7 @@ const {
 } = require('../electron/services/excelService.cjs');
 const { loadDashboardData } = require('../electron/services/dashboardService.cjs');
 const { getDataMaintenanceReport } = require('../electron/services/dataMaintenanceService.cjs');
+const { scanImages } = require('../electron/services/fileService.cjs');
 const { loadLedgerRecords } = require('../electron/services/ledgerQueryService.cjs');
 const { getRecognitionStatus } = require('../electron/services/recognitionService.cjs');
 const {
@@ -45,15 +46,18 @@ const {
 } = require('../electron/services/markiCredentialService.cjs');
 const {
   downloadMarkiPhoto,
+  inspectJpegFile,
   retryMarkiPhotoDownload
 } = require('../electron/services/markiPhotoDownloadService.cjs');
 const {
   buildMarkiSourceKey,
   checkMarkiSourceKeys,
+  getMarkiImportRoot,
   getMarkiSourceManifestPath,
   getMarkiSourceRecordByKey,
   hasMarkiSourceKey,
   loadMarkiSourceManifest,
+  loadMarkiSourceManifestForRecovery,
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 } = require('../electron/services/markiSourceManifestService.cjs');
@@ -79,9 +83,24 @@ const {
   cleanupExpiredMarkiImportBatches,
   consumeMarkiImportBatch,
   getMarkiImportBatch,
+  listReadyMarkiImportBatches,
   markMarkiImportBatchFailed,
   markMarkiImportBatchReady
 } = require('../electron/services/markiImportBatchService.cjs');
+const {
+  importMarkiPhotoQuerySelection
+} = require('../electron/services/markiTrustedImportService.cjs');
+const {
+  SNAPSHOT_SCHEMA_VERSION,
+  createEmptyWorkspace,
+  getSortWorkspaceSnapshotPath,
+  loadSortWorkspaceSnapshot,
+  saveSortWorkspaceSnapshot
+} = require('../electron/services/sortWorkspaceSnapshotService.cjs');
+const {
+  SAFE_SUMMARY_FIELDS,
+  createMarkiWorkbenchRehydrateService
+} = require('../electron/services/markiWorkbenchRehydrateService.cjs');
 const { saveRectificationItem } = require('../electron/services/rectificationService.cjs');
 const { saveSettings } = require('../electron/services/settingsService.cjs');
 const { generateSmartSortGroups } = require('../electron/services/smartSortService.cjs');
@@ -102,14 +121,24 @@ async function main() {
     await checkRecognitionModelCompatibility();
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkMarkiPhotoQuerySessions(path.join(temporaryRoot, 'marki-photo-query'));
+    await checkMarkiImportTimeHelpers();
+    await checkMarkiReadyBatchRefresh();
     await checkMarkiSourceManifest(path.join(temporaryRoot, 'marki-source'));
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
     await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
     await checkMarkiImportOrchestrator(path.join(temporaryRoot, 'marki-orchestrator'));
     await checkMarkiImportBatchService(path.join(temporaryRoot, 'marki-import-batches'));
+    await checkMarkiTrustedImport(path.join(temporaryRoot, 'marki-trusted-import'));
+    await checkMarkiEndToEndFlow(path.join(temporaryRoot, 'marki-end-to-end'));
     await checkMarkiWorkbenchImport();
-    await checkCurrentFormContract();
+    await checkSortWorkspaceSnapshot(path.join(temporaryRoot, 'sort-workspace-snapshot'));
+    await checkMarkiWorkbenchRehydration(path.join(temporaryRoot, 'marki-workbench-rehydration'));
+    await checkSourceAwareRecognition(path.join(temporaryRoot, 'source-aware-recognition'));
+    await checkSmartGroupDateBoundaries(path.join(temporaryRoot, 'smart-group-date-boundaries'));
+    await checkUnifiedPhotoPool(path.join(temporaryRoot, 'unified-photo-pool'));
+    await checkSortWorkspaceToolbar(path.join(temporaryRoot, 'sort-workspace-toolbar'));
+    await checkCurrentFormContract(path.join(temporaryRoot, 'canonical-form'));
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
@@ -340,6 +369,7 @@ async function checkMarkiPhotoDownload(root) {
   assert.equal(primaryResult.width, 3, '应读取 JPG 宽度');
   assert.equal(primaryResult.height, 2, '应读取 JPG 高度');
   assert.equal(primaryResult.size, validJpeg.length, '应记录 JPG 文件大小');
+  assert.equal(primaryResult.completedAt, '2026-07-17T07:00:00.000Z', '新下载结果应返回完成时间');
   assert.equal(primaryResult.downloadAttemptCount, 1, '首次下载尝试次数应为一');
   assert.equal((await fs.readFile(expectedPrimaryPath)).equals(validJpeg), true, '正式 JPG 内容应保持完整');
   await assert.rejects(
@@ -365,7 +395,30 @@ async function checkMarkiPhotoDownload(root) {
     }
   });
   assert.equal(repeatedResult.reusedExisting, true, '已导入来源应直接复用正式文件');
+  assert.equal(repeatedResult.completedAt, primaryResult.completedAt, '复用已导入文件应保留原完成时间');
   assert.equal(successfulFetchCount, 1, '同一 sourceKey 不得重复下载');
+  const tamperedJpeg = Buffer.from(validJpeg);
+  tamperedJpeg[tamperedJpeg.length - 1] ^= 0x01;
+  await fs.writeFile(expectedPrimaryPath, tamperedJpeg);
+  await assert.rejects(
+    () => downloadMarkiPhoto(root, primaryInput, {
+      fetchImpl: async () => {
+        throw new Error('完整性失败时不得重新下载');
+      }
+    }),
+    (error) => error?.code === 'imported_file_integrity_failed',
+    'imported JPG 内容与清单哈希不一致时必须安全失败'
+  );
+  assert.equal(
+    (await getMarkiSourceRecordByKey(
+      root,
+      orgId,
+      buildMarkiSourceKey(orgId, primaryInput.momentId)
+    )).importStatus,
+    'imported',
+    'imported JPG 复验失败不得修改来源状态'
+  );
+  await fs.writeFile(expectedPrimaryPath, validJpeg);
 
   const retryInput = {
     ...primaryInput,
@@ -1317,6 +1370,7 @@ async function checkMarkiStructuredImport(root) {
     localPath,
     fileName: `${baseMoment.id}.jpg`,
     size: 4096,
+    sha256: createHash('sha256').update(baseMoment.id).digest('hex'),
     width: 1080,
     height: 1440,
     completedAt: '2026-07-17T03:01:00.000Z'
@@ -2067,6 +2121,135 @@ async function checkMarkiPhotoQuerySessions(root) {
   assert.equal(scenarioCount, 33, '马克照片查询 API 与可信会话应完整执行 33 个自检场景');
 }
 
+async function checkMarkiImportTimeHelpers() {
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiClient.js')
+  ).href;
+  const {
+    createDefaultMarkiImportFilters,
+    parseMarkiImportBeijingDateTime
+  } = await import(`${moduleUrl}?marki-time=${Date.now()}`);
+
+  const utcMinusSevenInstant = Date.parse('2026-07-17T23:30:00-07:00');
+  assert.deepEqual(
+    createDefaultMarkiImportFilters(utcMinusSevenInstant),
+    {
+      teamId: '',
+      uid: '',
+      start: '2026-07-18T00:00',
+      end: '2026-07-18T14:30'
+    },
+    '马克导入默认时间不得依赖 UTC-7 系统语义或夏令时'
+  );
+  assert.deepEqual(
+    createDefaultMarkiImportFilters(Date.parse('2026-07-17T15:59:00Z')),
+    {
+      teamId: '',
+      uid: '',
+      start: '2026-07-17T00:00',
+      end: '2026-07-17T23:59'
+    },
+    '北京时间跨日前一分钟应保持当天范围'
+  );
+  assert.deepEqual(
+    createDefaultMarkiImportFilters(Date.parse('2026-07-17T16:05:00Z')),
+    {
+      teamId: '',
+      uid: '',
+      start: '2026-07-18T00:00',
+      end: '2026-07-18T00:05'
+    },
+    '绝对时间跨过北京时间零点后应切换默认日期'
+  );
+  assert.equal(
+    parseMarkiImportBeijingDateTime('2026-03-08T01:30'),
+    Date.UTC(2026, 2, 7, 17, 30),
+    '北京时间筛选解析必须使用固定 UTC+8，不受夏令时影响'
+  );
+  assert.equal(
+    Number.isNaN(parseMarkiImportBeijingDateTime('2026-02-30T01:30')),
+    true,
+    '北京时间筛选解析应拒绝不存在的日期'
+  );
+}
+
+async function checkMarkiReadyBatchRefresh() {
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiClient.js')
+  ).href;
+  const {
+    createMarkiReadyBatchRefresh,
+    normalizeReadyBatchRefreshResult
+  } = await import(`${moduleUrl}?ready-refresh=${Date.now()}`);
+  const safeBatch = {
+    batchId: 'ready-refresh-001',
+    status: 'ready',
+    inputCount: 2,
+    metadataSavedCount: 2,
+    createdAt: '2026-07-19T01:00:00.000Z',
+    updatedAt: '2026-07-19T01:01:00.000Z',
+    expiresAt: '2026-07-20T01:01:00.000Z'
+  };
+
+  const empty = normalizeReadyBatchRefreshResult({
+    success: true,
+    items: [],
+    failedCount: 0
+  });
+  assert.equal(empty.success, true, '空 ready 列表应视为成功刷新');
+  assert.deepEqual(empty.items, [], '空 ready 列表应保持空数组');
+  assert.equal(empty.notice.type, 'info', '空 ready 列表应显示空结果提示');
+  assert.match(empty.notice.text, /当前没有待进入工作台/, '空 ready 列表提示应明确当前无批次');
+
+  const available = normalizeReadyBatchRefreshResult({
+    success: true,
+    items: [safeBatch],
+    failedCount: 0
+  });
+  assert.equal(available.items.length, 1, '正常 ready 列表应返回一个安全批次');
+  assert.equal(available.notice.type, 'success', '存在 ready 批次时应显示成功提示');
+  assert.match(available.notice.text, /找到 1 个/, '成功提示应包含 ready 批次数量');
+
+  const damaged = normalizeReadyBatchRefreshResult({
+    success: true,
+    items: [],
+    failedCount: 2
+  });
+  assert.equal(damaged.failedCount, 2, '损坏批次数量应原样保留');
+  assert.equal(damaged.notice.type, 'warning', '存在损坏批次时应显示安全警告');
+  assert.match(damaged.notice.text, /2 个批次文件无法读取/, '警告应包含无法读取的批次数量');
+
+  const unavailable = createMarkiReadyBatchRefresh(async () => {
+    throw new Error('private IPC failure');
+  });
+  const failed = await unavailable();
+  assert.equal(failed.success, false, 'IPC 抛错应转换为失败刷新结果');
+  assert.equal(failed.notice.type, 'error', 'IPC 抛错应显示明确错误提示');
+  assert.equal(failed.notice.text, '马克待处理批次查询失败。', '错误提示不得泄露原始异常');
+  assert.equal(JSON.stringify(failed).includes('private IPC failure'), false, '失败结果不得泄露原始 IPC 异常');
+
+  let requestCount = 0;
+  let releaseRequest;
+  const requestGate = new Promise((resolve) => {
+    releaseRequest = resolve;
+  });
+  const singleFlightRefresh = createMarkiReadyBatchRefresh(async () => {
+    requestCount += 1;
+    await requestGate;
+    return { success: true, items: [], failedCount: 0 };
+  });
+  const firstRefresh = singleFlightRefresh();
+  const secondRefresh = singleFlightRefresh();
+  assert.equal(firstRefresh, secondRefresh, '连续刷新必须复用同一个进行中请求');
+  assert.equal(requestCount, 0, '刷新请求应在微任务中受控启动');
+  await Promise.resolve();
+  assert.equal(requestCount, 1, '连续刷新只能发起一次 IPC 请求');
+  releaseRequest();
+  await Promise.all([firstRefresh, secondRefresh]);
+  await singleFlightRefresh();
+  assert.equal(requestCount, 2, '刷新完成后锁必须释放并允许再次刷新');
+}
+
 function createJsonResponse(payload) {
   return {
     ok: true,
@@ -2525,6 +2708,7 @@ async function checkMarkiImportOrchestrator(root) {
         localPath: path.join(root, 'downloads', `${momentId}.jpg`),
         fileName: `${momentId}.jpg`,
         size: 4096 + index,
+        sha256: createHash('sha256').update(momentId).digest('hex'),
         width: 1080,
         height: 1440,
         completedAt: '2026-07-17T03:01:00.000Z'
@@ -3237,6 +3421,56 @@ async function checkMarkiImportBatchService(root) {
     }
     scenarioCount += 1;
 
+    const readyListRoot = path.join(root, 'ready-list-tolerance');
+    const readyListBatchId = 'batch-ready-list-valid';
+    await beginMarkiImportBatch(
+      readyListRoot,
+      beginInput(readyListBatchId),
+      { now: at() }
+    );
+    await markMarkiImportBatchReady(
+      readyListRoot,
+      readyInput(readyListBatchId),
+      { now: at(1_000) }
+    );
+    const readyListDirectory = batchDirectory(readyListRoot);
+    const corruptBatchPath = batchPath(readyListRoot, 'batch-ready-list-corrupt');
+    const invalidBatchPath = batchPath(readyListRoot, 'batch-ready-list-invalid');
+    await fs.writeFile(corruptBatchPath, '{"schemaVersion":', 'utf8');
+    await fs.writeFile(invalidBatchPath, JSON.stringify({ schemaVersion: 1 }), 'utf8');
+    const tolerantReadyList = await listReadyMarkiImportBatches(
+      readyListRoot,
+      { now: at(2_000) }
+    );
+    assert.equal(tolerantReadyList.success, true, 'ready 批次列表应在单项损坏时继续返回');
+    assert.deepEqual(
+      Object.keys(tolerantReadyList),
+      ['success', 'items', 'failedCount'],
+      'ready 批次列表顶层应严格返回 success、items 和 failedCount'
+    );
+    assert.equal(tolerantReadyList.failedCount, 2, '损坏 JSON 和非法结构应分别计入 failedCount');
+    assert.deepEqual(
+      tolerantReadyList.items.map((batch) => batch.batchId),
+      [readyListBatchId],
+      '单项损坏不得阻断正常 ready 批次'
+    );
+    assert.deepEqual(
+      Object.keys(tolerantReadyList.items[0]),
+      ['batchId', 'status', 'inputCount', 'metadataSavedCount', 'createdAt', 'updatedAt', 'expiresAt'],
+      'ready 列表单项仍必须保持七字段安全摘要'
+    );
+    assert.equal(
+      (await fs.readdir(readyListDirectory)).includes(path.basename(corruptBatchPath)),
+      true,
+      'ready 列表只读操作不得删除损坏批次文件'
+    );
+    assert.equal(
+      (await fs.readdir(readyListDirectory)).includes(path.basename(invalidBatchPath)),
+      true,
+      'ready 列表只读操作不得删除结构非法批次文件'
+    );
+    scenarioCount += 1;
+
     const allBatchFiles = await fs.readdir(batchDirectory(lifecycleRoot));
     assert.equal(
       allBatchFiles.some((fileName) => fileName.endsWith('.tmp')),
@@ -3357,7 +3591,768 @@ async function checkMarkiImportBatchService(root) {
     '马克导入批次自检结束后应清理系统临时目录'
   );
   scenarioCount += 1;
-  assert.equal(scenarioCount, 23, '马克导入批次服务应完整执行 23 个自检场景');
+  assert.equal(scenarioCount, 24, '马克导入批次服务应完整执行 24 个自检场景');
+}
+
+async function checkMarkiTrustedImport(root) {
+  assert.equal(
+    path.relative(os.tmpdir(), root).startsWith('..'),
+    false,
+    '可信马克导入自检必须使用系统临时目录'
+  );
+  const documentsPath = path.join(root, 'documents');
+  const userDataPath = path.join(root, 'user-data');
+  const credentials = { orgId: '12345', key: 'self-check-key' };
+  const buildMoment = (id) => ({
+    id,
+    uid: '20001',
+    teamId: '10001',
+    url: `https://private.example/${id}.jpg`,
+    momentType: 1,
+    content: JSON.stringify([
+      ['日期', '2026-07-18'],
+      ['小区名称', '潇湘新区二期'],
+      ['工作内容', '设施巡查']
+    ]),
+    markName: '工程类专用',
+    lng: 103.8,
+    lat: 25.5,
+    postTime: Math.floor(Date.parse('2026-07-18T02:00:00Z') / 1000)
+  });
+  const createSession = async (moments) => {
+    const service = createMarkiPhotoQuerySessionService({
+      listMarkiMoments: async () => ({ moments, next: '', hasMore: false }),
+      checkMarkiSourceKeys: async (_documentsPath, _orgId, sourceKeys) => ({
+        bySourceKey: Object.fromEntries(sourceKeys.map((sourceKey) => [
+          sourceKey,
+          { exists: false, importStatus: '' }
+        ]))
+      })
+    });
+    const query = await service.create({
+      credentials,
+      documentsPath,
+      filters: {
+        start: '2026-07-18 00:00:00',
+        end: '2026-07-18 23:59:59'
+      }
+    });
+    return { service, query };
+  };
+  const createPrepareResult = (batchId, items, success = true) => {
+    const deduplication = {
+      inputCount: items.length,
+      uniqueCount: items.length,
+      duplicateCount: 0,
+      skippedItems: []
+    };
+    if (!success) {
+      const first = items[0];
+      const sourceKey = first.download.sourceKey;
+      const sourceMatch = /^marki_api:(\d+):(.+)$/.exec(sourceKey);
+      const orgId = sourceMatch[1];
+      const momentId = sourceMatch[2];
+      return {
+        success: false,
+        batchId,
+        inputCount: items.length,
+        metadataSavedCount: items.length - 1,
+        failedCount: 1,
+        failures: [{
+          sourceMetadataRef: `marki_source_metadata:${orgId}:${momentId}`,
+          sourceKey,
+          code: 'marki_source_metadata_save_failed',
+          message: '马克来源元数据保存失败，请重试。'
+        }],
+        deduplication,
+        workbenchImportPackage: null
+      };
+    }
+    return {
+      success: true,
+      batchId,
+      inputCount: items.length,
+      metadataSavedCount: items.length,
+      failedCount: 0,
+      failures: [],
+      deduplication,
+      workbenchImportPackage: {
+        batchId,
+        photos: items.map((item) => ({
+          id: `photo-${item.moment.id}`,
+          sourceType: 'marki_api',
+          sourceKey: item.download.sourceKey,
+          originalPath: item.download.localPath
+        })),
+        recognitionResultsByPhoto: {},
+        watermarkRecordsByPhoto: {},
+        archiveSuggestionsByPhoto: {}
+      }
+    };
+  };
+  const buildImportOptions = (service, overrides = {}) => ({
+    beginSelectionImport: service.beginImport,
+    settleSelectionImport: service.settleImport,
+    checkSourceKeys: async (_documentsPath, _orgId, sourceKeys) => ({
+      bySourceKey: Object.fromEntries(sourceKeys.map((sourceKey) => [
+        sourceKey,
+        { exists: false, importStatus: '' }
+      ]))
+    }),
+    beginImportBatch: beginMarkiImportBatch,
+    getImportBatch: getMarkiImportBatch,
+    markBatchFailed: markMarkiImportBatchFailed,
+    markBatchReady: markMarkiImportBatchReady,
+    ...overrides
+  });
+  const buildRequest = (query, selectionTokens) => ({
+    credentials,
+    documentsPath,
+    userDataPath,
+    request: {
+      sessionId: query.sessionId,
+      selectionTokens
+    }
+  });
+
+  await fs.mkdir(root, { recursive: true });
+  const { service, query } = await createSession([
+    buildMoment('trusted-001'),
+    buildMoment('trusted-002'),
+    buildMoment('trusted-003'),
+    buildMoment('trusted-004')
+  ]);
+  const selectionTokens = query.photos.map((photo) => photo.selectionToken);
+  const completedDownloads = new Set();
+  let activeDownloads = 0;
+  let maxActiveDownloads = 0;
+  let shouldFailSecond = true;
+  const downloadMock = async (_root, moment) => {
+    activeDownloads += 1;
+    maxActiveDownloads = Math.max(maxActiveDownloads, activeDownloads);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    activeDownloads -= 1;
+    if (moment.id === 'trusted-002' && shouldFailSecond) {
+      shouldFailSecond = false;
+      const error = new Error('private download failure');
+      error.code = 'download_request_failed';
+      throw error;
+    }
+    const reusedExisting = completedDownloads.has(moment.id);
+    completedDownloads.add(moment.id);
+    return {
+      success: true,
+      sourceKey: buildMarkiSourceKey(credentials.orgId, moment.id),
+      importStatus: 'imported',
+      localPath: path.join(documentsPath, `${moment.id}.jpg`),
+      fileName: `${moment.id}.jpg`,
+      size: 100,
+      width: 10,
+      height: 10,
+      sha256: 'a'.repeat(64),
+      completedAt: '2026-07-18T03:00:00.000Z',
+      reusedExisting
+    };
+  };
+  const prepareSuccess = async (input, options) => createPrepareResult(
+    options.batchId,
+    input.items,
+    true
+  );
+  const firstResult = await importMarkiPhotoQuerySelection(
+    buildRequest(query, selectionTokens),
+    buildImportOptions(service, {
+      downloadMarkiPhoto: downloadMock,
+      prepareStructuredImport: prepareSuccess
+    })
+  );
+  assert.equal(firstResult.status, 'download_failed', '任一下载失败时整批不得创建 ready 批次');
+  assert.equal(firstResult.batchId, '', '下载未全部成功前不得生成 batchId');
+  assert.equal(firstResult.failedCount, 1, '下载失败摘要数量应准确');
+  assert.deepEqual(
+    Object.keys(firstResult.failures[0]),
+    ['selectionToken', 'displayId', 'code', 'message'],
+    'renderer 下载失败摘要必须严格保持四字段'
+  );
+  assert.equal(
+    firstResult.failures[0].displayId,
+    query.photos[1].displayId,
+    '下载失败 displayId 必须来自可信查询会话'
+  );
+  assert.equal(maxActiveDownloads, 3, '可信下载并发上限必须为三路');
+  assert.equal(JSON.stringify(firstResult).includes('private.example'), false, '下载失败结果不得泄露 URL');
+  assert.equal((await listReadyMarkiImportBatches(userDataPath)).items.length, 0, '下载失败不得创建 ready 批次');
+
+  const retryResult = await importMarkiPhotoQuerySelection(
+    buildRequest(query, selectionTokens),
+    buildImportOptions(service, {
+      downloadMarkiPhoto: downloadMock,
+      prepareStructuredImport: prepareSuccess
+    })
+  );
+  assert.equal(retryResult.status, 'ready', '失败任务使用原 token 集合重试后应生成 ready 批次');
+  assert.equal(retryResult.downloadedCount, 1, '重试只应重新完成上次失败的照片');
+  assert.equal(retryResult.reusedCount, 3, '重试应复用上次已经成功的 JPG');
+  const readyList = await listReadyMarkiImportBatches(userDataPath);
+  assert.equal(readyList.items.some((batch) => batch.batchId === retryResult.batchId), true, 'ready 批次应可发现');
+  assert.deepEqual(
+    Object.keys(readyList.items.find((batch) => batch.batchId === retryResult.batchId)),
+    ['batchId', 'status', 'inputCount', 'metadataSavedCount', 'createdAt', 'updatedAt', 'expiresAt'],
+    'ready 批次发现结果必须保持七字段安全摘要'
+  );
+
+  await assert.rejects(
+    () => importMarkiPhotoQuerySelection({
+      ...buildRequest(query, selectionTokens),
+      remoteUrl: 'https://private.example/leak.jpg'
+    }, buildImportOptions(service)),
+    (error) => error?.code === 'marki_photo_import_invalid_request',
+    '可信导入必须拒绝 renderer 额外字段'
+  );
+
+  const integritySession = await createSession([buildMoment('integrity-001')]);
+  const integrityFailure = await importMarkiPhotoQuerySelection(
+    buildRequest(
+      integritySession.query,
+      [integritySession.query.photos[0].selectionToken]
+    ),
+    buildImportOptions(integritySession.service, {
+      downloadMarkiPhoto: async () => {
+        const error = new Error('private integrity detail');
+        error.code = 'imported_file_integrity_failed';
+        throw error;
+      },
+      prepareStructuredImport: prepareSuccess
+    })
+  );
+  assert.equal(integrityFailure.status, 'download_failed', 'imported JPG 复验失败应进入安全下载失败结果');
+  assert.deepEqual(
+    Object.keys(integrityFailure.failures[0]),
+    ['selectionToken', 'displayId', 'code', 'message'],
+    'imported JPG 复验失败摘要必须严格保持四字段'
+  );
+  assert.equal(
+    integrityFailure.failures[0].displayId,
+    integritySession.query.photos[0].displayId,
+    'imported JPG 复验失败必须复用可信 displayId'
+  );
+
+  const batchFailureSession = await createSession([buildMoment('batch-failure-001')]);
+  const batchFailure = await importMarkiPhotoQuerySelection(
+    buildRequest(
+      batchFailureSession.query,
+      [batchFailureSession.query.photos[0].selectionToken]
+    ),
+    buildImportOptions(batchFailureSession.service, {
+      downloadMarkiPhoto: downloadMock,
+      prepareStructuredImport: prepareSuccess,
+      beginImportBatch: async () => {
+        throw new Error('private batch storage detail');
+      }
+    })
+  );
+  assert.equal(batchFailure.status, 'batch_persist_failed', '批次保存失败应返回受控失败状态');
+  assert.deepEqual(
+    Object.keys(batchFailure.failures[0]),
+    ['selectionToken', 'displayId', 'code', 'message'],
+    '批次保存失败摘要必须严格保持四字段'
+  );
+  assert.equal(
+    batchFailure.failures[0].displayId,
+    batchFailureSession.query.photos[0].displayId,
+    '批次保存失败必须复用可信 displayId'
+  );
+
+  const fallbackSessionId = '11111111-1111-4111-8111-111111111111';
+  const fallbackSelectionToken = '22222222-2222-4222-8222-222222222222';
+  const fallbackMoment = buildMoment('fallback-display-001');
+  const fallbackFailure = await importMarkiPhotoQuerySelection(
+    {
+      credentials,
+      documentsPath,
+      userDataPath,
+      request: {
+        sessionId: fallbackSessionId,
+        selectionTokens: [fallbackSelectionToken]
+      }
+    },
+    {
+      beginSelectionImport: async () => ({
+        success: true,
+        sessionId: fallbackSessionId,
+        orgId: credentials.orgId,
+        taskId: 'fallback-task',
+        retry: false,
+        batchId: '',
+        selectionTokens: [fallbackSelectionToken],
+        effectiveSelectionTokens: [],
+        items: [{
+          selectionToken: fallbackSelectionToken,
+          sourceKey: buildMarkiSourceKey(credentials.orgId, fallbackMoment.id),
+          selectedSourceStatus: 'new',
+          moment: fallbackMoment
+        }]
+      }),
+      settleSelectionImport: async () => ({ success: true }),
+      checkSourceKeys: async () => ({ bySourceKey: {} }),
+      downloadMarkiPhoto: async () => {
+        throw new Error('private fallback failure');
+      },
+      prepareStructuredImport: prepareSuccess,
+      beginImportBatch: beginMarkiImportBatch,
+      getImportBatch: getMarkiImportBatch,
+      markBatchFailed: markMarkiImportBatchFailed,
+      markBatchReady: markMarkiImportBatchReady
+    }
+  );
+  assert.equal(
+    fallbackFailure.failures[0].displayId,
+    '1',
+    '可信会话缺少合法展示值时应使用稳定顺序型 displayId 后备值'
+  );
+
+  const metadataRoot = path.join(root, 'metadata-retry');
+  const { service: metadataService, query: metadataQuery } = await createSession([
+    buildMoment('metadata-001'),
+    buildMoment('metadata-002')
+  ]);
+  const metadataTokens = metadataQuery.photos.map((photo) => photo.selectionToken);
+  let prepareAttempt = 0;
+  const metadataDownloadIds = new Set();
+  const metadataOptions = buildImportOptions(metadataService, {
+    downloadMarkiPhoto: async (_root, moment) => {
+      const reusedExisting = metadataDownloadIds.has(moment.id);
+      metadataDownloadIds.add(moment.id);
+      return {
+        success: true,
+        sourceKey: buildMarkiSourceKey(credentials.orgId, moment.id),
+        importStatus: 'imported',
+        localPath: path.join(metadataRoot, `${moment.id}.jpg`),
+        fileName: `${moment.id}.jpg`,
+        size: 100,
+        width: 10,
+        height: 10,
+        sha256: 'b'.repeat(64),
+        completedAt: '2026-07-18T03:00:00.000Z',
+        reusedExisting
+      };
+    },
+    prepareStructuredImport: async (input, options) => {
+      prepareAttempt += 1;
+      return createPrepareResult(options.batchId, input.items, prepareAttempt > 1);
+    }
+  });
+  const metadataFailed = await importMarkiPhotoQuerySelection(
+    {
+      ...buildRequest(metadataQuery, metadataTokens),
+      documentsPath: metadataRoot
+    },
+    metadataOptions
+  );
+  assert.equal(metadataFailed.status, 'metadata_failed', '元数据局部失败应生成 failed 批次');
+  assert.deepEqual(
+    Object.keys(metadataFailed.failures[0]),
+    ['selectionToken', 'displayId', 'code', 'message'],
+    '元数据失败摘要必须严格保持四字段'
+  );
+  assert.equal(
+    metadataFailed.failures[0].displayId,
+    metadataQuery.photos[0].displayId,
+    '元数据失败 displayId 必须来自可信查询会话'
+  );
+  const failedBatch = await getMarkiImportBatch(userDataPath, metadataFailed.batchId);
+  assert.equal(failedBatch.status, 'failed', '元数据失败批次状态必须为 failed');
+  assert.equal(failedBatch.workbenchImportPackage, null, 'failed 批次不得交付工作台包');
+
+  const metadataRecovered = await importMarkiPhotoQuerySelection(
+    {
+      ...buildRequest(metadataQuery, metadataTokens),
+      documentsPath: metadataRoot
+    },
+    metadataOptions
+  );
+  assert.equal(metadataRecovered.status, 'ready', '元数据恢复后应使用原任务重试成功');
+  assert.equal(metadataRecovered.batchId, metadataFailed.batchId, '元数据失败重试必须复用同一 batchId');
+  assert.equal(metadataRecovered.reusedCount, 2, '元数据重试不得重复下载已经完成的 JPG');
+  assert.equal(
+    (await getMarkiImportBatch(userDataPath, metadataRecovered.batchId)).status,
+    'ready',
+    'failed → preparing → ready 状态链必须完成'
+  );
+
+  const sharedMoment = buildMoment('reservation-shared');
+  const firstReservation = await createSession([sharedMoment]);
+  const secondReservation = await createSession([sharedMoment]);
+  let releaseDownload;
+  const blockedDownload = new Promise((resolve) => {
+    releaseDownload = resolve;
+  });
+  const reservationDownload = async (_root, moment) => {
+    await blockedDownload;
+    return {
+      success: true,
+      sourceKey: buildMarkiSourceKey(credentials.orgId, moment.id),
+      importStatus: 'imported',
+      localPath: path.join(root, `${moment.id}.jpg`),
+      fileName: `${moment.id}.jpg`,
+      size: 100,
+      width: 10,
+      height: 10,
+      sha256: 'c'.repeat(64),
+      completedAt: '2026-07-18T03:00:00.000Z',
+      reusedExisting: false
+    };
+  };
+  const firstReservationPromise = importMarkiPhotoQuerySelection(
+    buildRequest(firstReservation.query, [firstReservation.query.photos[0].selectionToken]),
+    buildImportOptions(firstReservation.service, {
+      downloadMarkiPhoto: reservationDownload,
+      prepareStructuredImport: prepareSuccess
+    })
+  );
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await assert.rejects(
+    () => importMarkiPhotoQuerySelection(
+      buildRequest(secondReservation.query, [secondReservation.query.photos[0].selectionToken]),
+      buildImportOptions(secondReservation.service, {
+        downloadMarkiPhoto: reservationDownload,
+        prepareStructuredImport: prepareSuccess
+      })
+    ),
+    (error) => error?.code === 'marki_photo_import_source_busy',
+    '不同会话并发导入相同 sourceKey 时必须整批拒绝'
+  );
+  releaseDownload();
+  assert.equal((await firstReservationPromise).status, 'ready', '来源占用释放后原任务应正常完成');
+
+  await service.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+  await integritySession.service.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+  await batchFailureSession.service.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+  await metadataService.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+  await firstReservation.service.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+  await secondReservation.service.cleanup({ now: () => Date.now() + HARD_TTL_MS + 1 });
+}
+
+async function checkMarkiEndToEndFlow(root) {
+  const documentsPath = path.join(root, 'documents');
+  const userDataPath = path.join(root, 'user-data');
+  const orgId = '12345';
+  const credentials = { orgId, key: 'mock-only-key' };
+  const jpeg = createTestJpeg(8, 6);
+  const moments = Array.from({ length: 5 }, (_, index) => {
+    const number = index + 1;
+    return {
+      id: `end-to-end-${String(number).padStart(3, '0')}`,
+      uid: String(21000 + number),
+      teamId: '10001',
+      url: `https://mock.invalid/end-to-end-${number}.jpg`,
+      momentType: 1,
+      content: JSON.stringify([
+        ['日期', '2026-07-18'],
+        ['小区名称', '潇湘新区二期'],
+        ['工作内容', '设施巡查'],
+        ['地点', `测试区域${number}`],
+        ['上传人', `测试人员${number}`],
+        ['防伪码', `CHAIN-${number}`]
+      ]),
+      markName: '工程类专用',
+      lng: 103.8,
+      lat: 25.5,
+      postTime: Math.floor(Date.parse(`2026-07-18T0${number}:00:00Z`) / 1000)
+    };
+  });
+  let queryPage = 0;
+  const queryService = createMarkiPhotoQuerySessionService({
+    listMarkiMoments: async (_credentials, filters) => {
+      queryPage += 1;
+      if (!filters.next) {
+        return { moments: [moments[0], moments[1], moments[2]], next: 'page-2', hasMore: true };
+      }
+      assert.equal(filters.next, 'page-2', '下一页游标必须来自主进程会话');
+      return { moments: [moments[2], moments[3]], next: '', hasMore: false };
+    },
+    checkMarkiSourceKeys
+  });
+  const firstPage = await queryService.create({
+    credentials,
+    documentsPath,
+    filters: {
+      teamId: '10001',
+      start: '2026-07-18 00:00:00',
+      end: '2026-07-18 23:59:59'
+    }
+  });
+  assert.equal(firstPage.photos.length, 3, '模拟全链路应读取查询第一页');
+  const secondPage = await queryService.loadNext(firstPage.sessionId, { credentials });
+  assert.equal(queryPage, 2, '模拟全链路应读取查询下一页');
+  assert.equal(secondPage.photos.length, 4, '跨页重复 moment 不得生成重复 selectionToken');
+  const selectedTokens = [
+    secondPage.photos[0].selectionToken,
+    secondPage.photos[2].selectionToken,
+    secondPage.photos[3].selectionToken
+  ];
+
+  let activeDownloads = 0;
+  let maxDownloads = 0;
+  let failMomentFour = true;
+  const fetchCounts = new Map();
+  const fetchImpl = async (url) => {
+    const text = String(url);
+    const momentNumber = /end-to-end-(\d+)\.jpg/.exec(text)?.[1] || '';
+    fetchCounts.set(momentNumber, (fetchCounts.get(momentNumber) || 0) + 1);
+    activeDownloads += 1;
+    maxDownloads = Math.max(maxDownloads, activeDownloads);
+    await new Promise((resolve) => setTimeout(resolve, 4));
+    activeDownloads -= 1;
+    if (momentNumber === '4' && failMomentFour) {
+      failMomentFour = false;
+      return new Response('', { status: 503 });
+    }
+    return new Response(jpeg, { status: 200, headers: { 'content-type': 'image/jpeg' } });
+  };
+  const importOptions = {
+    beginSelectionImport: queryService.beginImport,
+    settleSelectionImport: queryService.settleImport,
+    checkSourceKeys: checkMarkiSourceKeys,
+    downloadMarkiPhoto,
+    prepareStructuredImport: prepareMarkiStructuredImport,
+    beginImportBatch: beginMarkiImportBatch,
+    getImportBatch: getMarkiImportBatch,
+    markBatchFailed: markMarkiImportBatchFailed,
+    markBatchReady: markMarkiImportBatchReady,
+    downloadOptions: { fetchImpl },
+    orchestratorOptions: {
+      loadConfigs: async () => ({
+        projects: ['潇湘新区二期'],
+        watermarkCategories: {
+          '工程类专用': { items: ['设施巡查'] }
+        }
+      })
+    }
+  };
+  const request = {
+    credentials,
+    documentsPath,
+    userDataPath,
+    request: {
+      sessionId: secondPage.sessionId,
+      selectionTokens: selectedTokens
+    }
+  };
+  const downloadFailed = await importMarkiPhotoQuerySelection(request, importOptions);
+  assert.equal(downloadFailed.status, 'download_failed', '模拟链路应覆盖下载失败');
+  assert.equal(downloadFailed.batchId, '', '下载失败时不得生成批次');
+  assert.equal(maxDownloads <= 3, true, '模拟链路下载并发不得超过三路');
+  const retried = await importMarkiPhotoQuerySelection(request, importOptions);
+  assert.equal(retried.status, 'ready', '下载失败后原 token 集合重试应生成 ready 批次');
+  assert.equal(retried.reusedCount, 2, '重试应完整复用前次已成功 JPG');
+  assert.equal(fetchCounts.get('1'), 1, '已成功 JPG 重试时不得再次请求网络');
+  assert.equal(fetchCounts.get('3'), 1, '跨页选中的已成功 JPG 应直接复用');
+  assert.equal(fetchCounts.get('4'), 2, '失败照片应在重试时再次下载');
+
+  const readyBatches = await listReadyMarkiImportBatches(userDataPath);
+  assert.equal(readyBatches.items.some((batch) => batch.batchId === retried.batchId), true, 'ready 批次应出现在发现入口');
+  const readyBatch = await getMarkiImportBatch(userDataPath, retried.batchId);
+  assert.equal(readyBatch.status, 'ready', '完整链路批次应为 ready');
+  assert.equal(Boolean(readyBatch.workbenchImportPackage), true, 'ready 批次应保存五字段工作台包');
+  assert.equal(
+    JSON.stringify(readyBatch).includes('mock.invalid'),
+    false,
+    '批次不得保存 mock 远程 URL'
+  );
+  assert.equal(
+    JSON.stringify(readyBatch).includes('CHAIN-'),
+    false,
+    '工作台批次不得保存防伪码'
+  );
+
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiWorkbenchImport.js')
+  ).href;
+  const { mergeMarkiWorkbenchImportPackage } = await import(
+    `${moduleUrl}?endtoend=${Date.now()}`
+  );
+  const emptyState = {
+    photos: [],
+    recognitionResultsByPhoto: {},
+    watermarkRecordsByPhoto: {},
+    archiveSuggestionsByPhoto: {},
+    selectedIds: [],
+    activePhotoId: ''
+  };
+  const merged = mergeMarkiWorkbenchImportPackage(emptyState, readyBatch.workbenchImportPackage);
+  assert.equal(merged.stats.addedCount, 3, 'ready 批次应追加到现有工作台');
+
+  let failFirstConsumeRename = true;
+  const oneShotConsumeFailureFileSystem = {
+    mkdir: (...args) => fs.mkdir(...args),
+    open: (...args) => fs.open(...args),
+    readFile: (...args) => fs.readFile(...args),
+    readdir: (...args) => fs.readdir(...args),
+    rename: async (...args) => {
+      if (failFirstConsumeRename) {
+        failFirstConsumeRename = false;
+        const error = new Error('injected consume rename failure');
+        error.code = 'EPERM';
+        throw error;
+      }
+      return fs.rename(...args);
+    },
+    rm: (...args) => fs.rm(...args)
+  };
+  await assert.rejects(
+    () => consumeMarkiImportBatch(
+      userDataPath,
+      retried.batchId,
+      { fs: oneShotConsumeFailureFileSystem }
+    ),
+    (error) => error?.code === 'marki_import_batch_save_failed',
+    '第一次消费必须真实经历一次可控的原子替换失败'
+  );
+  const batchAfterConsumeFailure = await getMarkiImportBatch(userDataPath, retried.batchId);
+  assert.equal(batchAfterConsumeFailure.status, 'ready', '消费写入失败后批次必须保持 ready');
+  assert.equal(
+    Boolean(batchAfterConsumeFailure.workbenchImportPackage),
+    true,
+    '消费写入失败不得形成半消费或清除工作台包'
+  );
+  const duplicateMerge = mergeMarkiWorkbenchImportPackage(
+    merged,
+    batchAfterConsumeFailure.workbenchImportPackage
+  );
+  assert.equal(duplicateMerge.stats.addedCount, 0, '消费失败后再次处理同一 ready 包不得重复追加');
+  assert.equal(duplicateMerge.stats.duplicateCount, 3, '消费失败恢复时 sourceKey 全局重复统计应准确');
+  assert.equal(duplicateMerge.photos, merged.photos, '消费失败后重试不得重复合并照片');
+  assert.equal(
+    duplicateMerge.recognitionResultsByPhoto,
+    merged.recognitionResultsByPhoto,
+    '消费失败后重试不得重复写入识别结果'
+  );
+  assert.equal(
+    duplicateMerge.watermarkRecordsByPhoto,
+    merged.watermarkRecordsByPhoto,
+    '消费失败后重试不得重复写入水印记录'
+  );
+  assert.equal(
+    duplicateMerge.archiveSuggestionsByPhoto,
+    merged.archiveSuggestionsByPhoto,
+    '消费失败后重试不得重复写入归档建议'
+  );
+  assert.equal(
+    new Set(duplicateMerge.photos.map((photo) => photo.sourceKey)).size,
+    duplicateMerge.photos.length,
+    '消费失败后重试不得产生重复 sourceKey'
+  );
+  const consumed = await consumeMarkiImportBatch(userDataPath, retried.batchId);
+  assert.equal(consumed.alreadyConsumed, false, '第二次使用同一 batchId 应成功完成首次真实消费');
+  const repeatedConsume = await consumeMarkiImportBatch(userDataPath, retried.batchId);
+  assert.equal(repeatedConsume.alreadyConsumed, true, '消费成功后再次调用应幂等返回 alreadyConsumed');
+  assert.equal(
+    (await getMarkiImportBatch(userDataPath, retried.batchId)).workbenchImportPackage,
+    null,
+    'consumed 墓碑必须清除工作台包'
+  );
+
+  const duplicateQueryService = createMarkiPhotoQuerySessionService({
+    listMarkiMoments: async () => ({ moments: [moments[0], moments[2]], next: '', hasMore: false }),
+    checkMarkiSourceKeys
+  });
+  const duplicateQuery = await duplicateQueryService.create({
+    credentials,
+    documentsPath,
+    filters: {
+      start: '2026-07-18 00:00:00',
+      end: '2026-07-18 23:59:59'
+    }
+  });
+  const nothingToImport = await importMarkiPhotoQuerySelection({
+    credentials,
+    documentsPath,
+    userDataPath,
+    request: {
+      sessionId: duplicateQuery.sessionId,
+      selectionTokens: duplicateQuery.photos.map((photo) => photo.selectionToken)
+    }
+  }, {
+    ...importOptions,
+    beginSelectionImport: duplicateQueryService.beginImport,
+    settleSelectionImport: duplicateQueryService.settleImport
+  });
+  assert.equal(nothingToImport.status, 'nothing_to_import', '历史 imported 项普通导入应全部跳过');
+
+  const metadataMoments = [moments[4], {
+    ...moments[4],
+    id: 'end-to-end-006',
+    url: 'https://mock.invalid/end-to-end-6.jpg'
+  }];
+  const metadataQueryService = createMarkiPhotoQuerySessionService({
+    listMarkiMoments: async () => ({ moments: metadataMoments, next: '', hasMore: false }),
+    checkMarkiSourceKeys
+  });
+  const metadataQuery = await metadataQueryService.create({
+    credentials,
+    documentsPath,
+    filters: {
+      start: '2026-07-18 00:00:00',
+      end: '2026-07-18 23:59:59'
+    }
+  });
+  let metadataWritable = false;
+  const metadataImportOptions = {
+    ...importOptions,
+    beginSelectionImport: metadataQueryService.beginImport,
+    settleSelectionImport: metadataQueryService.settleImport,
+    orchestratorOptions: {
+      ...importOptions.orchestratorOptions,
+      saveSourceMetadata: async (rootPath, record, saveOptions) => {
+        if (!metadataWritable && record.sourceKey.endsWith(':end-to-end-006')) {
+          const error = new Error('private metadata error');
+          error.code = 'marki_source_metadata_save_failed';
+          throw error;
+        }
+        return saveMarkiSourceMetadata(rootPath, record, saveOptions);
+      }
+    }
+  };
+  const metadataRequest = {
+    credentials,
+    documentsPath,
+    userDataPath,
+    request: {
+      sessionId: metadataQuery.sessionId,
+      selectionTokens: metadataQuery.photos.map((photo) => photo.selectionToken)
+    }
+  };
+  const metadataFailure = await importMarkiPhotoQuerySelection(metadataRequest, metadataImportOptions);
+  assert.equal(metadataFailure.status, 'metadata_failed', '模拟链路应覆盖来源元数据局部失败');
+  assert.equal(
+    (await getMarkiImportBatch(userDataPath, metadataFailure.batchId)).status,
+    'failed',
+    '元数据局部失败必须生成 failed 批次'
+  );
+  metadataWritable = true;
+  const metadataRetry = await importMarkiPhotoQuerySelection(metadataRequest, metadataImportOptions);
+  assert.equal(metadataRetry.status, 'ready', '来源元数据恢复后应完成 failed → preparing → ready');
+  assert.equal(metadataRetry.batchId, metadataFailure.batchId, '元数据重试必须使用同一 batchId');
+  assert.equal(metadataRetry.reusedCount, 2, '元数据重试应复验并复用 imported JPG');
+
+  const serializedRendererResults = JSON.stringify({
+    firstPage,
+    secondPage,
+    downloadFailed,
+    retried,
+    readyBatches,
+    nothingToImport,
+    metadataFailure,
+    metadataRetry
+  });
+  for (const forbidden of ['mock.invalid', '"content"', '"sourceKey"', '"orgId"', '"localPath"', '"stack"']) {
+    assert.equal(
+      serializedRendererResults.includes(forbidden),
+      false,
+      `renderer 安全结果不得包含 ${forbidden}`
+    );
+  }
 }
 
 async function checkMarkiWorkbenchImport() {
@@ -3748,34 +4743,33 @@ async function checkMarkiWorkbenchImport() {
   scenarioCount += 1;
 
   assert.equal(
-    glueSource.indexOf('getImportBatch(batchId)') < glueSource.indexOf('mergeMarkiWorkbenchImportPackage(')
-      && glueSource.indexOf('mergeMarkiWorkbenchImportPackage(') < glueSource.indexOf('consumeImportBatch(batchId)'),
+    glueSource.indexOf('getImportBatch(batchId)') < glueSource.indexOf('persistMarkiWorkbenchImport({')
+      && glueSource.indexOf('persistMarkiWorkbenchImport({') < glueSource.indexOf('consumeImportBatch(batchId)'),
     true,
-    '页面粘合层必须先查询、再合并、最后消费批次'
+    '页面粘合层必须先查询，再通过持久化事务合并并消费批次'
   );
   scenarioCount += 1;
 
-  const mergeCallIndex = glueSource.indexOf('mergeMarkiWorkbenchImportPackage(');
-  const consumeCallIndex = glueSource.indexOf('consumeImportBatch(batchId)');
-  const mergeFailureBoundary = glueSource.slice(mergeCallIndex, consumeCallIndex);
+  const mergeCallIndex = glueSource.indexOf('persistMarkiWorkbenchImport({');
   assert.equal(
-    /catch\s*\{[\s\S]*未修改当前工作台[\s\S]*return;[\s\S]*\}/.test(mergeFailureBoundary),
+    mergeCallIndex >= 0
+      && /catch\s*\{[\s\S]*工作台导入包校验失败，未修改当前工作台。[\s\S]*return;[\s\S]*\}/.test(glueSource.slice(mergeCallIndex)),
     true,
     '纯合并异常必须在消费前返回'
   );
   scenarioCount += 1;
 
   const addedBranch = glueSource.slice(
-    glueSource.indexOf('if (merged.stats.addedCount > 0)'),
-    glueSource.indexOf('let consumeResult')
+    glueSource.indexOf('prepareWorkspace:'),
+    glueSource.indexOf('saveSnapshot:')
   );
-  for (const expectedSetter of [
-    "setFilter('all')",
-    "setSearchText('')",
-    "setSmartSortViewMode('statusFilter')",
-    "setActiveSmartSortGroupId('')"
+  for (const expectedState of [
+    "filter: 'all'",
+    "searchText: ''",
+    "smartSortViewMode: 'statusFilter'",
+    "activeSmartSortGroupId: ''"
   ]) {
-    assert.equal(addedBranch.includes(expectedSetter), true, `新增照片后应执行 ${expectedSetter}`);
+    assert.equal(addedBranch.includes(expectedState), true, `新增照片后应写入 ${expectedState}`);
   }
   scenarioCount += 1;
 
@@ -3783,7 +4777,7 @@ async function checkMarkiWorkbenchImport() {
   scenarioCount += 1;
 
   const consumeFailureBranch = glueSource.slice(
-    glueSource.indexOf('if (consumeResult?.success !== true)'),
+    glueSource.indexOf("if (transactionResult.consumeResult?.success !== true)"),
     glueSource.indexOf('const { addedCount, duplicateCount, conflictCount }')
   );
   assert.equal(
@@ -3815,12 +4809,3539 @@ async function checkMarkiWorkbenchImport() {
   assert.equal(scenarioCount, 30, '马克批次进入工作台应完整执行 30 个自检场景');
 }
 
-async function checkCurrentFormContract() {
+async function checkSortWorkspaceSnapshot(root) {
+  await fs.mkdir(root, { recursive: true });
+  const servicePath = require.resolve('../electron/services/sortWorkspaceSnapshotService.cjs');
+  const snapshotUtilityUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sortWorkspaceSnapshot.js')
+  ).href;
+  const workbenchUtilityUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiWorkbenchImport.js')
+  ).href;
   const {
+    buildSortWorkspaceSnapshotWorkspace,
+    createDebouncedSnapshotSaver,
+    persistMarkiWorkbenchImport
+  } = await import(`${snapshotUtilityUrl}?snapshot-check=${Date.now()}`);
+  const { mergeMarkiWorkbenchImportPackage } = await import(
+    `${workbenchUtilityUrl}?snapshot-check=${Date.now()}`
+  );
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  let sourceContractAssertionCount = 0;
+  const equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const deepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+  const makePhoto = (id, originalPath, sourceKey = '') => ({
+    id,
+    originalPath,
+    originalName: `${id}.jpg`,
+    extension: '.jpg',
+    size: 4,
+    width: 10,
+    height: 10,
+    modifiedAt: '2026-07-19T00:00:00.000Z',
+    previewUrl: `local-photo://image/${encodeURIComponent(originalPath)}`,
+    thumbnailPath: `local-photo://image/${encodeURIComponent(originalPath)}`,
+    selected: false,
+    sortStatus: sourceKey ? 'recognized' : 'assigned',
+    smartSortStatus: 'completed',
+    archiveInfo: sourceKey ? null : { project: '演示项目', workContent: '设备巡查', date: '2026-07-19' },
+    previewInfo: sourceKey ? null : { targetName: `${id}-preview.jpg` },
+    archiveResult: null,
+    originalMissing: false,
+    ...(sourceKey
+      ? {
+          sourceType: 'marki_api',
+          sourceKey,
+          sourceMetadataRef: sourceKey.replace('marki_api:', 'marki_source_metadata:')
+        }
+      : {})
+  });
+  const makeWorkspace = (photos, overrides = {}) => {
+    const recognitionResultsByPhoto = {};
+    const watermarkRecordsByPhoto = {};
+    const archiveSuggestionsByPhoto = {};
+    for (const photo of photos) {
+      recognitionResultsByPhoto[photo.id] = {
+        status: photo.sourceType === 'marki_api' ? 'recognized' : 'success',
+        rawContent: '不得进入自动快照',
+        nested: { url: 'https://private.invalid/photo.jpg' }
+      };
+      watermarkRecordsByPhoto[photo.id] = { workContent: `巡查-${photo.id}` };
+      archiveSuggestionsByPhoto[photo.id] = { status: 'suggestion_ready', project: '演示项目' };
+    }
+    return buildSortWorkspaceSnapshotWorkspace({
+      photos,
+      selectedIds: photos.map((photo) => photo.id),
+      activePhotoId: photos.at(-1)?.id || '',
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto,
+      smartSortResult: {
+        status: 'created',
+        rules: [{ id: 'time_window', key: 'time_window', enabled: true }],
+        groups: [{ id: 'group-1', title: '巡查组', photoIds: photos.map((photo) => photo.id) }]
+      },
+      smartSortViewMode: 'smartSortGroup',
+      activeSmartSortGroupId: 'group-1',
+      photoFolder: 'C:\\photos',
+      archiveRoot: 'C:\\archive',
+      filter: 'selected',
+      sortMode: 'timeDesc',
+      pageSize: 100,
+      rightPanelMode: 'recognition',
+      form: {
+        project: '演示项目',
+        watermarkCategory: '巡查检查类',
+        workContent: '设备巡查',
+        date: '2026-07-19'
+      },
+      searchText: '巡查',
+      page: 2,
+      viewMode: 'list',
+      ...overrides
+    });
+  };
+  const makePackage = (photo, batchId = 'snapshot-batch') => ({
+    batchId,
+    photos: [photo],
+    recognitionResultsByPhoto: { [photo.id]: { status: 'recognized' } },
+    watermarkRecordsByPhoto: { [photo.id]: { workContent: `巡查-${photo.id}` } },
+    archiveSuggestionsByPhoto: { [photo.id]: { status: 'suggestion_ready', project: '演示项目' } }
+  });
+
+  const photoRoot = path.join(root, 'photos');
+  await fs.mkdir(photoRoot, { recursive: true });
+  const localPath = path.join(photoRoot, 'local.jpg');
+  const markiPath = path.join(photoRoot, 'marki.jpg');
+  const appendPath = path.join(photoRoot, 'append.jpg');
+  await fs.writeFile(localPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  await fs.writeFile(markiPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  await fs.writeFile(appendPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  const localPhoto = makePhoto('local-photo', localPath);
+  const markiPhoto = makePhoto('marki-photo', markiPath, 'marki_api:12345:moment-1');
+  const missingPhoto = makePhoto(
+    'missing-photo',
+    path.join(photoRoot, 'missing.jpg'),
+    'marki_api:12345:moment-missing'
+  );
+
+  {
+    const result = await loadSortWorkspaceSnapshot(path.join(root, 'none'));
+    equal(result.success, true, '无快照应返回安全成功');
+    equal(result.found, false, '无快照应返回 found=false');
+    scenarioCount += 1;
+  }
+
+  const persistenceRoot = path.join(root, 'persistence');
+  const initialWorkspace = makeWorkspace([localPhoto, markiPhoto, missingPhoto]);
+  {
+    const result = await saveSortWorkspaceSnapshot(persistenceRoot, initialWorkspace, {
+      now: () => new Date('2026-07-19T01:00:00.000Z')
+    });
+    equal(result.success, true, '完整统一照片池应保存成功');
+    equal(result.photoCount, 3, '保存结果应返回照片数量');
+    scenarioCount += 1;
+  }
+
+  let freshService;
+  {
+    delete require.cache[servicePath];
+    freshService = require(servicePath);
+    const result = await freshService.loadSortWorkspaceSnapshot(persistenceRoot);
+    equal(result.success, true, '全新服务实例应恢复快照');
+    equal(result.snapshot.workspace.photos.length, 3, '重启后应恢复全部照片');
+    deepEqual(result.snapshot.workspace.selectedIds, initialWorkspace.selectedIds, '重启后应恢复选择');
+    equal(result.snapshot.workspace.activePhotoId, initialWorkspace.activePhotoId, '重启后应恢复当前照片');
+    equal(result.snapshot.workspace.smartSortResult.rules[0].key, 'time_window', '智拣规则应完整恢复');
+    equal(result.snapshot.workspace.activeSmartSortGroupId, 'group-1', '当前智拣分组应恢复');
+    equal(result.snapshot.workspace.photos[0].smartSortStatus, 'completed', '本地照片 completed 智拣状态应恢复');
+    equal(result.snapshot.workspace.photos[1].smartSortStatus, 'completed', 'Marki 照片 completed 智拣状态应恢复');
+    equal(result.snapshot.workspace.photos[1].sourceKey, markiPhoto.sourceKey, 'Marki sourceKey 应恢复');
+    equal(
+      result.snapshot.workspace.photos[1].sourceMetadataRef,
+      markiPhoto.sourceMetadataRef,
+      'Marki 来源元数据引用应恢复'
+    );
+    equal(result.snapshot.workspace.recognitionResultsByPhoto[markiPhoto.id].status, 'recognized', '识别映射应恢复');
+    equal(result.snapshot.workspace.watermarkRecordsByPhoto[markiPhoto.id].workContent, `巡查-${markiPhoto.id}`, '水印映射应恢复');
+    equal(result.snapshot.workspace.archiveSuggestionsByPhoto[markiPhoto.id].project, '演示项目', '归档建议应恢复');
+    scenarioCount += 1;
+  }
+
+  {
+    const result = await freshService.loadSortWorkspaceSnapshot(persistenceRoot);
+    const missing = result.snapshot.workspace.photos.find((photo) => photo.id === missingPhoto.id);
+    equal(missing.originalMissing, true, '缺失原图记录应保留并标记');
+    equal(missing.missingSortStatus, missingPhoto.sortStatus, '缺失原图应保留原状态');
+    equal(result.snapshot.workspace.photos[0].originalMissing, false, '其他照片应正常恢复');
+    equal(result.snapshot.workspace.photos.length, 3, '单张缺失不得清空整个工作台');
+    scenarioCount += 1;
+  }
+
+  {
+    const text = await fs.readFile(getSortWorkspaceSnapshotPath(persistenceRoot), 'utf8');
+    equal(text.includes('local-photo://'), false, '可重建本地预览 URL 不得落盘');
+    equal(text.includes('private.invalid'), false, '远程 URL 不得落盘');
+    equal(text.includes('不得进入自动快照'), false, '原始 content 不得落盘');
+    equal(text.includes('"rawContent"'), false, 'rawContent 字段不得落盘');
+    scenarioCount += 1;
+  }
+
+  {
+    const before = await freshService.loadSortWorkspaceSnapshot(persistenceRoot);
+    const failed = await freshService.saveSortWorkspaceSnapshot(
+      persistenceRoot,
+      makeWorkspace([localPhoto], { searchText: 'newer' }),
+      {
+        fs: {
+          ...fs,
+          rename: async () => {
+            const error = new Error('controlled rename failure');
+            error.code = 'EACCES';
+            throw error;
+          }
+        }
+      }
+    );
+    equal(failed.success, false, '原子替换失败应安全返回');
+    const after = await freshService.loadSortWorkspaceSnapshot(persistenceRoot);
+    equal(after.snapshot.savedAt, before.snapshot.savedAt, '原子替换失败应保留旧快照');
+    const fileNames = await fs.readdir(path.dirname(getSortWorkspaceSnapshotPath(persistenceRoot)));
+    equal(fileNames.some((name) => name.endsWith('.tmp')), false, '原子失败后应清理临时文件');
+    scenarioCount += 1;
+  }
+
+  {
+    const corruptRoot = path.join(root, 'corrupt');
+    const corruptPath = getSortWorkspaceSnapshotPath(corruptRoot);
+    await fs.mkdir(path.dirname(corruptPath), { recursive: true });
+    await fs.writeFile(corruptPath, '{"schemaVersion":1,', 'utf8');
+    const loaded = await freshService.loadSortWorkspaceSnapshot(corruptRoot);
+    equal(loaded.success, false, '损坏 JSON 不得导致崩溃');
+    equal(loaded.error.code, 'sort_workspace_snapshot_corrupt', '损坏 JSON 应返回固定错误码');
+    equal(JSON.stringify(loaded).includes(corruptRoot), false, '损坏错误不得暴露 userData 路径');
+    const overwrite = await freshService.saveSortWorkspaceSnapshot(corruptRoot, makeWorkspace([localPhoto]));
+    equal(overwrite.success, false, '损坏快照不得被静默覆盖');
+    equal(await fs.readFile(corruptPath, 'utf8'), '{"schemaVersion":1,', '损坏文件应保留');
+    scenarioCount += 1;
+  }
+
+  {
+    const incompatibleRoot = path.join(root, 'incompatible');
+    const incompatiblePath = getSortWorkspaceSnapshotPath(incompatibleRoot);
+    await fs.mkdir(path.dirname(incompatiblePath), { recursive: true });
+    await fs.writeFile(incompatiblePath, JSON.stringify({
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION + 1,
+      savedAt: '2026-07-19T01:00:00.000Z',
+      workspace: initialWorkspace
+    }), 'utf8');
+    const loaded = await freshService.loadSortWorkspaceSnapshot(incompatibleRoot);
+    equal(loaded.success, false, '未知 schemaVersion 应拒绝');
+    equal(loaded.error.code, 'sort_workspace_snapshot_incompatible', '未知版本应返回不兼容错误');
+    scenarioCount += 1;
+  }
+
+  {
+    const callbacks = new Map();
+    const saves = [];
+    let timerId = 0;
+    const saver = createDebouncedSnapshotSaver({
+      save: async (workspace) => {
+        saves.push(workspace.searchText);
+        return { success: true };
+      },
+      setTimer: (callback) => {
+        timerId += 1;
+        callbacks.set(timerId, callback);
+        return timerId;
+      },
+      clearTimer: (id) => callbacks.delete(id)
+    });
+    saver.setEnabled(true);
+    saver.schedule(makeWorkspace([localPhoto], { searchText: 'first' }));
+    saver.schedule(makeWorkspace([localPhoto], { searchText: 'second' }));
+    saver.schedule(makeWorkspace([localPhoto], { searchText: 'final' }));
+    equal(callbacks.size, 1, '连续变化只保留一个防抖任务');
+    callbacks.values().next().value();
+    await saver.whenIdle();
+    deepEqual(saves, ['final'], '防抖只应保存最终状态');
+    scenarioCount += 1;
+  }
+
+  {
+    const completed = [];
+    let lastPage = 0;
+    const saver = createDebouncedSnapshotSaver({
+      save: async (workspace) => {
+        if (workspace.page === 1) await delay(20);
+        completed.push(workspace.page);
+        lastPage = workspace.page;
+        return { success: true };
+      }
+    });
+    saver.setEnabled(true);
+    await Promise.all([
+      saver.flush(makeWorkspace([localPhoto], { page: 1 })),
+      saver.flush(makeWorkspace([localPhoto], { page: 2 }))
+    ]);
+    deepEqual(completed, [1, 2], '写入应严格串行');
+    equal(lastPage, 2, '旧状态不得晚于新状态覆盖');
+    scenarioCount += 1;
+  }
+
+  {
+    let attempt = 0;
+    const saver = createDebouncedSnapshotSaver({
+      save: async () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('controlled failure');
+        return { success: true };
+      }
+    });
+    saver.setEnabled(true);
+    assertionCount += 1;
+    await assert.rejects(() => saver.flush(makeWorkspace([localPhoto], { page: 1 })));
+    const recovered = await saver.flush(makeWorkspace([localPhoto], { page: 2 }));
+    equal(recovered.success, true, '保存失败后应允许后续保存');
+    equal(attempt, 2, '保存失败不得永久锁死队列');
+    scenarioCount += 1;
+  }
+
+  {
+    let saveCount = 0;
+    const saver = createDebouncedSnapshotSaver({
+      save: async () => {
+        saveCount += 1;
+        return { success: true };
+      }
+    });
+    saver.schedule(makeWorkspace([], { searchText: 'initial-empty' }));
+    await saver.whenIdle();
+    equal(saveCount, 0, '初始化完成前不得保存空工作台');
+    scenarioCount += 1;
+  }
+
+  const appendedPhoto = makePhoto('marki-appended', appendPath, 'marki_api:12345:moment-appended');
+  const workbenchPackage = makePackage(appendedPhoto);
+  {
+    const order = [];
+    let committed = null;
+    const result = await persistMarkiWorkbenchImport({
+      currentWorkspace: makeWorkspace([localPhoto]),
+      workbenchImportPackage: workbenchPackage,
+      mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+      saveSnapshot: async () => {
+        order.push('snapshot');
+        return { success: true };
+      },
+      consumeBatch: async () => {
+        order.push('consume');
+        return { success: true };
+      },
+      commitWorkspace: (_merged, workspace) => {
+        order.push('commit');
+        committed = workspace;
+      }
+    });
+    deepEqual(order, ['snapshot', 'consume', 'commit'], 'Marki 必须先快照、后消费、再提交页面');
+    equal(result.stage, 'completed', '完整事务应完成');
+    equal(committed.photos.length, 2, '快照和页面应使用同一合并结果');
+    scenarioCount += 1;
+  }
+
+  {
+    let consumeCount = 0;
+    let commitCount = 0;
+    const result = await persistMarkiWorkbenchImport({
+      currentWorkspace: makeWorkspace([localPhoto]),
+      workbenchImportPackage: workbenchPackage,
+      mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+      saveSnapshot: async () => ({ success: false }),
+      consumeBatch: async () => {
+        consumeCount += 1;
+        return { success: true };
+      },
+      commitWorkspace: () => {
+        commitCount += 1;
+      }
+    });
+    equal(result.stage, 'snapshot', '快照失败应终止事务');
+    equal(consumeCount, 0, '快照失败不得消费批次');
+    equal(commitCount, 0, '快照失败不得提交 React 状态');
+    scenarioCount += 1;
+  }
+
+  {
+    let currentWorkspace = makeWorkspace([localPhoto]);
+    let persistedWorkspace = null;
+    let consumeAttempt = 0;
+    const run = () => persistMarkiWorkbenchImport({
+      currentWorkspace,
+      workbenchImportPackage: workbenchPackage,
+      mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+      saveSnapshot: async (workspace) => {
+        persistedWorkspace = workspace;
+        return { success: true };
+      },
+      consumeBatch: async () => {
+        consumeAttempt += 1;
+        return { success: consumeAttempt > 1 };
+      },
+      commitWorkspace: (_merged, workspace) => {
+        currentWorkspace = workspace;
+      }
+    });
+    const first = await run();
+    equal(first.stage, 'consume', '首次消费失败时快照应已完成');
+    equal(persistedWorkspace.photos.length, 2, '消费失败前快照应包含新照片');
+    const second = await run();
+    equal(second.stage, 'completed', '同一 batchId 重试应消费成功');
+    equal(second.merged.stats.addedCount, 0, '重试应依赖 sourceKey 跳过重复');
+    equal(currentWorkspace.photos.length, 2, '消费重试不得重复添加照片');
+    const consumedAgain = mergeMarkiWorkbenchImportPackage(currentWorkspace, workbenchPackage);
+    equal(consumedAgain.stats.addedCount, 0, 'consumed 后再次进入不得重复追加');
+    scenarioCount += 1;
+  }
+
+  {
+    const restartRoot = path.join(root, 'restart-append');
+    const beforeRestart = makeWorkspace([localPhoto, markiPhoto]);
+    equal((await freshService.saveSortWorkspaceSnapshot(restartRoot, beforeRestart)).success, true, '第一实例应保存快照');
+    delete require.cache[servicePath];
+    const restarted = require(servicePath);
+    const restored = await restarted.loadSortWorkspaceSnapshot(restartRoot);
+    equal(restored.success, true, '第二实例不依赖 renderer cache 即可恢复');
+    let committed = null;
+    const result = await persistMarkiWorkbenchImport({
+      currentWorkspace: restored.snapshot.workspace,
+      workbenchImportPackage: makePackage(appendedPhoto, 'snapshot-restart-batch'),
+      mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+      saveSnapshot: (workspace) => restarted.saveSortWorkspaceSnapshot(restartRoot, workspace),
+      consumeBatch: async () => ({ success: true }),
+      commitWorkspace: (_merged, workspace) => {
+        committed = workspace;
+      }
+    });
+    equal(result.stage, 'completed', '恢复后应可继续追加新批次');
+    deepEqual(
+      committed.photos.map((photo) => photo.id),
+      [localPhoto.id, markiPhoto.id, appendedPhoto.id],
+      '恢复后应保留旧照片并追加新照片'
+    );
+    equal(
+      (await restarted.loadSortWorkspaceSnapshot(restartRoot)).snapshot.workspace.photos.length,
+      3,
+      '恢复后追加结果应再次落盘'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const mainSource = await fs.readFile(path.join(process.cwd(), 'electron', 'main.cjs'), 'utf8');
+    const preloadSource = await fs.readFile(path.join(process.cwd(), 'electron', 'preload.cjs'), 'utf8');
+    const pageSource = await fs.readFile(path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'), 'utf8');
+    assert.match(mainSource, /sortWorkspaceSnapshot:save[\s\S]*app\.getPath\('userData'\)/);
+    sourceContractAssertionCount += 1;
+    assert.match(mainSource, /sortWorkspaceSnapshot:load[\s\S]*app\.getPath\('userData'\)/);
+    sourceContractAssertionCount += 1;
+    assert.match(preloadSource, /saveSortWorkspaceSnapshot: \(workspace\) => ipcRenderer\.invoke\('sortWorkspaceSnapshot:save', workspace\)/);
+    sourceContractAssertionCount += 1;
+    assert.match(preloadSource, /loadSortWorkspaceSnapshot: \(\) => ipcRenderer\.invoke\('sortWorkspaceSnapshot:load'\)/);
+    sourceContractAssertionCount += 1;
+    assert.match(pageSource, /loadSortWorkspaceSnapshot\(\)/);
+    sourceContractAssertionCount += 1;
+    assert.match(pageSource, /persistMarkiWorkbenchImport\(/);
+    sourceContractAssertionCount += 1;
+    assert.equal(pageSource.includes('saveSortWorkspaceSnapshot({ userDataPath'), false);
+    sourceContractAssertionCount += 1;
+    scenarioCount += 1;
+  }
+
+  console.log(
+    `工作台自动快照自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
+  );
+}
+
+async function checkMarkiWorkbenchRehydration(root) {
+  const documentsPath = path.join(root, 'documents');
+  const userDataPath = path.join(root, 'user-data');
+  const configs = {
+    projects: ['测试小区'],
+    watermarkCategories: {
+      工程类专用: {
+        items: ['设施巡查']
+      }
+    },
+    keywords: []
+  };
+  const counters = {
+    scenarioCount: 0,
+    assertionCount: 0,
+    sourceContractCount: 0
+  };
+  const check = (condition, message) => {
+    assert.equal(Boolean(condition), true, message);
+    counters.assertionCount += 1;
+  };
+  const scenario = () => {
+    counters.scenarioCount += 1;
+  };
+
+  async function createImportedFixture({
+    orgId,
+    momentId,
+    teamId = '11',
+    withFile = true,
+    withMetadata = true,
+    projectName = '测试小区',
+    photographerName = '测试人员'
+  }) {
+    const fileName = `${momentId}.jpg`;
+    const relativePath = `${orgId}/${teamId}/2026-07-18/${fileName}`;
+    const localPath = path.join(getMarkiImportRoot(documentsPath), ...relativePath.split('/'));
+    const jpeg = createTestJpeg(12, 9);
+    if (withFile) {
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(localPath, jpeg);
+    }
+    const inspection = {
+      size: jpeg.length,
+      width: 12,
+      height: 9,
+      sha256: createHash('sha256').update(jpeg).digest('hex')
+    };
+    const sourceKey = buildMarkiSourceKey(orgId, momentId);
+    await upsertMarkiSourceRecords(documentsPath, orgId, [{
+      momentId,
+      teamId,
+      uid: '21',
+      postTime: 1784340000,
+      markName: '工程类专用'
+    }]);
+    await updateMarkiSourceImportStatus(
+      documentsPath,
+      orgId,
+      sourceKey,
+      'downloading'
+    );
+    await updateMarkiSourceImportStatus(
+      documentsPath,
+      orgId,
+      sourceKey,
+      'imported',
+      {
+        downloadInfo: {
+          relativePath,
+          fileName,
+          ...inspection,
+          completedAt: '2026-07-18T03:00:00.000Z'
+        }
+      }
+    );
+    if (withMetadata) {
+      await saveMarkiSourceMetadata(documentsPath, {
+        orgId,
+        momentId,
+        teamId,
+        uid: '21',
+        postTime: 1784340000,
+        capturedAt: '2026-07-18T10:00:00+08:00',
+        markName: '工程类专用',
+        antiCounterfeitCode: `safe-${momentId}`,
+        parsedEntries: [
+          { key: '日期', value: '2026-07-18' },
+          { key: '小区名称', value: projectName },
+          { key: '工作内容', value: '设施巡查' },
+          { key: '上传人', value: photographerName },
+          { key: '地点', value: '一号楼' }
+        ]
+      });
+    }
+    return {
+      orgId,
+      momentId,
+      sourceKey,
+      localPath,
+      jpeg,
+      inspection,
+      relativePath,
+      fileName
+    };
+  }
+
+  await fs.mkdir(root, { recursive: true });
+
+  const legacy = await createImportedFixture({
+    orgId: '6101',
+    momentId: 'legacy-photo'
+  });
+  const missingFile = await createImportedFixture({
+    orgId: '6102',
+    momentId: 'missing-file',
+    withFile: false
+  });
+  const corrupted = await createImportedFixture({
+    orgId: '6103',
+    momentId: 'corrupted-file'
+  });
+  await fs.appendFile(corrupted.localPath, Buffer.from([0x00]));
+  await createImportedFixture({
+    orgId: '6104',
+    momentId: 'missing-metadata',
+    withMetadata: false
+  });
+  const mixedValid = await createImportedFixture({
+    orgId: '6105',
+    momentId: 'mixed-valid'
+  });
+  const mixedManifestPath = getMarkiSourceManifestPath(documentsPath, '6105');
+  const mixedManifest = JSON.parse(await fs.readFile(mixedManifestPath, 'utf8'));
+  mixedManifest.records['marki_api:6105:path-escape'] = {
+    ...mixedManifest.records[mixedValid.sourceKey],
+    sourceKey: 'marki_api:6105:path-escape',
+    momentId: 'path-escape',
+    downloadInfo: {
+      ...mixedManifest.records[mixedValid.sourceKey].downloadInfo,
+      relativePath: '../escape.jpg',
+      fileName: 'path-escape.jpg'
+    }
+  };
+  await fs.writeFile(mixedManifestPath, `${JSON.stringify(mixedManifest, null, 2)}\n`);
+  const alreadyPresent = await createImportedFixture({
+    orgId: '6106',
+    momentId: 'already-present'
+  });
+  const alreadyArchived = await createImportedFixture({
+    orgId: '6107',
+    momentId: 'already-archived'
+  });
+
+  const initialWorkspace = {
+    ...createEmptyWorkspace(),
+    photos: [
+      {
+        id: 'local-existing',
+        originalPath: path.join(root, 'local-existing.jpg'),
+        originalName: 'local-existing.jpg',
+        extension: '.jpg',
+        size: 10,
+        width: 1,
+        height: 1,
+        modifiedAt: '2026-07-18T00:00:00.000Z',
+        capturedAt: '2026-07-18T00:00:00.000Z',
+        selected: false,
+        sortStatus: 'unassigned',
+        archiveInfo: null,
+        previewInfo: null,
+        archiveResult: null,
+        originalMissing: false
+      },
+      {
+        id: 'marki-present',
+        originalPath: alreadyPresent.localPath,
+        originalName: alreadyPresent.fileName,
+        extension: '.jpg',
+        size: alreadyPresent.inspection.size,
+        width: 12,
+        height: 9,
+        modifiedAt: '2026-07-18T03:00:00.000Z',
+        capturedAt: '2026-07-18T02:00:00.000Z',
+        selected: false,
+        sortStatus: 'suggestion_ready',
+        archiveInfo: null,
+        previewInfo: null,
+        archiveResult: null,
+        originalMissing: false,
+        sourceType: 'marki_api',
+        sourceKey: alreadyPresent.sourceKey,
+        sourceMetadataRef: buildMarkiSourceMetadataRef('6106', 'already-present')
+      },
+      {
+        id: 'marki-archived',
+        originalPath: alreadyArchived.localPath,
+        originalName: alreadyArchived.fileName,
+        extension: '.jpg',
+        size: alreadyArchived.inspection.size,
+        width: 12,
+        height: 9,
+        modifiedAt: '2026-07-18T03:00:00.000Z',
+        capturedAt: '2026-07-18T02:00:00.000Z',
+        selected: false,
+        sortStatus: 'archived',
+        archiveInfo: null,
+        previewInfo: null,
+        archiveResult: { success: true },
+        originalMissing: false,
+        sourceType: 'marki_api',
+        sourceKey: alreadyArchived.sourceKey,
+        sourceMetadataRef: buildMarkiSourceMetadataRef('6107', 'already-archived')
+      }
+    ]
+  };
+  await fs.writeFile(initialWorkspace.photos[0].originalPath, createTestJpeg(1, 1));
+  check((await saveSortWorkspaceSnapshot(userDataPath, initialWorkspace)).success, '应建立含本地照片的初始自动快照');
+  scenario();
+
+  const legacyPackage = buildMarkiStructuredImportBundle({
+    orgId: legacy.orgId,
+    configs,
+    items: [{
+      moment: {
+        id: legacy.momentId,
+        uid: '21',
+        teamId: '11',
+        momentType: 1,
+        content: JSON.stringify([
+          ['日期', '2026-07-18'],
+          ['小区名称', '测试小区'],
+          ['工作内容', '设施巡查']
+        ]),
+        markName: '工程类专用',
+        postTime: 1784340000
+      },
+      sourceMetadataRef: buildMarkiSourceMetadataRef(legacy.orgId, legacy.momentId),
+      download: {
+        sourceKey: legacy.sourceKey,
+        importStatus: 'imported',
+        localPath: legacy.localPath,
+        fileName: legacy.fileName,
+        ...legacy.inspection,
+        completedAt: '2026-07-18T03:00:00.000Z'
+      }
+    }]
+  }, { batchId: 'legacy-consumed-batch' }).workbenchImportPackage;
+  const legacyDeduplication = {
+    inputCount: 1,
+    uniqueCount: 1,
+    duplicateCount: 0,
+    skippedItems: []
+  };
+  await beginMarkiImportBatch(userDataPath, {
+    batchId: 'legacy-consumed-batch',
+    inputCount: 1,
+    deduplication: legacyDeduplication
+  });
+  await markMarkiImportBatchReady(userDataPath, {
+    success: true,
+    batchId: 'legacy-consumed-batch',
+    inputCount: 1,
+    metadataSavedCount: 1,
+    failedCount: 0,
+    failures: [],
+    deduplication: legacyDeduplication,
+    workbenchImportPackage: legacyPackage
+  });
+  await consumeMarkiImportBatch(userDataPath, 'legacy-consumed-batch');
+  const consumedLegacy = await getMarkiImportBatch(userDataPath, 'legacy-consumed-batch');
+  check(consumedLegacy.status === 'consumed' && consumedLegacy.workbenchImportPackage === null, '历史批次应已 consumed 且不再保留工作台包');
+  scenario();
+
+  const historyOnlyUserDataPath = path.join(root, 'history-only-user-data');
+  const historyOnlyBatchId = 'history-only-consumed-batch';
+  const historyOnlyPackage = {
+    ...legacyPackage,
+    batchId: historyOnlyBatchId
+  };
+  await beginMarkiImportBatch(historyOnlyUserDataPath, {
+    batchId: historyOnlyBatchId,
+    inputCount: 1,
+    deduplication: legacyDeduplication
+  });
+  await markMarkiImportBatchReady(historyOnlyUserDataPath, {
+    success: true,
+    batchId: historyOnlyBatchId,
+    inputCount: 1,
+    metadataSavedCount: 1,
+    failedCount: 0,
+    failures: [],
+    deduplication: legacyDeduplication,
+    workbenchImportPackage: historyOnlyPackage
+  });
+  await consumeMarkiImportBatch(historyOnlyUserDataPath, historyOnlyBatchId);
+  check(
+    (await loadSortWorkspaceSnapshot(historyOnlyUserDataPath)).found === false,
+    '修复前历史场景不得预先存在自动工作台快照'
+  );
+  const historyOnlyService = createMarkiWorkbenchRehydrateService({
+    loadConfigs: async () => configs
+  });
+  const historyOnlyScan = await historyOnlyService.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath: historyOnlyUserDataPath
+  });
+  const historyOnlyCandidate = historyOnlyScan.items.find((item) => item.status === 'recoverable');
+  const historyOnlyRecovery = await historyOnlyService.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath: historyOnlyUserDataPath,
+    recoveryTokens: [historyOnlyCandidate.recoveryToken]
+  });
+  const historyOnlySnapshot = await loadSortWorkspaceSnapshot(historyOnlyUserDataPath);
+  check(
+    historyOnlyRecovery.success
+      && historyOnlySnapshot.found
+      && historyOnlySnapshot.snapshot.workspace.photos.length === 1,
+    'consumed 包为空且没有旧快照时应仅依赖 manifest、JPG 和来源元数据恢复'
+  );
+  scenario();
+
+  const sourceAwareModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sourceAwareRecognition.js')
+  ).href;
+  const { orchestrateSourceAwareRecognition: orchestrateRecoveredMarki } = await import(
+    `${sourceAwareModuleUrl}?rehydrated-marki=${Date.now()}`
+  );
+  const recoveredWorkspace = historyOnlySnapshot.snapshot.workspace;
+  const recoveredPhoto = recoveredWorkspace.photos[0];
+  const recoveredPlatformArtifacts = {
+    recognitionResult: recoveredWorkspace.recognitionResultsByPhoto[recoveredPhoto.id],
+    watermarkRecord: recoveredWorkspace.watermarkRecordsByPhoto[recoveredPhoto.id],
+    archiveSuggestion: recoveredWorkspace.archiveSuggestionsByPhoto[recoveredPhoto.id]
+  };
+  let recoveredOcrCalls = 0;
+  let recoveredStatusChecks = 0;
+  let recoveredGroupCalls = 0;
+  const runRecoveredMarki = (state) => orchestrateRecoveredMarki({
+    photos: state.photos,
+    recognitionResultsByPhoto: state.recognitionResultsByPhoto,
+    watermarkRecordsByPhoto: state.watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto: state.archiveSuggestionsByPhoto,
+    getOcrAvailability: async () => {
+      recoveredStatusChecks += 1;
+      return { available: false };
+    },
+    recognizePhoto: async () => {
+      recoveredOcrCalls += 1;
+      throw new Error('历史恢复的完整 Marki 不得执行 OCR');
+    },
+    buildOcrArtifacts: () => {
+      throw new Error('历史恢复的完整 Marki 不得重新解析');
+    },
+    generateGroups: async ({ photos }) => {
+      recoveredGroupCalls += 1;
+      return { status: 'created', groupCount: 1, photoCount: photos.length };
+    }
+  });
+  const firstRecoveredSmartSort = await runRecoveredMarki(recoveredWorkspace);
+  const secondRecoveredSmartSort = await runRecoveredMarki(firstRecoveredSmartSort);
+  check(recoveredOcrCalls === 0, '历史恢复完整 Marki 连续两次智拣 OCR 调用必须为零');
+  check(recoveredStatusChecks === 0, '历史恢复完整 Marki 连续两次智拣不得检查 OCR 服务');
+  check(recoveredGroupCalls === 2, '历史恢复完整 Marki 每次智拣各统一分组一次');
+  check(
+    JSON.stringify(secondRecoveredSmartSort.recognitionResultsByPhoto[recoveredPhoto.id])
+      === JSON.stringify(recoveredPlatformArtifacts.recognitionResult),
+    '历史恢复完整 Marki 重复智拣不得改写平台 recognition'
+  );
+  check(
+    JSON.stringify(secondRecoveredSmartSort.watermarkRecordsByPhoto[recoveredPhoto.id])
+      === JSON.stringify(recoveredPlatformArtifacts.watermarkRecord),
+    '历史恢复完整 Marki 重复智拣不得改写平台 watermark'
+  );
+  check(
+    JSON.stringify(secondRecoveredSmartSort.archiveSuggestionsByPhoto[recoveredPhoto.id])
+      === JSON.stringify(recoveredPlatformArtifacts.archiveSuggestion),
+    '历史恢复完整 Marki 重复智拣不得改写平台 suggestion'
+  );
+  scenario();
+
+  const service = createMarkiWorkbenchRehydrateService({
+    loadConfigs: async () => configs
+  });
+  const scanResult = await service.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath
+  });
+  check(scanResult.success, '历史 Marki 来源扫描应成功');
+  check(scanResult.counts.recoverable === 2, '应识别两张可恢复历史照片');
+  check(scanResult.counts.already_in_workbench === 1, '应识别已在工作台的照片');
+  check(scanResult.counts.already_archived === 1, '应识别工作台中已归档的照片');
+  check(scanResult.counts.missing_file === 1, '应识别原图缺失');
+  check(scanResult.counts.corrupted_file === 1, '应识别文件校验异常');
+  check(scanResult.counts.missing_metadata === 1, '应识别来源元数据缺失');
+  check(scanResult.counts.invalid_record === 1, '损坏记录应逐条隔离');
+  scenario();
+
+  check(
+    scanResult.items.some((item) => item.status === 'already_in_workbench')
+      && scanResult.items.some((item) => item.status === 'already_archived'),
+    '当前快照中的历史来源应分别识别为已在工作台或已归档'
+  );
+  scenario();
+
+  const legacyCandidate = scanResult.items.find((item) => item.status === 'recoverable');
+  check(Boolean(legacyCandidate), '扫描应返回可恢复候选');
+  check(
+    Object.keys(legacyCandidate).sort().join('|') === [...SAFE_SUMMARY_FIELDS].sort().join('|'),
+    'renderer 候选摘要必须严格只有六个安全字段'
+  );
+  scenario();
+
+  const serializedSummary = JSON.stringify(scanResult);
+  for (const secret of [
+    'marki_api:',
+    'marki_source_metadata:',
+    'sourceKey',
+    'momentId',
+    'originalPath',
+    'localPath',
+    'antiCounterfeitCode',
+    'parsedEntries',
+    'content',
+    legacy.localPath
+  ]) {
+    check(!serializedSummary.includes(secret), `恢复摘要不得包含 ${secret}`);
+  }
+  scenario();
+
+  check(
+    /^[a-f0-9-]{20,100}$/i.test(legacyCandidate.recoveryToken),
+    '恢复候选必须使用不透明随机令牌'
+  );
+  check(!legacyCandidate.recoveryToken.includes(legacy.momentId), '恢复令牌不得编码 momentId');
+  scenario();
+
+  const manifestBefore = await fs.readFile(
+    getMarkiSourceManifestPath(documentsPath, legacy.orgId)
+  );
+  const metadataBefore = await fs.readFile(
+    getMarkiSourceMetadataPath(documentsPath, legacy.orgId, legacy.momentId)
+  );
+  const jpegBefore = await fs.readFile(legacy.localPath);
+  const recoveryResult = await service.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    recoveryTokens: [legacyCandidate.recoveryToken]
+  });
+  check(recoveryResult.success && recoveryResult.status === 'recovered', '可恢复候选应成功写入工作台快照');
+  check(recoveryResult.recoveredCount === 1, '应恢复一张历史 Marki 照片');
+  scenario();
+
+  const recoveredSnapshot = await loadSortWorkspaceSnapshot(userDataPath);
+  check(recoveredSnapshot.success && recoveredSnapshot.found, '恢复后自动快照应可重新加载');
+  check(recoveredSnapshot.snapshot.workspace.photos.length === 4, '恢复后应保留三张旧照片并新增一张');
+  check(recoveredSnapshot.snapshot.workspace.photos[0].id === 'local-existing', '本地 OCR 照片对象和顺序必须保持');
+  scenario();
+
+  const restoredMarkiPhoto = recoveredSnapshot.snapshot.workspace.photos.find(
+    (photo) => photo.sourceKey === legacy.sourceKey
+  );
+  check(Boolean(restoredMarkiPhoto), '自动快照应包含恢复的 Marki 照片');
+  check(
+    Object.hasOwn(recoveredSnapshot.snapshot.workspace.recognitionResultsByPhoto, restoredMarkiPhoto.id),
+    '恢复照片必须带 recognition 结果'
+  );
+  check(
+    Object.hasOwn(recoveredSnapshot.snapshot.workspace.watermarkRecordsByPhoto, restoredMarkiPhoto.id),
+    '恢复照片必须带 watermark 记录'
+  );
+  check(
+    Object.hasOwn(recoveredSnapshot.snapshot.workspace.archiveSuggestionsByPhoto, restoredMarkiPhoto.id),
+    '恢复照片必须带 archive suggestion'
+  );
+  scenario();
+
+  check(
+    (await fs.readFile(getMarkiSourceManifestPath(documentsPath, legacy.orgId))).equals(manifestBefore),
+    '恢复不得修改来源清单'
+  );
+  check(
+    (await fs.readFile(getMarkiSourceMetadataPath(documentsPath, legacy.orgId, legacy.momentId))).equals(metadataBefore),
+    '恢复不得修改来源元数据'
+  );
+  check((await fs.readFile(legacy.localPath)).equals(jpegBefore), '恢复不得修改来源 JPG');
+  scenario();
+
+  const batchAfterRecovery = await getMarkiImportBatch(userDataPath, 'legacy-consumed-batch');
+  check(
+    batchAfterRecovery.status === 'consumed' && batchAfterRecovery.workbenchImportPackage === null,
+    '恢复不得重建或修改历史 consumed 批次'
+  );
+  scenario();
+
+  const freshProcessSnapshot = await loadSortWorkspaceSnapshot(userDataPath);
+  check(
+    freshProcessSnapshot.snapshot.workspace.photos.some((photo) => photo.sourceKey === legacy.sourceKey),
+    '模拟重启后仍应从自动快照恢复历史照片'
+  );
+  scenario();
+
+  const rescan = await service.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath
+  });
+  check(
+    rescan.items.some((item) => item.status === 'already_in_workbench'),
+    '再次扫描应把已恢复照片识别为已在工作台'
+  );
+  scenario();
+
+  const repeated = await service.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    recoveryTokens: [legacyCandidate.recoveryToken]
+  });
+  check(repeated.success === false, '已失效的旧恢复令牌不得再次恢复');
+  check(
+    (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace.photos.length === 4,
+    '重复恢复不得生成重复照片'
+  );
+  scenario();
+
+  check(
+    scanResult.items.some((item) => item.status === 'missing_file'),
+    '原图不存在时应标记 missing_file'
+  );
+  scenario();
+
+  check(
+    scanResult.items.some((item) => item.status === 'corrupted_file'),
+    'JPG 大小或 SHA-256 不一致时应标记 corrupted_file'
+  );
+  scenario();
+
+  check(
+    scanResult.items.some((item) => item.status === 'missing_metadata'),
+    '来源元数据不存在时应标记 missing_metadata'
+  );
+  scenario();
+
+  const tolerantManifest = await loadMarkiSourceManifestForRecovery(documentsPath, '6105');
+  check(tolerantManifest.records.length === 1, '同一清单的合法记录应继续返回');
+  check(tolerantManifest.invalidRecords.length === 1, '路径逃逸记录应被逐条隔离');
+  scenario();
+
+  check(
+    scanResult.items.some((item) => item.projectName === '测试小区' && item.status === 'recoverable'),
+    '损坏记录不得阻断同清单其他可恢复记录'
+  );
+  scenario();
+
+  const unavailableSnapshotService = createMarkiWorkbenchRehydrateService({
+    loadSnapshot: async () => ({
+      success: false,
+      found: true,
+      snapshot: null
+    })
+  });
+  const unavailableScan = await unavailableSnapshotService.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath
+  });
+  check(
+    unavailableScan.success === false
+      && unavailableScan.error.code === 'marki_recovery_snapshot_unavailable',
+    '当前快照不可读取时必须停止候选扫描'
+  );
+  scenario();
+
+  const raceFixture = await createImportedFixture({
+    orgId: '6108',
+    momentId: 'race-photo',
+    projectName: '竞态测试项目'
+  });
+  const raceService = createMarkiWorkbenchRehydrateService({
+    loadConfigs: async () => configs
+  });
+  const raceScan = await raceService.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath
+  });
+  const raceCandidate = raceScan.items.find((item) => (
+    item.status === 'recoverable' && item.projectName === '竞态测试项目'
+  ));
+  const workspaceBeforeRace = (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace;
+  const racePhoto = {
+    ...restoredMarkiPhoto,
+    id: 'race-existing',
+    sourceKey: raceFixture.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(raceFixture.orgId, raceFixture.momentId)
+  };
+  await saveSortWorkspaceSnapshot(userDataPath, {
+    ...workspaceBeforeRace,
+    photos: [...workspaceBeforeRace.photos, racePhoto]
+  });
+  const raceResult = await raceService.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    recoveryTokens: [raceCandidate.recoveryToken]
+  });
+  check(raceResult.success && raceResult.status === 'nothing_to_recover', '恢复前再次发现相同 sourceKey 时应安全跳过');
+  check(
+    (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace.photos
+      .filter((photo) => photo.sourceKey === raceFixture.sourceKey).length === 1,
+    '扫描后竞态不得重复追加 sourceKey'
+  );
+  scenario();
+
+  const saveFailureFixture = await createImportedFixture({
+    orgId: '6109',
+    momentId: 'snapshot-failure',
+    projectName: '快照失败项目'
+  });
+  const stableSnapshotBeforeFailure = await fs.readFile(getSortWorkspaceSnapshotPath(userDataPath));
+  const manifestBeforeSaveFailure = await fs.readFile(
+    getMarkiSourceManifestPath(documentsPath, saveFailureFixture.orgId)
+  );
+  const saveFailureService = createMarkiWorkbenchRehydrateService({
+    loadConfigs: async () => configs,
+    saveSnapshot: async () => ({
+      success: false,
+      error: {
+        code: 'sort_workspace_snapshot_save_failed',
+        message: '测试注入失败'
+      }
+    })
+  });
+  const saveFailureScan = await saveFailureService.scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath,
+    userDataPath
+  });
+  const saveFailureCandidate = saveFailureScan.items.find((item) => (
+    item.status === 'recoverable' && item.projectName === '快照失败项目'
+  ));
+  const saveFailureResult = await saveFailureService.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    recoveryTokens: [saveFailureCandidate.recoveryToken]
+  });
+  check(
+    saveFailureResult.success === false
+      && saveFailureResult.error.code === 'marki_recovery_snapshot_save_failed',
+    '自动快照保存失败时恢复必须整体失败'
+  );
+  check(
+    (await fs.readFile(getSortWorkspaceSnapshotPath(userDataPath))).equals(stableSnapshotBeforeFailure),
+    '快照保存失败不得改变原工作台快照'
+  );
+  check(
+    (await fs.readFile(getMarkiSourceManifestPath(documentsPath, saveFailureFixture.orgId))).equals(manifestBeforeSaveFailure),
+    '快照保存失败不得修改来源状态'
+  );
+  scenario();
+
+  const invalidInput = await service.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    recoveryTokens: [],
+    sourceKey: legacy.sourceKey
+  });
+  check(invalidInput.success === false, 'renderer 额外提交 sourceKey 时必须拒绝');
+  scenario();
+
+  const [
+    serviceSource,
+    coreSource,
+    clientSource,
+    mainSource,
+    preloadSource,
+    pageSource
+  ] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), 'electron/services/markiWorkbenchRehydrateService.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'electron/services/markiWorkbenchImportCore.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/utils/markiWorkbenchImport.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8')
+  ]);
+  check(!serviceSource.includes('downloadMarkiPhoto'), '恢复服务不得调用照片下载服务');
+  counters.sourceContractCount += 1;
+  check(!serviceSource.includes('listMarkiMoments'), '恢复服务不得调用马克查询 API');
+  counters.sourceContractCount += 1;
+  check(
+    clientSource.includes("../../electron/services/markiWorkbenchImportCore.js"),
+    'renderer 应转发使用同一份工作台合并核心'
+  );
+  counters.sourceContractCount += 1;
+  check(coreSource.includes('mergeMarkiWorkbenchImportPackage'), '共享合并核心应公开正式合并函数');
+  counters.sourceContractCount += 1;
+  check(
+    /marki:scan-workbench-recovery-candidates[\s\S]*app\.getPath\('documents'\)[\s\S]*app\.getPath\('userData'\)/.test(mainSource),
+    '恢复扫描路径必须由主进程注入'
+  );
+  counters.sourceContractCount += 1;
+  check(
+    /normalizeMarkiWorkbenchRecoveryRequest[\s\S]*Object\.keys\(input\)\.length !== 1/.test(mainSource),
+    '恢复 IPC 必须拒绝 renderer 多余字段'
+  );
+  counters.sourceContractCount += 1;
+  check(
+    preloadSource.includes('scanWorkbenchRecoveryCandidates')
+      && preloadSource.includes('recoverWorkbenchCandidates'),
+    'preload 只应暴露扫描和令牌恢复方法'
+  );
+  counters.sourceContractCount += 1;
+  check(
+    pageSource.includes('恢复 Marki 照片')
+      && pageSource.includes('recoveryTokens: safeRecoveryTokens'),
+    '工作台应提供历史 Marki 照片恢复入口并只提交令牌'
+  );
+  counters.sourceContractCount += 1;
+  check(
+    !serviceSource.includes('markMarkiImportBatchReady')
+      && !serviceSource.includes('consumeMarkiImportBatch'),
+    '历史恢复不得创建或消费导入批次'
+  );
+  counters.sourceContractCount += 1;
+  scenario();
+
+  check(counters.scenarioCount === 27, '历史 Marki 工作台恢复应完整执行 27 个边界场景');
+  console.log(
+    `历史 Marki 工作台恢复自检通过：${counters.scenarioCount} 个行为场景，${counters.assertionCount} 个断言，其中 ${counters.sourceContractCount} 个源码契约断言。`
+  );
+}
+
+async function checkSourceAwareRecognition(root) {
+  await fs.mkdir(root, { recursive: true });
+  const utilityUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sourceAwareRecognition.js')
+  ).href;
+  const {
+    buildSmartSortGroupMembershipByPhotoId,
+    buildSourceAwareSmartSortPresentation,
+    classifyPhotoRecognitionRoute,
+    classifyPhotoSmartSortStage,
+    completeSmartSortExecution,
+    getMissingRequiredFields,
+    getPhotoSmartSortStatusLabel,
+    getSmartSortResultPhotoIds,
+    invalidateSmartSortExecution,
+    isPhotoPendingOrganize,
+    isPhotoPendingSmartSort,
+    mergeScopedSmartSortResult,
+    mergeMarkiOcrSupplement,
+    orchestrateSourceAwareRecognition
+  } = await import(`${utilityUrl}?source-aware=${Date.now()}`);
+  const workbenchImportUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'markiWorkbenchImport.js')
+  ).href;
+  const { mergeMarkiWorkbenchImportPackage } = await import(
+    `${workbenchImportUrl}?source-aware=${Date.now()}`
+  );
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  let sourceContractCount = 0;
+  const equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const deepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const check = (condition, message) => {
+    assertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const requiredValues = {
+    date: '2026-07-19',
+    project: '测试小区',
+    watermarkCategory: '巡查检查类',
+    workContent: '设施巡查'
+  };
+  const makePhoto = (id, sourceType = 'marki_api', overrides = {}) => ({
+    id,
+    originalPath: path.join(root, `${id}.jpg`),
+    originalName: `${id}.jpg`,
+    size: 4,
+    modifiedAt: '2026-07-19T02:00:00.000Z',
+    sortStatus: 'needs_completion',
+    sourceType,
+    ...(sourceType === 'marki_api'
+      ? {
+          sourceKey: `marki_api:12345:${id}`,
+          sourceMetadataRef: `marki_source_metadata:12345:${id}`
+        }
+      : {}),
+    ...overrides
+  });
+  const makeMarkiArtifacts = (photoId, fields = requiredValues) => ({
+    recognitionResult: {
+      photoId,
+      source: 'marki_api',
+      providerId: 'marki_api',
+      providerType: 'structured_data',
+      status: 'recognized',
+      success: true,
+      rawText: '',
+      parsedWatermark: {
+        date: fields.date || null,
+        projectName: fields.project || null,
+        watermarkCategory: fields.watermarkCategory || null,
+        workContent: fields.workContent || null
+      }
+    },
+    watermarkRecord: {
+      photoId,
+      source: 'marki_api',
+      captureDate: fields.date || '',
+      projectText: fields.project || '',
+      watermarkCategoryText: fields.watermarkCategory || '',
+      workContentText: fields.workContent || '',
+      locationText: '设备层',
+      rawText: ''
+    },
+    archiveSuggestion: {
+      photoId,
+      source: 'marki_api',
+      suggestedFields: {
+        date: fields.date || '',
+        project: fields.project || '',
+        watermarkCategory: fields.watermarkCategory || '',
+        workContent: fields.workContent || '',
+        location: '设备层'
+      },
+      fieldSources: {
+        date: 'marki.date',
+        project: 'marki.project',
+        watermarkCategory: 'marki.markName',
+        workContent: 'marki.workContent'
+      },
+      confidenceByField: {
+        date: 1,
+        project: 1,
+        watermarkCategory: 1,
+        workContent: 1
+      },
+      missingRequiredFields: Object.entries({
+        日期: fields.date,
+        项目: fields.project,
+        归档分类: fields.watermarkCategory,
+        工作内容: fields.workContent
+      }).filter(([, value]) => !value).map(([label]) => label),
+      conflictFields: [],
+      candidateFields: {},
+      needsHumanReview: Object.values(fields).some((value) => !value),
+      status: Object.values(fields).some((value) => !value) ? 'needs_completion' : 'suggestion_ready'
+    }
+  });
+  const makeOcrArtifacts = (photoId, fields = requiredValues, status = 'success') => ({
+    recognitionResult: {
+      photoId,
+      status,
+      success: status === 'success',
+      rawText: status === 'success' ? '本地 OCR 测试文本' : '',
+      stagedResultId: `stage-${photoId}`,
+      parsedWatermark: {
+        date: fields.date || null,
+        projectName: fields.project || null,
+        watermarkCategory: fields.watermarkCategory || null,
+        workContent: fields.workContent || null
+      }
+    },
+    watermarkRecord: {
+      photoId,
+      captureDate: fields.date || '',
+      projectText: fields.project || '',
+      watermarkCategoryText: fields.watermarkCategory || '',
+      workContentText: fields.workContent || '',
+      locationText: 'OCR 地点',
+      rawText: status === 'success' ? '本地 OCR 测试文本' : ''
+    },
+    archiveSuggestion: {
+      photoId,
+      suggestedFields: {
+        date: fields.date || '',
+        project: fields.project || '',
+        watermarkCategory: fields.watermarkCategory || '',
+        workContent: fields.workContent || ''
+      },
+      fieldSources: {},
+      confidenceByField: {},
+      missingRequiredFields: [],
+      conflictFields: [],
+      candidateFields: {},
+      needsHumanReview: false,
+      status: 'suggestion_ready'
+    }
+  });
+  const makeMaps = (photoId, artifacts) => ({
+    recognitionResultsByPhoto: { [photoId]: artifacts.recognitionResult },
+    watermarkRecordsByPhoto: { [photoId]: artifacts.watermarkRecord },
+    archiveSuggestionsByPhoto: { [photoId]: artifacts.archiveSuggestion }
+  });
+  const run = ({
+    photos,
+    maps = {
+      recognitionResultsByPhoto: {},
+      watermarkRecordsByPhoto: {},
+      archiveSuggestionsByPhoto: {}
+    },
+    ocrAvailable = true,
+    recognize = async (photo) => makeOcrArtifacts(photo.id).recognitionResult,
+    build = ({ photo, recognitionResult }) => makeOcrArtifacts(
+      photo.id,
+      recognitionResult.testFields || requiredValues,
+      recognitionResult.status
+    ),
+    generateGroups = async ({ photos: groupPhotos }) => ({
+      status: 'created',
+      groupCount: 1,
+      photoCount: groupPhotos.length,
+      groups: [{ id: 'group-1', photoIds: groupPhotos.map((photo) => photo.id) }]
+    })
+  }) => orchestrateSourceAwareRecognition({
+    photos,
+    ...maps,
+    getOcrAvailability: async () => ({
+      available: ocrAvailable,
+      reason: ocrAvailable ? '' : '测试 OCR 不可用'
+    }),
+    recognizePhoto: recognize,
+    buildOcrArtifacts: build,
+    getPhotoSortStatus: (_result, suggestion) => suggestion?.status || 'needs_completion',
+    generateGroups
+  });
+  const makeCompletePool = (count, prefix = 'scope') => {
+    const photos = Array.from({ length: count }, (_, index) => makePhoto(
+      `${prefix}-${index + 1}`,
+      'marki_api',
+      {
+        smartSortStatus: 'not_run',
+        sortStatus: 'suggestion_ready'
+      }
+    ));
+    const recognitionResultsByPhoto = {};
+    const watermarkRecordsByPhoto = {};
+    const archiveSuggestionsByPhoto = {};
+    for (const photo of photos) {
+      const artifacts = makeMarkiArtifacts(photo.id);
+      recognitionResultsByPhoto[photo.id] = artifacts.recognitionResult;
+      watermarkRecordsByPhoto[photo.id] = artifacts.watermarkRecord;
+      archiveSuggestionsByPhoto[photo.id] = artifacts.archiveSuggestion;
+    }
+    return {
+      photos,
+      maps: {
+        recognitionResultsByPhoto,
+        watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto
+      }
+    };
+  };
+  const getStageIds = (photos, membershipByPhotoId, expectedStage) => photos
+    .filter((photo) => (
+      classifyPhotoSmartSortStage(photo, membershipByPhotoId.has(photo.id))
+      === expectedStage
+    ))
+    .map((photo) => photo.id);
+
+  {
+    const productionRoot = path.join(root, 'production-import-shape');
+    const productionPhotoPath = path.join(productionRoot, 'moment-repeat-smart-sort.jpg');
+    const productionJpeg = createTestJpeg(12, 9);
+    await fs.mkdir(productionRoot, { recursive: true });
+    await fs.writeFile(productionPhotoPath, productionJpeg);
+    const productionConfigs = {
+      projects: [{ name: '测试小区', aliases: ['测试项目别名'] }],
+      watermarkCategories: {
+        工程类专用: { items: ['设施巡查'] }
+      }
+    };
+    const productionMoment = {
+      id: 'moment-repeat-smart-sort',
+      uid: 21,
+      teamId: 11,
+      momentType: 1,
+      markName: '工程类专用',
+      content: JSON.stringify([
+        ['日期', '2026-07-19 08:30:00'],
+        ['小区名称', '测试小区'],
+        ['工作内容', '设施巡查'],
+        ['上传人', '测试人员'],
+        ['地点', '一号楼']
+      ]),
+      postTime: Math.floor(Date.parse('2026-07-19T01:00:00Z') / 1000)
+    };
+    const productionSourceKey = buildMarkiSourceKey('7201', productionMoment.id);
+    const productionBundle = buildMarkiStructuredImportBundle({
+      orgId: '7201',
+      configs: productionConfigs,
+      items: [{
+        moment: productionMoment,
+        download: {
+          success: true,
+          sourceKey: productionSourceKey,
+          importStatus: 'imported',
+          localPath: productionPhotoPath,
+          fileName: path.basename(productionPhotoPath),
+          size: productionJpeg.length,
+          width: 12,
+          height: 9,
+          sha256: createHash('sha256').update(productionJpeg).digest('hex'),
+          completedAt: '2026-07-19T01:01:00.000Z'
+        }
+      }]
+    }, {
+      batchId: 'source-aware-production-batch',
+      now: () => new Date('2026-07-19T01:02:00.000Z')
+    });
+    const productionPackage = productionBundle.workbenchImportPackage;
+    const productionPhoto = productionPackage.photos[0];
+    const productionRecognition = productionPackage.recognitionResultsByPhoto[productionPhoto.id];
+    const productionWatermark = productionPackage.watermarkRecordsByPhoto[productionPhoto.id];
+    const productionSuggestion = productionPackage.archiveSuggestionsByPhoto[productionPhoto.id];
+    equal(productionPhoto.sourceType, 'marki_api', '真实导入照片应保留 Marki 来源');
+    equal(productionRecognition.source, 'marki_api', '真实导入 recognition 来源应为 Marki');
+    equal(productionRecognition.providerType, 'structured_data', '真实导入 recognition 应保留结构化标志');
+    equal(productionRecognition.missingRequiredFields, undefined, '真实 recognition 不承载 suggestion 的缺失字段');
+    equal(productionWatermark.captureDate, '2026-07-19', '真实水印记录日期键应为 captureDate');
+    equal(productionWatermark.projectText, '测试小区', '真实水印记录项目键应为 projectText');
+    equal(productionWatermark.watermarkCategoryText, '工程类专用', '真实水印记录分类键应为 watermarkCategoryText');
+    equal(productionWatermark.workContentText, '设施巡查', '真实水印记录工作内容键应为 workContentText');
+    deepEqual(productionSuggestion.missingRequiredFields, [], '真实完整建议四项必要字段应无缺失');
+    equal(Object.hasOwn(productionRecognition, 'sourceAwareProcessing'), false, '导入阶段不得自动标记已完成智拣');
+
+    const mergedWorkspace = mergeMarkiWorkbenchImportPackage({
+      photos: [],
+      recognitionResultsByPhoto: {},
+      watermarkRecordsByPhoto: {},
+      archiveSuggestionsByPhoto: {},
+      selectedIds: [],
+      activePhotoId: ''
+    }, productionPackage);
+    const importedPhotos = invalidateSmartSortExecution(mergedWorkspace.photos);
+    const productionSnapshotRoot = path.join(productionRoot, 'snapshot');
+    const productionWorkspace = {
+      ...createEmptyWorkspace(),
+      photos: importedPhotos,
+      selectedIds: mergedWorkspace.selectedIds,
+      activePhotoId: mergedWorkspace.activePhotoId,
+      recognitionResultsByPhoto: mergedWorkspace.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: mergedWorkspace.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: mergedWorkspace.archiveSuggestionsByPhoto,
+      smartSortResult: null
+    };
+    equal(productionWorkspace.photos[0].smartSortStatus, 'not_run', '真实 Marki 导入后智拣状态必须为 not_run');
+    equal(
+      getPhotoSmartSortStatusLabel(productionWorkspace.photos[0], false),
+      '待智拣',
+      '真实 Marki 导入后页面状态必须为待智拣'
+    );
+    equal(productionWorkspace.smartSortResult, null, '导入和合并阶段不得自动生成智拣分组');
+    equal((await saveSortWorkspaceSnapshot(productionSnapshotRoot, productionWorkspace)).success, true, '真实导入工作台应可保存自动快照');
+    const restoredProduction = await loadSortWorkspaceSnapshot(productionSnapshotRoot);
+    equal(restoredProduction.success, true, '真实导入工作台快照应可恢复');
+    const restoredWorkspace = restoredProduction.snapshot.workspace;
+    const platformBeforeSmartSort = {
+      recognitionResult: restoredWorkspace.recognitionResultsByPhoto[productionPhoto.id],
+      watermarkRecord: restoredWorkspace.watermarkRecordsByPhoto[productionPhoto.id],
+      archiveSuggestion: restoredWorkspace.archiveSuggestionsByPhoto[productionPhoto.id]
+    };
+    let productionOcrCalls = 0;
+    let productionStatusChecks = 0;
+    let productionGroupCalls = 0;
+    const runProductionSmartSort = async (state) => {
+      const orchestration = await orchestrateSourceAwareRecognition({
+        photos: state.photos,
+        recognitionResultsByPhoto: state.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: state.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: state.archiveSuggestionsByPhoto,
+        getOcrAvailability: async () => {
+          productionStatusChecks += 1;
+          return { available: false };
+        },
+        recognizePhoto: async () => {
+          productionOcrCalls += 1;
+          throw new Error('真实完整 Marki 不得进入 OCR');
+        },
+        buildOcrArtifacts: () => {
+          throw new Error('真实完整 Marki 不得重新解析');
+        },
+        generateGroups: async ({ photos: groupPhotos }) => {
+          productionGroupCalls += 1;
+          return {
+            status: 'created',
+            groupCount: 1,
+            photoCount: groupPhotos.length,
+            groups: [{
+              id: `production-group-${productionGroupCalls}`,
+              photos: groupPhotos.map((photo) => ({ photoId: photo.id }))
+            }]
+          };
+        }
+      });
+      return {
+        ...state,
+        photos: completeSmartSortExecution({
+          photos: orchestration.photos,
+          targetPhotoIds: state.photos.map((photo) => photo.id),
+          processingResults: orchestration.processingResults,
+          smartSortResult: orchestration.smartSortResult,
+          smartSortError: orchestration.smartSortError
+        }),
+        recognitionResultsByPhoto: orchestration.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: orchestration.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: orchestration.archiveSuggestionsByPhoto,
+        smartSortResult: orchestration.smartSortResult
+      };
+    };
+    const firstProductionSmartSort = await runProductionSmartSort(restoredWorkspace);
+    const firstMemberIds = getSmartSortResultPhotoIds(firstProductionSmartSort.smartSortResult);
+    equal(firstProductionSmartSort.photos[0].smartSortStatus, 'completed', '第一次智拣后状态必须为 completed');
+    check(firstMemberIds.has(productionPhoto.id), '第一次智拣结果必须包含真实 Marki 照片');
+    equal(
+      getPhotoSmartSortStatusLabel(firstProductionSmartSort.photos[0], true),
+      '待整理',
+      '第一次智拣后页面不得继续显示待智拣'
+    );
+    const firstPresentation = buildSourceAwareSmartSortPresentation({
+      smartSortResult: firstProductionSmartSort.smartSortResult,
+      currentActivePhotoId: productionPhoto.id
+    });
+    equal(firstPresentation.hasVisibleGroup, true, '第一次智拣后必须切换到可见分组');
+
+    const resetProductionWorkspace = {
+      ...firstProductionSmartSort,
+      photos: invalidateSmartSortExecution(firstProductionSmartSort.photos),
+      smartSortResult: null,
+      smartSortViewMode: 'statusFilter',
+      activeSmartSortGroupId: ''
+    };
+    equal(resetProductionWorkspace.photos[0].smartSortStatus, 'not_run', '重置后智拣状态必须回到 not_run');
+    equal(
+      getPhotoSmartSortStatusLabel(resetProductionWorkspace.photos[0], false),
+      '待智拣',
+      '重置后页面必须显示待智拣'
+    );
+    deepEqual(resetProductionWorkspace.selectedIds, productionWorkspace.selectedIds, '重置后照片选择必须保持');
+    equal(resetProductionWorkspace.activePhotoId, productionWorkspace.activePhotoId, '重置后当前照片必须保持');
+    deepEqual(resetProductionWorkspace.recognitionResultsByPhoto[productionPhoto.id], platformBeforeSmartSort.recognitionResult, '重置后平台 recognition 必须深比较不变');
+    deepEqual(resetProductionWorkspace.watermarkRecordsByPhoto[productionPhoto.id], platformBeforeSmartSort.watermarkRecord, '重置后平台 watermark 必须深比较不变');
+    deepEqual(resetProductionWorkspace.archiveSuggestionsByPhoto[productionPhoto.id], platformBeforeSmartSort.archiveSuggestion, '重置后平台 suggestion 必须深比较不变');
+
+    const completedSnapshotRoot = path.join(productionRoot, 'completed-snapshot');
+    equal((await saveSortWorkspaceSnapshot(completedSnapshotRoot, firstProductionSmartSort)).success, true, 'completed 智拣状态应可保存');
+    const completedRestored = await loadSortWorkspaceSnapshot(completedSnapshotRoot);
+    equal(completedRestored.snapshot.workspace.photos[0].smartSortStatus, 'completed', '重启后 completed 状态应恢复');
+    check(
+      getSmartSortResultPhotoIds(completedRestored.snapshot.workspace.smartSortResult).has(productionPhoto.id),
+      '重启后智拣分组成员应恢复'
+    );
+
+    const resetSnapshotRoot = path.join(productionRoot, 'reset-snapshot');
+    equal((await saveSortWorkspaceSnapshot(resetSnapshotRoot, resetProductionWorkspace)).success, true, 'not_run 重置状态应可保存');
+    const resetRestored = await loadSortWorkspaceSnapshot(resetSnapshotRoot);
+    equal(resetRestored.snapshot.workspace.photos[0].smartSortStatus, 'not_run', '重启后 not_run 状态应恢复');
+    equal(resetRestored.snapshot.workspace.smartSortResult, null, '重启后旧智拣分组不得恢复');
+    deepEqual(resetRestored.snapshot.workspace.recognitionResultsByPhoto[productionPhoto.id], platformBeforeSmartSort.recognitionResult, '重启后平台 recognition 基线应保留');
+
+    const secondProductionSmartSort = await runProductionSmartSort(resetRestored.snapshot.workspace);
+    equal(productionOcrCalls, 0, '真实新导入完整 Marki 第一次和第二次智拣 OCR 均为零');
+    equal(productionStatusChecks, 0, '真实新导入完整 Marki 重复智拣无需 OCR 服务检查');
+    equal(productionGroupCalls, 2, '真实新导入完整 Marki 两次智拣应各分组一次');
+    equal(secondProductionSmartSort.photos[0].smartSortStatus, 'completed', '第二次智拣后状态必须再次为 completed');
+    check(
+      getSmartSortResultPhotoIds(secondProductionSmartSort.smartSortResult).has(productionPhoto.id),
+      '第二次智拣必须再次生成真实分组成员'
+    );
+    deepEqual(
+      secondProductionSmartSort.recognitionResultsByPhoto[productionPhoto.id],
+      platformBeforeSmartSort.recognitionResult,
+      '真实新导入完整 Marki 重复智拣 recognition 必须深比较不变'
+    );
+    deepEqual(
+      secondProductionSmartSort.watermarkRecordsByPhoto[productionPhoto.id],
+      platformBeforeSmartSort.watermarkRecord,
+      '真实新导入完整 Marki 重复智拣 watermark 必须深比较不变'
+    );
+    deepEqual(
+      secondProductionSmartSort.archiveSuggestionsByPhoto[productionPhoto.id],
+      platformBeforeSmartSort.archiveSuggestion,
+      '真实新导入完整 Marki 重复智拣 suggestion 必须深比较不变'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('complete-marki');
+    const artifacts = makeMarkiArtifacts(photo.id);
+    const maps = makeMaps(photo.id, artifacts);
+    deepFreeze(photo);
+    deepFreeze(maps);
+    let ocrCalls = 0;
+    let statusChecks = 0;
+    let groupCalls = 0;
+    const firstResult = await orchestrateSourceAwareRecognition({
+      photos: [photo],
+      ...maps,
+      getOcrAvailability: async () => {
+        statusChecks += 1;
+        return { available: false };
+      },
+      recognizePhoto: async () => {
+        ocrCalls += 1;
+        throw new Error('完整 Marki 不得进入 OCR');
+      },
+      buildOcrArtifacts: () => {
+        throw new Error('完整 Marki 不得重新解析');
+      },
+      generateGroups: async ({ photos: groupPhotos }) => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: groupPhotos.length };
+      }
+    });
+    const secondResult = await orchestrateSourceAwareRecognition({
+      photos: firstResult.photos,
+      recognitionResultsByPhoto: firstResult.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: firstResult.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: firstResult.archiveSuggestionsByPhoto,
+      getOcrAvailability: async () => {
+        statusChecks += 1;
+        return { available: false };
+      },
+      recognizePhoto: async () => {
+        ocrCalls += 1;
+        throw new Error('重复智拣时完整 Marki 仍不得进入 OCR');
+      },
+      buildOcrArtifacts: () => {
+        throw new Error('重复智拣时完整 Marki 仍不得重新解析');
+      },
+      generateGroups: async ({ photos: groupPhotos }) => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: groupPhotos.length };
+      }
+    });
+    equal(classifyPhotoRecognitionRoute({ photo, ...artifacts }), 'marki_platform_only', '完整 Marki 应直用平台数据');
+    equal(ocrCalls, 0, '完整 Marki 连续两次智拣的 OCR 调用次数必须始终为零');
+    equal(statusChecks, 0, '完整 Marki 连续两次智拣均不得检查 OCR 服务');
+    equal(groupCalls, 2, '完整 Marki 每次智拣各统一分组一次');
+    deepEqual(firstResult.recognitionResultsByPhoto[photo.id], artifacts.recognitionResult, '首次智拣后完整 Marki recognitionResult 必须深比较不变');
+    deepEqual(firstResult.watermarkRecordsByPhoto[photo.id], artifacts.watermarkRecord, '首次智拣后完整 Marki watermarkRecord 必须深比较不变');
+    deepEqual(firstResult.archiveSuggestionsByPhoto[photo.id], artifacts.archiveSuggestion, '首次智拣后完整 Marki archiveSuggestion 必须深比较不变');
+    deepEqual(secondResult.recognitionResultsByPhoto[photo.id], artifacts.recognitionResult, '再次智拣后完整 Marki recognitionResult 必须深比较不变');
+    deepEqual(secondResult.watermarkRecordsByPhoto[photo.id], artifacts.watermarkRecord, '再次智拣后完整 Marki watermarkRecord 必须深比较不变');
+    deepEqual(secondResult.archiveSuggestionsByPhoto[photo.id], artifacts.archiveSuggestion, '再次智拣后完整 Marki archiveSuggestion 必须深比较不变');
+    equal(firstResult.stats.platformOnlyCount, 1, '首次智拣完整 Marki 应计入平台直用统计');
+    equal(secondResult.stats.platformOnlyCount, 1, '再次智拣完整 Marki 仍应计入平台直用统计');
+    equal(secondResult.stats.existingSupplementCount, 0, '完整平台数据不得误计为 OCR 补充复用');
+    equal(photo.sortStatus, 'needs_completion', '来源感知编排不得修改输入照片对象');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('missing-project');
+    const platform = makeMarkiArtifacts(photo.id, { ...requiredValues, project: '' });
+    const maps = makeMaps(photo.id, platform);
+    let ocrCalls = 0;
+    const firstResult = await run({
+      photos: [photo],
+      maps,
+      recognize: async () => {
+        ocrCalls += 1;
+        return { ...makeOcrArtifacts(photo.id).recognitionResult, testFields: requiredValues };
+      }
+    });
+    const secondResult = await run({
+      photos: firstResult.photos,
+      maps: {
+        recognitionResultsByPhoto: firstResult.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: firstResult.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: firstResult.archiveSuggestionsByPhoto
+      },
+      recognize: async () => {
+        ocrCalls += 1;
+        throw new Error('已经补齐的 Marki 不得重复 OCR');
+      }
+    });
+    equal(classifyPhotoRecognitionRoute({ photo, ...platform }), 'marki_ocr_fallback', '缺项目 Marki 应进入 OCR 兜底');
+    deepEqual(getMissingRequiredFields(platform), ['project'], '只缺项目时仅返回 project canonical key');
+    equal(ocrCalls, 1, '缺项目 Marki 首次补齐后再次智拣不得重复 OCR');
+    equal(firstResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.project, requiredValues.project, 'OCR 应补入缺失项目');
+    equal(firstResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.date, requiredValues.date, '平台日期必须保留');
+    equal(firstResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.watermarkCategory, requiredValues.watermarkCategory, '平台分类必须保留');
+    equal(firstResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.workContent, requiredValues.workContent, '平台工作内容必须保留');
+    deepEqual(
+      firstResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing.supplementedFields,
+      ['project'],
+      '补充层只应记录 project'
+    );
+    deepEqual(firstResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing.unresolvedFields, [], '项目补齐后不应遗留缺失字段');
+    equal(firstResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing.strategy, 'platform_plus_ocr', 'Marki 兜底策略应明确');
+    equal(firstResult.stats.markiOcrFallbackCount, 1, '首次不完整 Marki 应计入 OCR 补充统计');
+    equal(secondResult.stats.markiOcrFallbackCount, 0, '再次智拣不得重复计入 OCR 补充');
+    equal(secondResult.stats.existingSupplementCount, 1, '再次智拣应复用已有 OCR 补充');
+    equal(secondResult.processingResults[0].route, 'marki_existing_supplement', '已补齐 Marki 应进入稳定复用路由');
+    deepEqual(
+      secondResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing,
+      firstResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing,
+      '复用已有补充时来源分层不得变化'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('date-conflict');
+    const platform = makeMarkiArtifacts(photo.id, {
+      ...requiredValues,
+      project: '',
+      workContent: ''
+    });
+    const ocrFields = {
+      ...requiredValues,
+      date: '2026-07-18',
+      workContent: ''
+    };
+    const firstMerged = mergeMarkiOcrSupplement({
+      ...platform,
+      ocrRecognitionResult: makeOcrArtifacts(photo.id, ocrFields).recognitionResult,
+      ocrWatermarkRecord: makeOcrArtifacts(photo.id, ocrFields).watermarkRecord,
+      ocrArchiveSuggestion: makeOcrArtifacts(photo.id, ocrFields).archiveSuggestion
+    });
+    const secondMerged = mergeMarkiOcrSupplement({
+      recognitionResult: firstMerged.recognitionResult,
+      watermarkRecord: firstMerged.watermarkRecord,
+      archiveSuggestion: firstMerged.archiveSuggestion,
+      ocrRecognitionResult: makeOcrArtifacts(photo.id, ocrFields).recognitionResult,
+      ocrWatermarkRecord: makeOcrArtifacts(photo.id, ocrFields).watermarkRecord,
+      ocrArchiveSuggestion: makeOcrArtifacts(photo.id, ocrFields).archiveSuggestion
+    });
+    equal(secondMerged.archiveSuggestion.suggestedFields.date, requiredValues.date, '重复 OCR 的冲突日期不得覆盖平台日期');
+    equal(secondMerged.watermarkRecord.captureDate, requiredValues.date, '重复 OCR 的冲突日期不得覆盖平台水印事实');
+    equal(secondMerged.recognitionResult.parsedWatermark.date, requiredValues.date, '重复 OCR 的冲突日期不得覆盖平台识别结构');
+    equal(secondMerged.sourceAwareProcessing.conflicts.length, 1, '相同日期冲突重复智拣不得膨胀');
+    equal(secondMerged.sourceAwareProcessing.conflicts[0].field, 'date', '冲突字段应使用 canonical key');
+    equal(secondMerged.sourceAwareProcessing.conflicts[0].platformValue, requiredValues.date, '冲突应保留平台值');
+    equal(secondMerged.sourceAwareProcessing.conflicts[0].ocrValue, ocrFields.date, '冲突应保留 OCR 候选值');
+    deepEqual(secondMerged.sourceAwareProcessing.unresolvedFields, ['workContent'], '仍缺工作内容时应允许后续继续兜底');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('still-missing');
+    const platform = makeMarkiArtifacts(photo.id, { ...requiredValues, workContent: '' });
+    const ocrFields = { ...requiredValues, workContent: '' };
+    let ocrCalls = 0;
+    const firstResult = await run({
+      photos: [photo],
+      maps: makeMaps(photo.id, platform),
+      recognize: async () => {
+        ocrCalls += 1;
+        return { ...makeOcrArtifacts(photo.id, ocrFields).recognitionResult, testFields: ocrFields };
+      }
+    });
+    const secondResult = await run({
+      photos: firstResult.photos,
+      maps: {
+        recognitionResultsByPhoto: firstResult.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: firstResult.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: firstResult.archiveSuggestionsByPhoto
+      },
+      recognize: async () => {
+        ocrCalls += 1;
+        return { ...makeOcrArtifacts(photo.id, ocrFields).recognitionResult, testFields: ocrFields };
+      }
+    });
+    equal(ocrCalls, 2, '仍缺工作内容的 Marki 第二次智拣应允许再次 OCR');
+    equal(firstResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.workContent, '', '首次 OCR 无结果时不得伪造工作内容');
+    equal(secondResult.archiveSuggestionsByPhoto[photo.id].suggestedFields.workContent, '', '再次 OCR 无结果时仍不得伪造工作内容');
+    deepEqual(
+      secondResult.recognitionResultsByPhoto[photo.id].sourceAwareProcessing.unresolvedFields,
+      ['workContent'],
+      '重复 OCR 后仍缺工作内容应保留 canonical 缺失项'
+    );
+    equal(secondResult.processingResults[0].route, 'marki_ocr_fallback', '仍缺必要字段时重复智拣应继续走 OCR 兜底');
+    equal(secondResult.archiveSuggestionsByPhoto[photo.id].status, 'needs_completion', '仍缺必要字段时应待人工补充');
+    equal(secondResult.stats.needsManualCount, 1, '仍不完整照片应计入人工完善');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('fallback-throws');
+    const platform = makeMarkiArtifacts(photo.id, { ...requiredValues, project: '' });
+    const maps = makeMaps(photo.id, platform);
+    let groupCalls = 0;
+    const result = await run({
+      photos: [photo],
+      maps,
+      recognize: async () => {
+        throw new Error('controlled OCR failure');
+      },
+      generateGroups: async () => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: 1 };
+      }
+    });
+    deepEqual(result.recognitionResultsByPhoto[photo.id], platform.recognitionResult, 'fallback 抛错后平台 recognitionResult 必须不变');
+    deepEqual(result.watermarkRecordsByPhoto[photo.id], platform.watermarkRecord, 'fallback 抛错后平台 watermarkRecord 必须不变');
+    deepEqual(result.archiveSuggestionsByPhoto[photo.id], platform.archiveSuggestion, 'fallback 抛错后平台 archiveSuggestion 必须不变');
+    equal(result.processingResults[0].reason, 'ocr_fallback_failed', 'fallback 失败应隔离为单张安全状态');
+    equal(groupCalls, 0, 'fallback 失败照片不得保留或生成失效 membership');
+    scenarioCount += 1;
+  }
+
+  {
+    const localPhoto = makePhoto('mixed-local', 'local_file');
+    const completePhoto = makePhoto('mixed-complete');
+    const supplementedPhoto = makePhoto('mixed-supplemented');
+    const fallbackPhoto = makePhoto('mixed-fallback');
+    const complete = makeMarkiArtifacts(completePhoto.id);
+    const supplementedPlatform = makeMarkiArtifacts(
+      supplementedPhoto.id,
+      { ...requiredValues, project: '' }
+    );
+    const supplemented = mergeMarkiOcrSupplement({
+      ...supplementedPlatform,
+      ocrRecognitionResult: makeOcrArtifacts(supplementedPhoto.id).recognitionResult,
+      ocrWatermarkRecord: makeOcrArtifacts(supplementedPhoto.id).watermarkRecord,
+      ocrArchiveSuggestion: makeOcrArtifacts(supplementedPhoto.id).archiveSuggestion
+    });
+    const fallback = makeMarkiArtifacts(fallbackPhoto.id, { ...requiredValues, workContent: '' });
+    const maps = {
+      recognitionResultsByPhoto: {
+        [completePhoto.id]: complete.recognitionResult,
+        [supplementedPhoto.id]: supplemented.recognitionResult,
+        [fallbackPhoto.id]: fallback.recognitionResult
+      },
+      watermarkRecordsByPhoto: {
+        [completePhoto.id]: complete.watermarkRecord,
+        [supplementedPhoto.id]: supplemented.watermarkRecord,
+        [fallbackPhoto.id]: fallback.watermarkRecord
+      },
+      archiveSuggestionsByPhoto: {
+        [completePhoto.id]: complete.archiveSuggestion,
+        [supplementedPhoto.id]: supplemented.archiveSuggestion,
+        [fallbackPhoto.id]: fallback.archiveSuggestion
+      }
+    };
+    const ocrPhotoIds = [];
+    let groupCalls = 0;
+    const result = await run({
+      photos: [localPhoto, completePhoto, supplementedPhoto, fallbackPhoto],
+      maps,
+      recognize: async (photo) => {
+        ocrPhotoIds.push(photo.id);
+        return { ...makeOcrArtifacts(photo.id).recognitionResult, testFields: requiredValues };
+      },
+      generateGroups: async ({ photos: groupPhotos }) => {
+        groupCalls += 1;
+        return {
+          status: 'created',
+          groupCount: 1,
+          photoCount: groupPhotos.length,
+          groups: [{ id: 'mixed-group', photoIds: groupPhotos.map((photo) => photo.id) }]
+        };
+      }
+    });
+    deepEqual(ocrPhotoIds, [localPhoto.id, fallbackPhoto.id], '混合选择仅本地和仍缺字段 Marki 执行 OCR');
+    equal(result.stats.ocrCallCount, 2, '混合选择 OCR 总调用次数应为 2');
+    equal(groupCalls, 1, '混合选择只应统一分组一次');
+    equal(result.smartSortResult.groups[0].photoIds.length, 4, '四种来源路径应进入同一业务分组');
+    deepEqual(
+      result.photos.map((photo) => photo.sourceType),
+      ['local_file', 'marki_api', 'marki_api', 'marki_api'],
+      '来源字段必须保持不变'
+    );
+    deepEqual(result.recognitionResultsByPhoto[completePhoto.id], complete.recognitionResult, '混合选择不得改写完整 Marki');
+    equal(result.stats.existingSupplementCount, 1, '混合选择应复用已补齐 Marki');
+    equal(result.processingResults.length, 4, '混合选择每张照片都应有独立处理结果');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('local-regression', 'local_file');
+    const expected = makeOcrArtifacts(photo.id);
+    let groupCalls = 0;
+    const result = await run({
+      photos: [photo],
+      recognize: async () => expected.recognitionResult,
+      build: () => expected,
+      generateGroups: async () => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: 1 };
+      }
+    });
+    deepEqual(result.recognitionResultsByPhoto[photo.id], expected.recognitionResult, '纯本地 recognition 输出应保持现有产物');
+    deepEqual(result.watermarkRecordsByPhoto[photo.id], expected.watermarkRecord, '纯本地 watermark 输出应保持现有产物');
+    deepEqual(result.archiveSuggestionsByPhoto[photo.id], expected.archiveSuggestion, '纯本地 suggestion 输出应保持现有产物');
+    equal(Object.hasOwn(result.recognitionResultsByPhoto[photo.id], 'sourceAwareProcessing'), false, '本地照片不得生成 Marki 补充层');
+    equal(groupCalls, 1, '纯本地成功后仍只分组一次');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('local-unavailable', 'local_file');
+    let ocrCalls = 0;
+    let groupCalls = 0;
+    const result = await run({
+      photos: [photo],
+      ocrAvailable: false,
+      recognize: async () => {
+        ocrCalls += 1;
+        return makeOcrArtifacts(photo.id).recognitionResult;
+      },
+      generateGroups: async () => {
+        groupCalls += 1;
+        return {};
+      }
+    });
+    equal(ocrCalls, 0, 'OCR 服务不可用时纯本地不得调用 OCR');
+    equal(groupCalls, 0, 'OCR 服务不可用且无可信平台数据时不得伪造分组');
+    deepEqual(result.recognitionResultsByPhoto, {}, 'OCR 服务不可用时纯本地识别映射保持不变');
+    equal(result.processingResults[0].reason, 'ocr_unavailable', '纯本地应保留现有 OCR 不可用错误语义');
+    scenarioCount += 1;
+  }
+
+  {
+    const completePhoto = makePhoto('available-split-complete');
+    const localPhoto = makePhoto('available-split-local', 'local_file');
+    const complete = makeMarkiArtifacts(completePhoto.id);
+    let groupCalls = 0;
+    const result = await run({
+      photos: [completePhoto, localPhoto],
+      maps: makeMaps(completePhoto.id, complete),
+      ocrAvailable: false,
+      generateGroups: async ({ photos: groupPhotos }) => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: groupPhotos.length };
+      }
+    });
+    equal(result.stats.platformOnlyCount, 1, 'OCR 不可用时完整 Marki 仍应完成');
+    equal(result.stats.ocrUnavailableCount, 1, '需 OCR 的本地照片应单独报告不可用');
+    equal(groupCalls, 1, 'OCR 不可用不得阻断完整 Marki 分组');
+    equal(result.smartSortResult.photoCount, 1, '分组只应包含可用平台照片');
+    deepEqual(result.recognitionResultsByPhoto[completePhoto.id], complete.recognitionResult, 'OCR 不可用不得清除平台基线');
+    scenarioCount += 1;
+  }
+
+  {
+    const archived = makePhoto('archived-local', 'local_file', { sortStatus: 'archived' });
+    const missing = makePhoto('missing-local', 'local_file', { originalMissing: true });
+    const ignored = makePhoto('ignored-local', 'local_file', { sortStatus: 'ignored' });
+    equal(classifyPhotoRecognitionRoute({ photo: archived, eligible: false }), 'skip', '已归档照片应按现有 eligibility 跳过');
+    equal(isPhotoPendingSmartSort(archived), false, '已归档照片不得进入待智拣筛选');
+    equal(classifyPhotoRecognitionRoute({ photo: missing, eligible: false }), 'skip', '原图缺失照片应按现有 eligibility 跳过');
+    equal(classifyPhotoRecognitionRoute({ photo: ignored, eligible: false }), 'skip', '已忽略照片应按现有 eligibility 跳过');
+    equal(classifyPhotoRecognitionRoute({ photo: makePhoto('legacy-local', '') }), 'local_ocr', '旧本地照片缺少 sourceType 时应兼容本地 OCR');
+    equal(classifyPhotoRecognitionRoute({ photo: makePhoto('unsupported', 'remote_unknown') }), 'unsupported', '非法来源不得静默当作完整 Marki');
+    equal(
+      classifyPhotoRecognitionRoute({
+        photo: {
+          ...makePhoto('missing-source-with-marki-key', ''),
+          sourceKey: 'marki_api:12345:missing-source-with-marki-key'
+        }
+      }),
+      'unsupported',
+      '缺失来源但带 Marki 身份的照片不得默认走本地 OCR'
+    );
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('unmatched-platform-candidate');
+    const platform = makeMarkiArtifacts(photo.id, { ...requiredValues, project: '' });
+    platform.watermarkRecord.projectText = '未匹配候选小区';
+    platform.recognitionResult.parsedWatermark.projectName = null;
+    deepEqual(getMissingRequiredFields(platform), ['project'], '未匹配的项目候选文本不得冒充正式项目');
+    equal(classifyPhotoRecognitionRoute({ photo, ...platform }), 'marki_ocr_fallback', '未匹配项目仍应进入必要字段兜底');
+    scenarioCount += 1;
+  }
+
+  {
+    const {
+      getIgnoredRecognitionStageStatus,
+      ignorePhotosInWorkspace,
+      restoreIgnoredPhotosInWorkspace
+    } = await import(pathToFileURL(path.resolve(process.cwd(), 'src/utils/ignoredPhotoState.js')).href);
+    const fixedNow = () => '2026-07-19T08:00:00.000Z';
+    const makeGroupResult = (id, groupId, members) => ({
+      id,
+      status: 'created',
+      groupCount: 1,
+      photoCount: members.length,
+      groups: [{
+        id: groupId,
+        title: `分组-${groupId}`,
+        photoIds: members.map((photo) => photo.id),
+        photos: members.map((photo) => ({
+          photoId: photo.id,
+          filePath: photo.originalPath,
+          fileName: photo.originalName,
+          modifiedAt: photo.modifiedAt
+        })),
+        photoCount: members.length
+      }]
+    });
+
+    const localNotRun = {
+      ...makePhoto('ignored-local-not-run', 'local_file'),
+      sortStatus: 'unassigned',
+      smartSortStatus: 'not_run',
+      previewInfo: { status: 'ready' },
+      manualDraft: { remark: '保留人工草稿' }
+    };
+    const localMaps = makeMaps(localNotRun.id, makeOcrArtifacts(localNotRun.id));
+    const localMapsBefore = structuredClone(localMaps);
+    const ignoredLocal = ignorePhotosInWorkspace({
+      photos: [localNotRun],
+      targetPhotoIds: [localNotRun.id],
+      recognitionStageStatusByPhotoId: { [localNotRun.id]: 'staged' },
+      now: fixedNow
+    });
+    equal(ignoredLocal.photos[0].sortStatus, 'ignored', 'not_run 本地照片应进入 ignored 独立状态');
+    equal(ignoredLocal.photos[0].ignoredPreviousState.smartSortStatus, 'not_run', '忽略前 not_run 阶段必须保存');
+    deepEqual(localMaps, localMapsBefore, '忽略不得修改本地三个识别 Map');
+    deepEqual(ignoredLocal.photos[0].previewInfo, localNotRun.previewInfo, '忽略不得清除本地预览');
+    deepEqual(ignoredLocal.photos[0].manualDraft, localNotRun.manualDraft, '忽略不得清除人工草稿');
+    const restoredLocal = restoreIgnoredPhotosInWorkspace({
+      photos: ignoredLocal.photos,
+      targetPhotoIds: [localNotRun.id],
+      now: fixedNow
+    });
+    equal(restoredLocal.photos[0].sortStatus, 'unassigned', '还原后应恢复原 sortStatus');
+    equal(restoredLocal.photos[0].smartSortStatus, 'not_run', '还原后应恢复 not_run');
+    equal(Boolean(restoredLocal.photos[0].ignoredPreviousState), false, '还原后应清除已消费的忽略前态');
+    equal(getIgnoredRecognitionStageStatus(ignoredLocal.photos[0]), 'staged', 'OCR 后台阶段前态应可恢复');
+    scenarioCount += 1;
+
+    const completedLocal = {
+      ...makePhoto('ignored-local-completed', 'local_file'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'completed',
+      archiveInfo: { project: '示例项目' }
+    };
+    const completedResult = makeGroupResult('result-local-completed', 'group-local-completed', [completedLocal]);
+    const ignoredCompleted = ignorePhotosInWorkspace({
+      photos: [completedLocal],
+      smartSortResult: completedResult,
+      targetPhotoIds: [completedLocal.id],
+      now: fixedNow
+    });
+    equal(ignoredCompleted.smartSortResult.groupCount, 0, '忽略唯一成员后空分组应删除');
+    equal(ignoredCompleted.smartSortResult.photoCount, 0, '忽略后有效 membership 计数应重算');
+    const restoredCompleted = restoreIgnoredPhotosInWorkspace({
+      photos: ignoredCompleted.photos,
+      smartSortResult: ignoredCompleted.smartSortResult,
+      targetPhotoIds: [completedLocal.id],
+      now: fixedNow
+    });
+    equal(restoredCompleted.photos[0].smartSortStatus, 'completed', '原分组仍有效时应恢复 completed');
+    equal(restoredCompleted.membershipRestoredPhotoIds[0], completedLocal.id, '已完成本地照片应恢复原 membership');
+    equal(
+      buildSmartSortGroupMembershipByPhotoId(restoredCompleted.smartSortResult).get(completedLocal.id),
+      'group-local-completed',
+      '还原不得重新 OCR 或重新生成整套分组'
+    );
+    equal(restoredCompleted.photos[0].archiveInfo, completedLocal.archiveInfo, '人工整理信息应保持原引用');
+    scenarioCount += 1;
+
+    const markiPhoto = {
+      ...makePhoto('ignored-marki-completed'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'completed',
+      sourceType: 'marki_api',
+      sourceKey: 'marki_api:org-ignore:moment-ignore',
+      sourceMetadataRef: 'marki_source_metadata:org-ignore:moment-ignore'
+    };
+    const markiArtifacts = makeMarkiArtifacts(markiPhoto.id);
+    markiArtifacts.recognitionResult.platformBaseline = {
+      recognition: { source: 'marki_api' },
+      watermark: { project: '平台项目' },
+      suggestion: { status: 'suggestion_ready' }
+    };
+    const markiBefore = structuredClone(markiArtifacts);
+    const ignoredMarki = ignorePhotosInWorkspace({
+      photos: [markiPhoto],
+      smartSortResult: makeGroupResult('result-marki-completed', 'group-marki-completed', [markiPhoto]),
+      targetPhotoIds: [markiPhoto.id],
+      now: fixedNow
+    });
+    const restoredMarki = restoreIgnoredPhotosInWorkspace({
+      photos: ignoredMarki.photos,
+      smartSortResult: ignoredMarki.smartSortResult,
+      targetPhotoIds: [markiPhoto.id],
+      now: fixedNow
+    });
+    deepEqual(markiArtifacts, markiBefore, 'Marki recognition、watermark、suggestion 和平台基线必须深比较不变');
+    equal(restoredMarki.photos[0].sourceType, 'marki_api', 'Marki sourceType 必须保留');
+    equal(restoredMarki.photos[0].sourceKey, markiPhoto.sourceKey, 'Marki sourceKey 必须保留');
+    equal(restoredMarki.photos[0].sourceMetadataRef, markiPhoto.sourceMetadataRef, 'Marki metadata 引用必须保留');
+    equal(
+      classifyPhotoRecognitionRoute({ photo: restoredMarki.photos[0], ...markiArtifacts }),
+      'marki_platform_only',
+      '完整 Marki 还原后再次智拣仍应平台直用且 OCR 为 0'
+    );
+    scenarioCount += 1;
+
+    const stalePhoto = {
+      ...makePhoto('ignored-stale-group', 'local_file'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'needs_completion'
+    };
+    const ignoredStale = ignorePhotosInWorkspace({
+      photos: [stalePhoto],
+      smartSortResult: makeGroupResult('result-before-rebuild', 'group-before-rebuild', [stalePhoto]),
+      targetPhotoIds: [stalePhoto.id],
+      now: fixedNow
+    });
+    const staleRestored = restoreIgnoredPhotosInWorkspace({
+      photos: ignoredStale.photos,
+      smartSortResult: {
+        ...makeGroupResult('result-after-rebuild', 'group-after-rebuild', []),
+        groups: [],
+        groupCount: 0,
+        photoCount: 0
+      },
+      targetPhotoIds: [stalePhoto.id],
+      now: fixedNow
+    });
+    equal(staleRestored.photos[0].smartSortStatus, 'not_run', '旧分组整体失效后应安全回到待智拣');
+    equal(staleRestored.photos[0].ignoredMembershipRestoreStatus, 'membership_expired', '过期 membership 必须明确记录');
+    equal(staleRestored.membershipRestoredPhotoIds.length, 0, '不得把照片挂回已重建的错误分组');
+    equal(staleRestored.smartSortResult.photoCount, 0, '失效还原不得修改当前新分组');
+    scenarioCount += 1;
+
+    const poolPhotos = Array.from({ length: 20 }, (_, index) => ({
+      ...makePhoto(`ignored-pool-${index + 1}`, index % 2 ? 'local_file' : 'marki_api'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'completed'
+    }));
+    const poolResult = makeGroupResult('result-pool', 'group-pool', poolPhotos);
+    const untouchedBefore = poolPhotos.slice(3);
+    const locallyIgnored = ignorePhotosInWorkspace({
+      photos: poolPhotos,
+      smartSortResult: poolResult,
+      targetPhotoIds: poolPhotos.slice(0, 3).map((photo) => photo.id),
+      now: fixedNow
+    });
+    equal(locallyIgnored.ignoredPhotoIds.length, 3, '20 张中只应忽略选中的 3 张');
+    equal(buildSmartSortGroupMembershipByPhotoId(locallyIgnored.smartSortResult).size, 17, '未选中 17 张 membership 必须保留');
+    locallyIgnored.photos.slice(3).forEach((photo, index) => {
+      equal(photo, untouchedBefore[index], '局部忽略不得重建未选中照片对象');
+    });
+    const partiallyRestored = restoreIgnoredPhotosInWorkspace({
+      photos: locallyIgnored.photos,
+      smartSortResult: locallyIgnored.smartSortResult,
+      targetPhotoIds: poolPhotos.slice(0, 2).map((photo) => photo.id),
+      now: fixedNow
+    });
+    equal(partiallyRestored.restoredPhotoIds.length, 2, '局部还原只应恢复选中的 2 张');
+    equal(partiallyRestored.photos.filter((photo) => photo.sortStatus === 'ignored').length, 1, '未选择还原的 1 张必须继续 ignored');
+    equal(buildSmartSortGroupMembershipByPhotoId(partiallyRestored.smartSortResult).size, 19, '局部还原后 membership 应为 19');
+    scenarioCount += 1;
+
+    const repeatedIgnore = ignorePhotosInWorkspace({
+      photos: ignoredCompleted.photos,
+      smartSortResult: ignoredCompleted.smartSortResult,
+      targetPhotoIds: [completedLocal.id],
+      now: () => '2026-07-19T09:00:00.000Z'
+    });
+    equal(repeatedIgnore.photos[0], ignoredCompleted.photos[0], '重复忽略不得覆盖第一次保存的前态');
+    equal(repeatedIgnore.ignoredPhotoIds.length, 0, '重复忽略应幂等跳过');
+    const repeatedRestore = restoreIgnoredPhotosInWorkspace({
+      photos: restoredCompleted.photos,
+      smartSortResult: restoredCompleted.smartSortResult,
+      targetPhotoIds: [completedLocal.id],
+      now: fixedNow
+    });
+    equal(repeatedRestore.photos[0], restoredCompleted.photos[0], '重复还原不得再次修改照片');
+    equal(repeatedRestore.restoredPhotoIds.length, 0, '重复还原应幂等跳过');
+    equal(
+      buildSmartSortGroupMembershipByPhotoId(repeatedRestore.smartSortResult).size,
+      1,
+      '重复还原不得产生重复 membership'
+    );
+    scenarioCount += 1;
+
+    const archivedPhoto = {
+      ...makePhoto('ignored-archived', 'local_file'),
+      sortStatus: 'archived',
+      archiveResult: { success: true, status: '归档成功' }
+    };
+    const archivingPhoto = {
+      ...makePhoto('ignored-archiving', 'local_file'),
+      sortStatus: 'archiving'
+    };
+    const missingPhoto = {
+      ...makePhoto('ignored-missing', 'local_file'),
+      originalMissing: true
+    };
+    const protectedResult = ignorePhotosInWorkspace({
+      photos: [archivedPhoto, archivingPhoto, missingPhoto],
+      targetPhotoIds: [archivedPhoto.id, archivingPhoto.id, missingPhoto.id],
+      now: fixedNow
+    });
+    equal(protectedResult.ignoredPhotoIds.length, 0, '归档、归档中和原图缺失照片均不得普通忽略');
+    deepEqual(protectedResult.photos, [archivedPhoto, archivingPhoto, missingPhoto], '高优先级照片状态不得被忽略破坏');
+    scenarioCount += 1;
+
+    const mixedLocal = {
+      ...makePhoto('ignored-mixed-local', 'local_file'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'completed'
+    };
+    const mixedMarki = {
+      ...makePhoto('ignored-mixed-marki'),
+      sortStatus: 'recognized',
+      smartSortStatus: 'completed',
+      sourceType: 'marki_api',
+      sourceKey: 'marki_api:org-ignore:mixed'
+    };
+    const mixedIgnored = ignorePhotosInWorkspace({
+      photos: [mixedLocal, mixedMarki],
+      smartSortResult: makeGroupResult('result-mixed-ignore', 'group-mixed-ignore', [mixedLocal, mixedMarki]),
+      targetPhotoIds: [mixedLocal.id, mixedMarki.id],
+      now: fixedNow
+    });
+    const mixedRestored = restoreIgnoredPhotosInWorkspace({
+      photos: mixedIgnored.photos,
+      smartSortResult: mixedIgnored.smartSortResult,
+      targetPhotoIds: [mixedLocal.id, mixedMarki.id],
+      now: fixedNow
+    });
+    equal(mixedRestored.photos[0].sourceType, 'local_file', '混合还原应保留本地来源');
+    equal(mixedRestored.photos[1].sourceType, 'marki_api', '混合还原应保留 Marki 来源');
+    equal(buildSmartSortGroupMembershipByPhotoId(mixedRestored.smartSortResult).size, 2, '混合来源应分别恢复原分组成员关系');
+    scenarioCount += 1;
+
+    const snapshotRoot = path.join(root, 'ignored-snapshot');
+    await fs.writeFile(
+      markiPhoto.originalPath,
+      Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+    );
+    const ignoredSnapshotWorkspace = {
+      ...createEmptyWorkspace(),
+      photos: ignoredMarki.photos,
+      selectedIds: [],
+      activePhotoId: '',
+      recognitionResultsByPhoto: {
+        [markiPhoto.id]: markiArtifacts.recognitionResult
+      },
+      watermarkRecordsByPhoto: {
+        [markiPhoto.id]: markiArtifacts.watermarkRecord
+      },
+      archiveSuggestionsByPhoto: {
+        [markiPhoto.id]: markiArtifacts.archiveSuggestion
+      },
+      smartSortResult: ignoredMarki.smartSortResult
+    };
+    equal((await saveSortWorkspaceSnapshot(snapshotRoot, ignoredSnapshotWorkspace)).success, true, '忽略状态必须写入自动快照');
+    const ignoredSnapshotRestored = await loadSortWorkspaceSnapshot(snapshotRoot);
+    equal(ignoredSnapshotRestored.success, true, '全新实例应恢复忽略快照');
+    const restoredWorkspacePhoto = ignoredSnapshotRestored.snapshot.workspace.photos[0];
+    equal(restoredWorkspacePhoto.sortStatus, 'ignored', '重启后照片仍应保持 ignored');
+    equal(
+      buildSmartSortGroupMembershipByPhotoId(ignoredSnapshotRestored.snapshot.workspace.smartSortResult).size,
+      0,
+      '重启后 ignored 照片不得重新进入有效 membership'
+    );
+    deepEqual(
+      JSON.parse(JSON.stringify(
+        ignoredSnapshotRestored.snapshot.workspace.recognitionResultsByPhoto[markiPhoto.id]
+      )),
+      JSON.parse(JSON.stringify(markiArtifacts.recognitionResult)),
+      '重启后平台 recognition 必须完整'
+    );
+    const restoredAfterRestart = restoreIgnoredPhotosInWorkspace({
+      photos: ignoredSnapshotRestored.snapshot.workspace.photos,
+      smartSortResult: ignoredSnapshotRestored.snapshot.workspace.smartSortResult,
+      targetPhotoIds: [markiPhoto.id],
+      now: fixedNow
+    });
+    equal(restoredAfterRestart.photos[0].smartSortStatus, 'completed', '重启后仍应按忽略前阶段还原');
+    equal(buildSmartSortGroupMembershipByPhotoId(restoredAfterRestart.smartSortResult).size, 1, '重启后还原应恢复有效 membership');
+    const secondSnapshotRoot = path.join(root, 'ignored-restored-snapshot');
+    const restoredWorkspace = {
+      ...ignoredSnapshotRestored.snapshot.workspace,
+      photos: restoredAfterRestart.photos,
+      smartSortResult: restoredAfterRestart.smartSortResult
+    };
+    equal((await saveSortWorkspaceSnapshot(secondSnapshotRoot, restoredWorkspace)).success, true, '还原后状态必须再次写入快照');
+    const secondRestart = await loadSortWorkspaceSnapshot(secondSnapshotRoot);
+    equal(secondRestart.snapshot.workspace.photos[0].sortStatus, 'recognized', '再次重启后应保持已还原阶段');
+    equal(buildSmartSortGroupMembershipByPhotoId(secondRestart.snapshot.workspace.smartSortResult).size, 1, '再次重启后 membership 应保持');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('auxiliary-fields-missing');
+    const platform = makeMarkiArtifacts(photo.id);
+    platform.archiveSuggestion.missingRequiredFields = ['位置', '备注'];
+    deepEqual(getMissingRequiredFields(platform), [], '位置和备注缺失不得触发 OCR');
+    equal(classifyPhotoRecognitionRoute({ photo, ...platform }), 'marki_platform_only', '辅助字段缺失仍应直用完整平台数据');
+    scenarioCount += 1;
+  }
+
+  {
+    const photo = makePhoto('snapshot-fallback');
+    await fs.writeFile(photo.originalPath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const platform = makeMarkiArtifacts(photo.id, { ...requiredValues, project: '' });
+    const result = await run({
+      photos: [photo],
+      maps: makeMaps(photo.id, platform),
+      recognize: async () => ({
+        ...makeOcrArtifacts(photo.id).recognitionResult,
+        testFields: { ...requiredValues, date: '2026-07-18' }
+      })
+    });
+    const workspace = {
+      ...createEmptyWorkspace(),
+      photos: result.photos,
+      selectedIds: [photo.id],
+      activePhotoId: photo.id,
+      recognitionResultsByPhoto: result.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: result.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: result.archiveSuggestionsByPhoto,
+      smartSortResult: result.smartSortResult
+    };
+    equal(result.stats.conflictCount, 1, '平台与 OCR 字段冲突应计入待核查照片统计');
+    equal(result.stats.needsManualCount, 1, '存在字段冲突的照片应计入人工完善统计');
+    const snapshotRoot = path.join(root, 'snapshot');
+    equal((await saveSortWorkspaceSnapshot(snapshotRoot, workspace)).success, true, '来源感知智拣结果应写入自动快照');
+    const restored = await loadSortWorkspaceSnapshot(snapshotRoot);
+    equal(restored.success, true, '全新快照读取应成功');
+    deepEqual(
+      JSON.parse(JSON.stringify(restored.snapshot.workspace.recognitionResultsByPhoto[photo.id].sourceAwareProcessing)),
+      JSON.parse(JSON.stringify(result.recognitionResultsByPhoto[photo.id].sourceAwareProcessing)),
+      '重启后应恢复 OCR 补充和冲突元数据'
+    );
+    equal(
+      restored.snapshot.workspace.recognitionResultsByPhoto[photo.id].sourceAwareProcessing.conflicts.length,
+      1,
+      '重启后应保留平台与 OCR 的字段冲突'
+    );
+    equal(restored.snapshot.workspace.recognitionResultsByPhoto[photo.id].source, 'marki_api', '重启后平台来源标志应保留');
+    const snapshotText = await fs.readFile(getSortWorkspaceSnapshotPath(snapshotRoot), 'utf8');
+    equal(snapshotText.includes('https://'), false, '来源感知快照不得包含 URL');
+    equal(snapshotText.includes('"content"'), false, '来源感知快照不得包含 content');
+    equal(snapshotText.includes('"moment"'), false, '来源感知快照不得包含 moment');
+    equal(snapshotText.includes('"apiKey"'), false, '来源感知快照不得包含 KEY');
+    scenarioCount += 1;
+  }
+
+  {
+    const photos = Array.from({ length: 5 }, (_, index) => makePhoto(`many-${index + 1}`, 'local_file'));
+    let groupCalls = 0;
+    await run({
+      photos,
+      recognize: async (photo) => {
+        if (photo.id === 'many-3') throw new Error('controlled single failure');
+        return makeOcrArtifacts(photo.id).recognitionResult;
+      },
+      generateGroups: async () => {
+        groupCalls += 1;
+        return { status: 'created', groupCount: 1, photoCount: 4 };
+      }
+    });
+    equal(groupCalls, 1, '多张照片和单项失败时最终分组最多执行一次');
+    scenarioCount += 1;
+  }
+
+  {
+    const pool = makeCompletePool(20, 'partial-first');
+    const targetPhotos = pool.photos.slice(0, 6);
+    const unselectedPhotosBefore = pool.photos.slice(6);
+    const unselectedMapValuesBefore = Object.fromEntries(unselectedPhotosBefore.map((photo) => [
+      photo.id,
+      {
+        recognition: pool.maps.recognitionResultsByPhoto[photo.id],
+        watermark: pool.maps.watermarkRecordsByPhoto[photo.id],
+        suggestion: pool.maps.archiveSuggestionsByPhoto[photo.id],
+        sourceType: photo.sourceType,
+        sourceKey: photo.sourceKey
+      }
+    ]));
+    let groupedPhotoIds = [];
+    const orchestration = await run({
+      photos: targetPhotos,
+      maps: pool.maps,
+      generateGroups: async ({ photos: groupPhotos }) => {
+        groupedPhotoIds = groupPhotos.map((photo) => photo.id);
+        return {
+          status: 'created',
+          groupCount: 1,
+          photoCount: groupPhotos.length,
+          groups: [{ id: 'partial-first-group', photoIds: groupedPhotoIds }]
+        };
+      }
+    });
+    const mergedResult = mergeScopedSmartSortResult({
+      previousSmartSortResult: null,
+      nextSmartSortResult: orchestration.smartSortResult,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id)
+    });
+    const completedPhotos = completeSmartSortExecution({
+      photos: pool.photos,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id),
+      processingResults: orchestration.processingResults,
+      smartSortResult: mergedResult
+    });
+    const membership = buildSmartSortGroupMembershipByPhotoId(mergedResult);
+    const pendingSortIds = getStageIds(completedPhotos, membership, 'pending_sort');
+    const pendingOrganizeIds = getStageIds(completedPhotos, membership, 'pending_organize');
+    deepEqual(groupedPhotoIds, targetPhotos.map((photo) => photo.id), '20 张照片局部智拣时分组输入只能包含选中的 6 张');
+    equal(orchestration.processingResults.length, 6, '来源路由只能处理选中的 6 张');
+    equal(membership.size, 6, '首次局部智拣最终 membership 必须为 6');
+    equal(pendingOrganizeIds.length, 6, '首次局部智拣待整理必须为 6');
+    equal(pendingSortIds.length, 14, '首次局部智拣待智拣必须为 14');
+    equal(new Set([...pendingSortIds, ...pendingOrganizeIds]).size, 20, '待智拣和待整理并集必须覆盖 20 张照片');
+    equal(pendingSortIds.some((photoId) => pendingOrganizeIds.includes(photoId)), false, '待智拣和待整理必须互斥');
+    completedPhotos.slice(6).forEach((photo, index) => {
+      equal(photo, unselectedPhotosBefore[index], `未选中照片 ${index + 1} 必须保持原对象引用`);
+      const before = unselectedMapValuesBefore[photo.id];
+      deepEqual(orchestration.recognitionResultsByPhoto[photo.id], before.recognition, '未选中 recognition 必须深比较不变');
+      deepEqual(orchestration.watermarkRecordsByPhoto[photo.id], before.watermark, '未选中 watermark 必须深比较不变');
+      deepEqual(orchestration.archiveSuggestionsByPhoto[photo.id], before.suggestion, '未选中 suggestion 必须深比较不变');
+      equal(photo.sourceType, before.sourceType, '未选中来源类型必须保持');
+      equal(photo.sourceKey, before.sourceKey, '未选中来源键必须保持');
+    });
+    scenarioCount += 1;
+  }
+
+  {
+    const pool = makeCompletePool(20, 'partial-append');
+    const existingPhotos = pool.photos.map((photo, index) => (
+      index < 15 ? { ...photo, smartSortStatus: 'completed' } : photo
+    ));
+    const previousGroup = {
+      id: 'existing-fifteen',
+      title: '原有待整理分组',
+      photoIds: existingPhotos.slice(0, 15).map((photo) => photo.id),
+      photoCount: 15
+    };
+    const previousResult = {
+      id: 'existing-result',
+      status: 'created',
+      groupCount: 1,
+      photoCount: 15,
+      groups: [previousGroup]
+    };
+    const targetPhotos = existingPhotos.slice(15, 17);
+    const orchestration = await run({ photos: targetPhotos, maps: pool.maps });
+    const mergedResult = mergeScopedSmartSortResult({
+      previousSmartSortResult: previousResult,
+      nextSmartSortResult: orchestration.smartSortResult,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id)
+    });
+    const completedPhotos = completeSmartSortExecution({
+      photos: existingPhotos,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id),
+      processingResults: orchestration.processingResults,
+      smartSortResult: mergedResult
+    });
+    const membership = buildSmartSortGroupMembershipByPhotoId(mergedResult);
+    deepEqual(mergedResult.groups[0], previousGroup, '追加两张照片时原 15 张分组必须深比较保持');
+    equal(membership.size, 17, '已有 15 张后追加智拣 2 张，最终 membership 必须为 17');
+    equal(mergedResult.groupCount, 2, '旧分组和本次新分组应共同保留');
+    equal(mergedResult.photoCount, 17, '合并结果照片数量必须重新计算为 17');
+    equal(getStageIds(completedPhotos, membership, 'pending_organize').length, 17, '追加后待整理必须为 17');
+    equal(getStageIds(completedPhotos, membership, 'pending_sort').length, 3, '追加后待智拣必须为 3');
+    scenarioCount += 1;
+  }
+
+  {
+    const pool = makeCompletePool(20, 'partial-rerun');
+    const existingPhotos = pool.photos.map((photo, index) => (
+      index < 15 ? { ...photo, smartSortStatus: 'completed' } : photo
+    ));
+    const previousResult = {
+      id: 'rerun-result',
+      status: 'created',
+      groupCount: 1,
+      photoCount: 15,
+      groups: [{
+        id: 'rerun-existing-fifteen',
+        title: '原有十五张',
+        photos: existingPhotos.slice(0, 15).map((photo) => ({
+          photoId: photo.id,
+          modifiedAt: photo.modifiedAt
+        })),
+        photoCount: 15
+      }]
+    };
+    const targetPhotos = existingPhotos.slice(0, 3);
+    const orchestration = await run({
+      photos: targetPhotos,
+      maps: pool.maps,
+      generateGroups: async ({ photos: groupPhotos }) => ({
+        status: 'created',
+        groupCount: 1,
+        photoCount: groupPhotos.length,
+        groups: [{
+          id: 'rerun-latest-three',
+          photos: groupPhotos.map((photo) => ({
+            photoId: photo.id,
+            modifiedAt: photo.modifiedAt
+          })),
+          photoCount: groupPhotos.length
+        }]
+      })
+    });
+    const mergedResult = mergeScopedSmartSortResult({
+      previousSmartSortResult: previousResult,
+      nextSmartSortResult: orchestration.smartSortResult,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id)
+    });
+    const membership = buildSmartSortGroupMembershipByPhotoId(mergedResult);
+    const allMembershipIds = mergedResult.groups.flatMap((group) => (
+      [...buildSmartSortGroupMembershipByPhotoId({ groups: [group] }).keys()]
+    ));
+    equal(membership.size, 15, '重新智拣原分组 3 张后最终成员仍应为 15');
+    equal(new Set(allMembershipIds).size, allMembershipIds.length, '重新智拣后同一 photoId 不得出现在两个分组');
+    existingPhotos.slice(3, 15).forEach((photo) => {
+      equal(membership.get(photo.id), 'rerun-existing-fifteen', '未选中的 12 张必须保留原 membership');
+    });
+    targetPhotos.forEach((photo) => {
+      equal(membership.get(photo.id), 'rerun-latest-three', '选中的 3 张必须替换为本次最新 membership');
+    });
+    equal(mergedResult.groups[0].photoCount, 12, '移除选中照片后旧分组照片数必须重算为 12');
+    equal(mergedResult.groups[1].photoCount, 3, '本次新分组照片数必须为 3');
+    equal(mergedResult.photoCount, 15, '重新智拣后的总照片数必须重算为 15');
+    scenarioCount += 1;
+  }
+
+  {
+    const pool = makeCompletePool(20, 'partial-failure');
+    const existingPhotos = pool.photos.map((photo, index) => (
+      index < 15 ? { ...photo, smartSortStatus: 'completed' } : photo
+    ));
+    const previousResult = {
+      id: 'failure-result',
+      status: 'created',
+      groupCount: 1,
+      photoCount: 15,
+      groups: [{
+        id: 'failure-existing-fifteen',
+        photoIds: existingPhotos.slice(0, 15).map((photo) => photo.id),
+        photoCount: 15
+      }]
+    };
+    const targetPhotos = existingPhotos.slice(0, 3);
+    const successfulIds = targetPhotos.slice(0, 2).map((photo) => photo.id);
+    const failedId = targetPhotos[2].id;
+    const mergedResult = mergeScopedSmartSortResult({
+      previousSmartSortResult: previousResult,
+      nextSmartSortResult: {
+        status: 'created',
+        groupCount: 1,
+        photoCount: 2,
+        groups: [{ id: 'failure-latest-two', photoIds: successfulIds, photoCount: 2 }]
+      },
+      targetPhotoIds: targetPhotos.map((photo) => photo.id)
+    });
+    const completedPhotos = completeSmartSortExecution({
+      photos: existingPhotos,
+      targetPhotoIds: targetPhotos.map((photo) => photo.id),
+      processingResults: [
+        ...successfulIds.map((photoId) => ({
+          photoId,
+          status: 'completed',
+          missingRequiredFields: []
+        })),
+        {
+          photoId: failedId,
+          status: 'failed',
+          missingRequiredFields: []
+        }
+      ],
+      smartSortResult: mergedResult
+    });
+    const membership = buildSmartSortGroupMembershipByPhotoId(mergedResult);
+    equal(membership.has(failedId), false, '本次失败照片不得继续保留失效的旧 membership');
+    equal(completedPhotos.find((photo) => photo.id === failedId).smartSortStatus, 'failed', '本次失败照片状态必须为 failed');
+    successfulIds.forEach((photoId) => {
+      equal(membership.get(photoId), 'failure-latest-two', '本次成功照片必须写入最新分组');
+    });
+    existingPhotos.slice(3, 15).forEach((photo, index) => {
+      equal(completedPhotos[index + 3], existingPhotos[index + 3], '未选中照片必须保持原对象');
+      equal(membership.get(photo.id), 'failure-existing-fifteen', '未选中照片必须保留旧 membership');
+    });
+    equal(getStageIds(completedPhotos, membership, 'pending_organize').length, 14, '一张重智拣失败后待整理应为 14');
+    equal(getStageIds(completedPhotos, membership, 'pending_sort').length, 6, '一张重智拣失败后待智拣应为 6');
+    equal(isPhotoPendingSmartSort(completedPhotos.find((photo) => photo.id === failedId), false), true, '失败照片应重新进入待智拣');
+    equal(isPhotoPendingOrganize(completedPhotos.find((photo) => photo.id === failedId), false), false, '失败照片不得同时进入待整理');
+    scenarioCount += 1;
+  }
+
+  {
+    const source = await fs.readFile(path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'), 'utf8');
+    const utilitySource = await fs.readFile(path.join(process.cwd(), 'src', 'utils', 'sourceAwareRecognition.js'), 'utf8');
+    const structuredImportSource = await fs.readFile(
+      path.join(process.cwd(), 'electron', 'services', 'markiStructuredImportService.cjs'),
+      'utf8'
+    );
+    const rehydrateSource = await fs.readFile(
+      path.join(process.cwd(), 'electron', 'services', 'markiWorkbenchRehydrateService.cjs'),
+      'utf8'
+    );
+    assert.match(source, /orchestrateSourceAwareRecognition\(/);
+    sourceContractCount += 1;
+    assert.match(source, /getOcrAvailability:[\s\S]*getRecognitionStatus\(\)/);
+    sourceContractCount += 1;
+    assert.equal(source.includes('routeText ==='), false);
+    sourceContractCount += 1;
+    assert.match(source, /saveAutomaticSnapshotImmediately\(nextWorkspace\)/);
+    sourceContractCount += 1;
+    assert.match(source, /route === 'marki_ocr_fallback'[\s\S]*currentProject: ''/);
+    sourceContractCount += 1;
+    assert.equal(utilitySource.includes('originalPath.includes'), false);
+    sourceContractCount += 1;
+    assert.equal(utilitySource.includes('fileName.includes'), false);
+    sourceContractCount += 1;
+    assert.equal(utilitySource.includes('window.'), false);
+    sourceContractCount += 1;
+    assert.equal(utilitySource.includes('sourceKey.includes'), false);
+    sourceContractCount += 1;
+    assert.match(source, /buildSourceAwareRecognitionNotice\(stats, \{ supersedeSyncFailedCount \}\)/);
+    sourceContractCount += 1;
+    assert.match(source, /completeSmartSortExecution\(\{/);
+    sourceContractCount += 1;
+    assert.match(source, /smartSortGroupPhotoIds\.has\(photo\.id\)/);
+    sourceContractCount += 1;
+    assert.match(source, /mergeScopedSmartSortResult\(\{/);
+    sourceContractCount += 1;
+    assert.match(source, /getWorkflowFilterCount\(key, photos, selectedIds, smartSortGroupMembershipByPhotoId\)/);
+    sourceContractCount += 1;
+    assert.match(source, /getPhotoWorkflowStageLabel\(photo, smartSortGroupMember\)/);
+    sourceContractCount += 1;
+    assert.match(source, /resetSelectedSmartSortResults\(\{/);
+    sourceContractCount += 1;
+    assert.match(utilitySource, /export function resetSelectedSmartSortResults\(\{/);
+    sourceContractCount += 1;
+    assert.match(source, /photos: invalidateSmartSortExecution\(workspace\.photos\)/);
+    sourceContractCount += 1;
+    assert.match(utilitySource, /marki_existing_supplement/);
+    sourceContractCount += 1;
+    assert.equal(structuredImportSource.includes('sourceAwareRecognition'), false);
+    sourceContractCount += 1;
+    assert.equal(structuredImportSource.includes('generateSmartSortGroups'), false);
+    sourceContractCount += 1;
+    assert.equal(rehydrateSource.includes('sourceAwareRecognition'), false);
+    sourceContractCount += 1;
+    assert.equal(rehydrateSource.includes('generateSmartSortGroups'), false);
+    sourceContractCount += 1;
+    scenarioCount += 1;
+  }
+
+  check(assertionCount >= 70, '来源感知智拣应执行至少 70 个行为断言');
+  console.log(
+    `来源感知智拣自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
+  );
+}
+
+async function checkSmartGroupDateBoundaries(root) {
+  const {
+    buildSmartGroupDescriptor,
+    normalizeSmartGroupDate
+  } = await import(pathToFileURL(
+    path.resolve(process.cwd(), 'src/utils/smartGroupKey.js')
+  ).href);
+  const {
+    buildSmartSortGroupMembershipByPhotoId,
+    mergeScopedSmartSortResult,
+    orchestrateSourceAwareRecognition
+  } = await import(pathToFileURL(
+    path.resolve(process.cwd(), 'src/utils/sourceAwareRecognition.js')
+  ).href);
+  const {
+    buildArchiveFormSeed,
+    resolveCanonicalPhotoResult
+  } = await import(pathToFileURL(
+    path.resolve(process.cwd(), 'src/utils/sortRightPanelState.js')
+  ).href);
+  await fs.mkdir(root, { recursive: true });
+
+  let behaviorAssertionCount = 0;
+  let sourceContractAssertionCount = 0;
+  const equal = (...args) => {
+    behaviorAssertionCount += 1;
+    return assert.equal(...args);
+  };
+  const deepEqual = (...args) => {
+    behaviorAssertionCount += 1;
+    return assert.deepEqual(...args);
+  };
+  const check = (value, message) => {
+    behaviorAssertionCount += 1;
+    return assert.ok(value, message);
+  };
+  const sourceCheck = (value, message) => {
+    sourceContractAssertionCount += 1;
+    return assert.ok(value, message);
+  };
+  const fields = {
+    project: '嘉恒花园',
+    watermarkCategory: '巡查检查',
+    workContent: '电梯巡查'
+  };
+  const makeArtifacts = (photoId, date) => ({
+    recognitionResult: {
+      photoId,
+      source: 'marki_api',
+      providerType: 'structured_data',
+      status: 'recognized',
+      parsedFields: {
+        date,
+        project: fields.project,
+        watermarkCategory: fields.watermarkCategory,
+        workContent: fields.workContent
+      }
+    },
+    watermarkRecord: {
+      photoId,
+      source: 'marki_api',
+      captureDate: date,
+      projectText: fields.project,
+      watermarkCategoryText: fields.watermarkCategory,
+      workContentText: fields.workContent
+    },
+    archiveSuggestion: {
+      photoId,
+      source: 'marki_api',
+      status: 'suggestion_ready',
+      suggestedFields: {
+        date,
+        ...fields
+      },
+      missingRequiredFields: []
+    }
+  });
+  const makeSmartPhoto = ({
+    id,
+    date = '',
+    capturedAt = '',
+    sourceType = 'marki_api',
+    artifacts = makeArtifacts(id, date)
+  }) => {
+    const photo = {
+      id,
+      originalPath: path.join(root, `${id}.jpg`),
+      originalName: `${id}.jpg`,
+      sourceType,
+      capturedAt,
+      modifiedAt: capturedAt
+    };
+    const canonicalFields = resolveCanonicalPhotoResult({
+      photo,
+      recognitionResult: artifacts.recognitionResult,
+      watermarkRecord: artifacts.watermarkRecord,
+      archiveSuggestion: artifacts.archiveSuggestion,
+      configs: {
+        projects: [fields.project],
+        watermarkCategories: {
+          [fields.watermarkCategory]: { items: [fields.workContent] }
+        }
+      }
+    });
+    return {
+      photoId: id,
+      filePath: photo.originalPath,
+      fileName: photo.originalName,
+      sourceType,
+      capturedAt: capturedAt || null,
+      modifiedAt: capturedAt || null,
+      recognition: artifacts.recognitionResult,
+      watermarkRecord: artifacts.watermarkRecord,
+      archiveSuggestion: artifacts.archiveSuggestion,
+      smartGrouping: buildSmartGroupDescriptor({
+        photo,
+        recognitionResult: artifacts.recognitionResult,
+        watermarkRecord: artifacts.watermarkRecord,
+        archiveSuggestion: artifacts.archiveSuggestion,
+        canonicalFields
+      })
+    };
+  };
+  const getMemberIds = (result) => (result.groups || [])
+    .flatMap((group) => (group.photos || []).map((photo) => photo.photoId));
+
+  const differentDates = await generateSmartSortGroups(
+    path.join(root, 'different-dates'),
+    {
+      photos: [
+        makeSmartPhoto({ id: 'date-12', date: '2026-06-12' }),
+        makeSmartPhoto({ id: 'date-13', date: '2026-06-13' })
+      ]
+    }
+  );
+  equal(differentDates.groupCount, 2, '不同日期且业务字段相同的照片必须拆成两个分组');
+  equal(new Set(differentDates.groups.map((group) => group.groupKey)).size, 2, '不同日期必须生成不同 groupKey');
+  equal(new Set(getMemberIds(differentDates)).size, 2, '每张照片只能拥有一个 membership');
+  deepEqual(
+    differentDates.groups.map((group) => group.suggestedFields.date).sort(),
+    ['2026-06-12', '2026-06-13'],
+    '两个分组必须保留各自归一化日期'
+  );
+
+  const sameDateDifferentTimes = await generateSmartSortGroups(
+    path.join(root, 'same-date'),
+    {
+      photos: [
+        makeSmartPhoto({
+          id: 'same-date-morning',
+          date: '',
+          capturedAt: '2026-06-12T09:00:00+08:00',
+          artifacts: makeArtifacts('same-date-morning', '')
+        }),
+        makeSmartPhoto({
+          id: 'same-date-evening',
+          date: '',
+          capturedAt: '2026-06-12T17:30:00+08:00',
+          artifacts: makeArtifacts('same-date-evening', '')
+        })
+      ]
+    }
+  );
+  equal(sameDateDifferentTimes.groupCount, 1, '同一天不同时刻且业务字段一致时应进入同一分组');
+  equal(sameDateDifferentTimes.groups[0].photoCount, 2, '同日分组应包含两张照片');
+  equal(sameDateDifferentTimes.groups[0].suggestedFields.date, '2026-06-12', '同日时间必须归一为同一业务日期');
+
+  const crossSourceSameDate = await generateSmartSortGroups(
+    path.join(root, 'cross-source-same-date'),
+    {
+      photos: [
+        makeSmartPhoto({ id: 'marki-same-day', date: '2026-06-12', sourceType: 'marki_api' }),
+        makeSmartPhoto({ id: 'local-same-day', date: '2026-06-12', sourceType: 'local_file' })
+      ]
+    }
+  );
+  equal(crossSourceSameDate.groupCount, 1, 'Marki 与本地照片四维签名一致时应跨来源同组');
+  deepEqual(
+    crossSourceSameDate.groups[0].photos.map((photo) => photo.sourceType).sort(),
+    ['local_file', 'marki_api'],
+    '跨来源分组必须保留照片来源字段'
+  );
+  const crossSourceNextDate = await generateSmartSortGroups(
+    path.join(root, 'cross-source-next-date'),
+    {
+      photos: [
+        makeSmartPhoto({ id: 'marki-day-one', date: '2026-06-12', sourceType: 'marki_api' }),
+        makeSmartPhoto({ id: 'local-day-two', date: '2026-06-13', sourceType: 'local_file' })
+      ]
+    }
+  );
+  equal(crossSourceNextDate.groupCount, 2, '跨来源照片日期不同时必须拆组');
+
+  equal(
+    normalizeSmartGroupDate('2026-06-12T16:30:00.000Z'),
+    '2026-06-13',
+    'UTC 16:30 必须按固定 UTC+8 归入次日'
+  );
+  equal(
+    normalizeSmartGroupDate('2026-06-13T00:30:00+08:00'),
+    '2026-06-13',
+    '显式 UTC+8 午夜时间不得漂移到前一天'
+  );
+  equal(
+    normalizeSmartGroupDate('2026-06-13 00:30:00'),
+    '2026-06-13',
+    '无时区业务时间应按冻结的 UTC+8 日期语义取日'
+  );
+
+  const explicitAndMissing = await generateSmartSortGroups(
+    path.join(root, 'explicit-and-missing'),
+    {
+      photos: [
+        makeSmartPhoto({ id: 'dated-photo', date: '2026-06-12' }),
+        makeSmartPhoto({
+          id: 'missing-photo',
+          date: '',
+          artifacts: makeArtifacts('missing-photo', '')
+        })
+      ]
+    }
+  );
+  equal(explicitAndMissing.groupCount, 2, '缺失日期照片不得与明确日期照片合并');
+  equal(
+    explicitAndMissing.groups.find((group) => group.suggestedFields.date === '')?.warnings.length > 0,
+    true,
+    '缺失日期分组必须提示人工补充'
+  );
+  const bothMissing = await generateSmartSortGroups(
+    path.join(root, 'both-missing'),
+    {
+      photos: [
+        makeSmartPhoto({ id: 'missing-one', date: '', artifacts: makeArtifacts('missing-one', '') }),
+        makeSmartPhoto({ id: 'missing-two', date: '', artifacts: makeArtifacts('missing-two', '') })
+      ]
+    }
+  );
+  equal(bothMissing.groupCount, 2, '两张日期均缺失的照片不得因空日期合并');
+  equal(new Set(bothMissing.groups.map((group) => group.groupKey)).size, 2, '缺失日期签名必须按 photoId 隔离');
+
+  const initialThree = [
+    makeSmartPhoto({ id: 'partial-one', date: '2026-06-12' }),
+    makeSmartPhoto({ id: 'partial-two', date: '2026-06-12' }),
+    makeSmartPhoto({ id: 'partial-three', date: '2026-06-12' })
+  ];
+  const initialResult = await generateSmartSortGroups(
+    path.join(root, 'partial-initial'),
+    { photos: initialThree }
+  );
+  const movedPhoto = makeSmartPhoto({ id: 'partial-three', date: '2026-06-13' });
+  const movedResult = await generateSmartSortGroups(
+    path.join(root, 'partial-moved'),
+    { photos: [movedPhoto] }
+  );
+  const mergedPartial = mergeScopedSmartSortResult({
+    previousSmartSortResult: initialResult,
+    nextSmartSortResult: movedResult,
+    targetPhotoIds: ['partial-three'],
+    groupContextByPhotoId: Object.fromEntries([
+      ...initialThree.slice(0, 2),
+      movedPhoto
+    ].map((photo) => [photo.photoId, photo]))
+  });
+  equal(mergedPartial.groupCount, 2, '局部重智拣改为次日后必须拆成两个分组');
+  equal(mergedPartial.groups.find((group) => group.suggestedFields.date === '2026-06-12')?.photoCount, 2, '原日期分组必须保留未选中的两张');
+  equal(mergedPartial.groups.find((group) => group.suggestedFields.date === '2026-06-13')?.photoCount, 1, '改期照片必须进入新的次日分组');
+  equal(buildSmartSortGroupMembershipByPhotoId(mergedPartial).size, 3, '局部重分组不得产生重复 membership');
+
+  const pollutedOldGroup = {
+    ...initialResult,
+    groups: [{
+      ...initialResult.groups[0],
+      groupKey: '',
+      suggestedFields: {},
+      photos: [
+        initialThree[0],
+        makeSmartPhoto({ id: 'old-next-date', date: '2026-06-13' })
+      ],
+      photoCount: 2
+    }]
+  };
+  const rebuiltOldGroup = mergeScopedSmartSortResult({
+    previousSmartSortResult: pollutedOldGroup,
+    targetPhotoIds: [],
+    groupContextByPhotoId: Object.fromEntries(
+      pollutedOldGroup.groups[0].photos.map((photo) => [photo.photoId, photo])
+    )
+  });
+  equal(rebuiltOldGroup.groupCount, 2, '旧无日期 groupKey 的混日分组必须按成员 canonical 日期重建');
+
+  const formConfigs = {
+    projects: [fields.project],
+    watermarkCategories: {
+      [fields.watermarkCategory]: { items: [fields.workContent] }
+    }
+  };
+  const formArtifacts = makeArtifacts('form-consistency', '2026-06-12');
+  const formPhoto = {
+    id: 'form-consistency',
+    sourceType: 'marki_api',
+    originalPath: path.join(root, 'form-consistency.jpg')
+  };
+  const formResult = await generateSmartSortGroups(
+    path.join(root, 'form-consistency'),
+    {
+      photos: [
+        makeSmartPhoto({ id: formPhoto.id, date: '2026-06-12' }),
+        makeSmartPhoto({ id: 'form-consistency-two', date: '2026-06-12' })
+      ]
+    }
+  );
+  const form = buildArchiveFormSeed({
+    photo: formPhoto,
+    recognitionResult: formArtifacts.recognitionResult,
+    watermarkRecord: formArtifacts.watermarkRecord,
+    archiveSuggestion: formArtifacts.archiveSuggestion,
+    group: formResult.groups[0],
+    configs: formConfigs
+  });
+  equal(formResult.groups[0].suggestedFields.date, '2026-06-12', '左侧分组必须保存 canonical 日期');
+  equal(form.date, '2026-06-12', '右侧表单日期必须与分组日期一致');
+  equal(
+    formResult.groups[0].photos.every((photo) => photo.smartGrouping.fields.date === form.date),
+    true,
+    '多照片组内全部成员 canonical 日期必须与右侧表单一致'
+  );
+
+  const markiPhoto = {
+    id: 'marki-regression',
+    sourceType: 'marki_api',
+    sourceKey: 'marki_api:100:marki-regression',
+    originalPath: path.join(root, 'marki-regression.jpg'),
+    originalName: 'marki-regression.jpg',
+    capturedAt: '2026-06-12T09:00:00+08:00'
+  };
+  const markiArtifacts = makeArtifacts(markiPhoto.id, '2026-06-12');
+  const originalRecognition = structuredClone(markiArtifacts.recognitionResult);
+  const originalWatermark = structuredClone(markiArtifacts.watermarkRecord);
+  const originalSuggestion = structuredClone(markiArtifacts.archiveSuggestion);
+  let ocrCalls = 0;
+  let groupCalls = 0;
+  const markiResult = await orchestrateSourceAwareRecognition({
+    photos: [markiPhoto],
+    recognitionResultsByPhoto: { [markiPhoto.id]: markiArtifacts.recognitionResult },
+    watermarkRecordsByPhoto: { [markiPhoto.id]: markiArtifacts.watermarkRecord },
+    archiveSuggestionsByPhoto: { [markiPhoto.id]: markiArtifacts.archiveSuggestion },
+    getOcrAvailability: async () => {
+      throw new Error('完整 Marki 不应检查 OCR');
+    },
+    recognizePhoto: async () => {
+      ocrCalls += 1;
+      throw new Error('完整 Marki 不应执行 OCR');
+    },
+    buildOcrArtifacts: async () => {
+      throw new Error('完整 Marki 不应构建 OCR 产物');
+    },
+    generateGroups: async ({ photos, recognitionResultsByPhoto, watermarkRecordsByPhoto, archiveSuggestionsByPhoto }) => {
+      groupCalls += 1;
+      return generateSmartSortGroups(path.join(root, 'marki-regression-group'), {
+        photos: photos.map((photo) => {
+          const canonicalFields = resolveCanonicalPhotoResult({
+            photo,
+            recognitionResult: recognitionResultsByPhoto[photo.id],
+            watermarkRecord: watermarkRecordsByPhoto[photo.id],
+            archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+            configs: formConfigs
+          });
+          return {
+            photoId: photo.id,
+            filePath: photo.originalPath,
+            fileName: photo.originalName,
+            sourceType: photo.sourceType,
+            capturedAt: photo.capturedAt,
+            recognition: recognitionResultsByPhoto[photo.id],
+            watermarkRecord: watermarkRecordsByPhoto[photo.id],
+            archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+            smartGrouping: buildSmartGroupDescriptor({
+              photo,
+              recognitionResult: recognitionResultsByPhoto[photo.id],
+              watermarkRecord: watermarkRecordsByPhoto[photo.id],
+              archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+              canonicalFields
+            })
+          };
+        })
+      });
+    }
+  });
+  equal(ocrCalls, 0, '完整 Marki 日期分组回归中 OCR 调用必须为 0');
+  equal(groupCalls, 1, '完整 Marki 必须正常执行一次最终分组');
+  equal(markiResult.smartSortResult.groupCount, 1, '完整 Marki 必须生成可见分组');
+  deepEqual(markiResult.recognitionResultsByPhoto[markiPhoto.id], originalRecognition, '日期分组修复不得改写平台 recognition');
+  deepEqual(markiResult.watermarkRecordsByPhoto[markiPhoto.id], originalWatermark, '日期分组修复不得改写平台 watermark');
+  deepEqual(markiResult.archiveSuggestionsByPhoto[markiPhoto.id], originalSuggestion, '日期分组修复不得改写平台 suggestion');
+
+  const serviceSource = await fs.readFile(
+    path.join(process.cwd(), 'electron', 'services', 'smartSortService.cjs'),
+    'utf8'
+  );
+  const pageSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const sourceAwareSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'utils', 'sourceAwareRecognition.js'),
+    'utf8'
+  );
+  const keySource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'utils', 'smartGroupKey.js'),
+    'utf8'
+  );
+  sourceCheck(serviceSource.includes("basis: entry.descriptor ? 'business_fields'"), '正式分组服务必须使用四维业务分组描述');
+  sourceCheck(pageSource.includes('buildSmartGroupDescriptor({'), '页面必须向正式服务传递 canonical 分组描述');
+  sourceCheck(sourceAwareSource.includes('mergeSmartSortGroupsByKey'), '局部分组必须按 groupKey 合并');
+  sourceCheck(keySource.includes('BUSINESS_TIMEZONE_OFFSET_MS'), '日期归一化必须固定使用 UTC+8');
+
+  console.log(
+    `智拣日期硬边界自检通过：8 个行为场景，${behaviorAssertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
+  );
+}
+
+async function checkUnifiedPhotoPool(root) {
+  await fs.mkdir(root, { recursive: true });
+  const poolModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'unifiedPhotoPool.js')
+  ).href;
+  const {
+    mergeScannedLocalPhotoSubpool
+  } = await import(`${poolModuleUrl}?unified-pool=${Date.now()}`);
+  const sourceAwareModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sourceAwareRecognition.js')
+  ).href;
+  const {
+    buildSourceAwareRecognitionNotice,
+    buildSourceAwareSmartSortPresentation,
+    orchestrateSourceAwareRecognition
+  } = await import(`${sourceAwareModuleUrl}?unified-pool=${Date.now()}`);
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  let sourceContractCount = 0;
+  const check = (condition, message) => {
+    assertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const deepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const digest = (buffer) => createHash('sha256').update(buffer).digest('hex');
+  const localDirectoryA = path.join(root, 'local-a');
+  const localDirectoryB = path.join(root, 'local-b');
+  await fs.mkdir(localDirectoryA, { recursive: true });
+  await fs.mkdir(localDirectoryB, { recursive: true });
+  const markiBytes1 = Buffer.from('marki-photo-one');
+  const markiBytes2 = Buffer.from('marki-photo-two');
+  const localBytesA = Buffer.from('local-photo-a');
+  const localBytesB = Buffer.from('local-photo-b');
+  const localBytesC = Buffer.from('local-photo-c');
+  await fs.writeFile(path.join(localDirectoryA, 'local-a.jpg'), localBytesA);
+  await fs.writeFile(path.join(localDirectoryA, 'local-b.jpg'), localBytesB);
+  await fs.writeFile(path.join(localDirectoryA, 'duplicate-marki.jpg'), markiBytes1);
+  await fs.writeFile(path.join(localDirectoryB, 'duplicate-local-a.jpg'), localBytesA);
+  await fs.writeFile(path.join(localDirectoryB, 'local-c.jpg'), localBytesC);
+  const scannedA = await scanImages(localDirectoryA);
+  const scannedB = await scanImages(localDirectoryB);
+  check(scannedA.every((photo) => /^[a-f0-9]{64}$/.test(photo.sha256)), '扫描服务必须为每张本地照片返回 SHA-256');
+  equal(scannedA.find((photo) => photo.name === 'local-a.jpg').sha256, digest(localBytesA), '扫描 SHA-256 必须匹配真实文件内容');
+  scenarioCount += 1;
+
+  const markiPhoto1 = {
+    id: 'marki-photo-1',
+    sourceType: 'marki_api',
+    sourceKey: 'marki_api:100:moment-1',
+    sourceMetadataRef: 'marki_source_metadata:100:moment-1',
+    originalPath: path.join(root, 'marki-1.jpg'),
+    originalName: 'marki-1.jpg',
+    size: markiBytes1.length,
+    sha256: digest(markiBytes1),
+    sortStatus: 'suggestion_ready',
+    smartSortStatus: 'completed',
+    archiveInfo: { project: '平台项目一' },
+    previewInfo: { project: '平台项目一' }
+  };
+  const markiPhoto2 = {
+    id: 'marki-photo-2',
+    sourceType: 'marki_api',
+    sourceKey: 'marki_api:100:moment-2',
+    sourceMetadataRef: 'marki_source_metadata:100:moment-2',
+    originalPath: path.join(root, 'marki-2.jpg'),
+    originalName: 'marki-2.jpg',
+    size: markiBytes2.length,
+    sha256: digest(markiBytes2),
+    sortStatus: 'confirmed',
+    smartSortStatus: 'completed',
+    archiveInfo: { project: '平台项目二' },
+    previewInfo: { project: '平台项目二' }
+  };
+  await fs.writeFile(markiPhoto1.originalPath, markiBytes1);
+  await fs.writeFile(markiPhoto2.originalPath, markiBytes2);
+  const platformRecognition = {
+    source: 'marki_api',
+    providerType: 'structured_data',
+    status: 'recognized',
+    missingRequiredFields: [],
+    parsedFields: {
+      date: '2026-07-19',
+      projectName: '测试小区',
+      watermarkCategory: '巡查检查类',
+      workContent: '设施巡查'
+    }
+  };
+  const platformWatermark = {
+    source: 'marki_api',
+    captureDate: '2026-07-19',
+    projectText: '测试小区',
+    watermarkCategoryText: '巡查检查类',
+    workContentText: '设施巡查'
+  };
+  const platformSuggestion = {
+    source: 'marki_api',
+    status: 'suggestion_ready',
+    suggestedFields: {
+      date: '2026-07-19',
+      project: '测试小区',
+      watermarkCategory: '巡查检查类',
+      workContent: '设施巡查'
+    },
+    missingRequiredFields: []
+  };
+  const recognitionMap = {
+    [markiPhoto1.id]: platformRecognition,
+    [markiPhoto2.id]: { ...platformRecognition, photoId: markiPhoto2.id }
+  };
+  const watermarkMap = {
+    [markiPhoto1.id]: platformWatermark,
+    [markiPhoto2.id]: { ...platformWatermark, photoId: markiPhoto2.id }
+  };
+  const suggestionMap = {
+    [markiPhoto1.id]: platformSuggestion,
+    [markiPhoto2.id]: { ...platformSuggestion, photoId: markiPhoto2.id }
+  };
+  const mergedA = mergeScannedLocalPhotoSubpool({
+    currentPhotos: [markiPhoto1, markiPhoto2],
+    scannedPhotos: scannedA,
+    recognitionResultsByPhoto: recognitionMap,
+    watermarkRecordsByPhoto: watermarkMap,
+    archiveSuggestionsByPhoto: suggestionMap,
+    selectedIds: [markiPhoto1.id],
+    activePhotoId: markiPhoto2.id
+  });
+  equal(mergedA.photos.length, 4, '两张 Marki 加两张唯一本地照片后统一照片池应有四张');
+  equal(mergedA.stats.addedLocalCount, 2, '首次目录应追加两张唯一本地照片');
+  equal(mergedA.stats.duplicateCount, 1, '与 Marki 内容相同的本地照片必须按 SHA-256 跳过');
+  equal(mergedA.photos[0].smartSortStatus, 'not_run', '追加本地照片后第一张 Marki 旧智拣状态必须失效');
+  equal(mergedA.photos[1].smartSortStatus, 'not_run', '追加本地照片后第二张 Marki 旧智拣状态必须失效');
+  equal(mergedA.photos[0].sourceKey, markiPhoto1.sourceKey, '失效旧分组不得改写 Marki sourceKey');
+  equal(mergedA.photos[1].sourceMetadataRef, markiPhoto2.sourceMetadataRef, '失效旧分组不得改写 Marki 元数据引用');
+  deepEqual(mergedA.photos[0].archiveInfo, markiPhoto1.archiveInfo, '失效旧分组不得改写 Marki 人工归档信息');
+  deepEqual(mergedA.photos[1].previewInfo, markiPhoto2.previewInfo, '失效旧分组不得改写 Marki 预览信息');
+  equal(mergedA.recognitionResultsByPhoto, recognitionMap, 'Marki recognition Map 必须保持原引用');
+  equal(mergedA.watermarkRecordsByPhoto, watermarkMap, 'Marki watermark Map 必须保持原引用');
+  equal(mergedA.archiveSuggestionsByPhoto, suggestionMap, 'Marki suggestion Map 必须保持原引用');
+  deepEqual(
+    mergedA.photos.slice(0, 2).map(({ smartSortStatus, ...photo }) => photo),
+    [markiPhoto1, markiPhoto2].map(({ smartSortStatus, ...photo }) => photo),
+    '除显式智拣状态失效外，Marki 平台身份和人工处理状态不得被扫描改写'
+  );
+  check(mergedA.selectedIds.includes(markiPhoto1.id), '原有 Marki 选择必须保留');
+  check(mergedA.selectedIds.includes(`local-${digest(localBytesA)}`), '新增本地照片必须自动选中');
+  equal(mergedA.activePhotoId, markiPhoto2.id, '仍存在的活动 Marki 照片必须保持');
+  equal(new Set(mergedA.photos.map((photo) => photo.sourceKey).filter(Boolean)).size, 2, 'Marki sourceKey 不得产生重复');
+  scenarioCount += 1;
+
+  const mergedB = mergeScannedLocalPhotoSubpool({
+    currentPhotos: mergedA.photos,
+    scannedPhotos: scannedB,
+    recognitionResultsByPhoto: mergedA.recognitionResultsByPhoto,
+    watermarkRecordsByPhoto: mergedA.watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto: mergedA.archiveSuggestionsByPhoto,
+    selectedIds: mergedA.selectedIds,
+    activePhotoId: mergedA.activePhotoId
+  });
+  equal(mergedB.photos.length, 5, '切换到目录 B 后必须保留目录 A、Marki 并追加唯一新照片');
+  equal(mergedB.stats.addedLocalCount, 1, '目录 B 只应追加一张唯一内容');
+  equal(mergedB.stats.duplicateCount, 1, '目录 B 中与目录 A 内容相同的照片必须跳过');
+  deepEqual(mergedB.photos.slice(0, 4), mergedA.photos, '追加模式不得重建或覆盖任何已有照片对象');
+  equal(mergedB.recognitionResultsByPhoto, recognitionMap, '跨目录扫描不得清空 recognition Map');
+  equal(mergedB.watermarkRecordsByPhoto, watermarkMap, '跨目录扫描不得清空 watermark Map');
+  equal(mergedB.archiveSuggestionsByPhoto, suggestionMap, '跨目录扫描不得清空 suggestion Map');
+  equal(mergedB.localPoolChanged, true, '真正追加本地照片后旧智拣分组必须失效');
+  scenarioCount += 1;
+
+  const completeMarki = markiPhoto1;
+  const completeMaps = {
+    recognitionResultsByPhoto: { [completeMarki.id]: platformRecognition },
+    watermarkRecordsByPhoto: { [completeMarki.id]: platformWatermark },
+    archiveSuggestionsByPhoto: { [completeMarki.id]: platformSuggestion }
+  };
+  let ocrCalls = 0;
+  let ocrStatusChecks = 0;
+  let groupCalls = 0;
+  const smartSortRoot = path.join(root, 'marki-smart-sort');
+  const runMarkiSmartSort = (state) => orchestrateSourceAwareRecognition({
+    photos: [completeMarki],
+    recognitionResultsByPhoto: state.recognitionResultsByPhoto,
+    watermarkRecordsByPhoto: state.watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto: state.archiveSuggestionsByPhoto,
+    getOcrAvailability: async () => {
+      ocrStatusChecks += 1;
+      return { available: false };
+    },
+    recognizePhoto: async () => {
+      ocrCalls += 1;
+      throw new Error('完整 Marki 不得执行 OCR');
+    },
+    buildOcrArtifacts: () => {
+      throw new Error('完整 Marki 不得构建 OCR 结果');
+    },
+    getPhotoSortStatus: (_recognition, suggestion) => suggestion.status,
+    generateGroups: async ({
+      photos,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto
+    }) => {
+      groupCalls += 1;
+      return generateSmartSortGroups(smartSortRoot, {
+        photos: photos.map((photo, index) => ({
+          photoId: photo.id,
+          filePath: photo.originalPath,
+          fileName: photo.originalName,
+          index,
+          capturedAt: photo.capturedAt || null,
+          modifiedAt: photo.modifiedAt || null,
+          sortStatus: photo.sortStatus,
+          archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+          watermarkRecord: watermarkRecordsByPhoto[photo.id],
+          recognition: recognitionResultsByPhoto[photo.id]
+        }))
+      });
+    }
+  });
+  const firstSmartSort = await runMarkiSmartSort(completeMaps);
+  const firstPresentation = buildSourceAwareSmartSortPresentation({
+    smartSortResult: firstSmartSort.smartSortResult,
+    currentActivePhotoId: completeMarki.id
+  });
+  equal(ocrCalls, 0, '完整 Marki 第一次智拣 OCR 调用必须为零');
+  equal(ocrStatusChecks, 0, '完整 Marki 第一次智拣不得检查 OCR 服务');
+  equal(groupCalls, 1, '完整 Marki 第一次智拣必须调用一次生产分组服务');
+  equal(firstSmartSort.stats.platformOnlyCount, 1, '完整 Marki 必须计入平台数据直用');
+  check(firstSmartSort.smartSortResult?.groupCount > 0, '生产分组服务必须为四项完整 Marki 生成分组');
+  check(
+    firstSmartSort.smartSortResult.groups.some((group) => (
+      group.photos.some((photo) => photo.photoId === completeMarki.id)
+    )),
+    '生产 smartSortResult 分组必须包含完整 Marki 照片'
+  );
+  equal(firstPresentation.smartSortViewMode, 'smartSortGroup', '页面提交适配必须切换到可见分组视图');
+  equal(firstPresentation.activePhotoId, completeMarki.id, '页面提交适配必须聚焦分组中的 Marki 照片');
+  check(
+    buildSourceAwareRecognitionNotice(firstSmartSort.stats).includes('平台数据直用 1 张'),
+    '页面完成 notice 必须显示平台数据直用数量'
+  );
+  deepEqual(firstSmartSort.recognitionResultsByPhoto[completeMarki.id], platformRecognition, '第一次智拣不得改写平台 recognition');
+  deepEqual(firstSmartSort.watermarkRecordsByPhoto[completeMarki.id], platformWatermark, '第一次智拣不得改写平台 watermark');
+  deepEqual(firstSmartSort.archiveSuggestionsByPhoto[completeMarki.id], platformSuggestion, '第一次智拣不得改写平台 suggestion');
+  const secondSmartSort = await runMarkiSmartSort(firstSmartSort);
+  equal(ocrCalls, 0, '完整 Marki 第二次智拣 OCR 调用仍必须为零');
+  equal(ocrStatusChecks, 0, '完整 Marki 第二次智拣仍不得检查 OCR 服务');
+  equal(groupCalls, 2, '完整 Marki 第二次智拣必须重新计算一次分组');
+  deepEqual(secondSmartSort.recognitionResultsByPhoto[completeMarki.id], platformRecognition, '第二次智拣不得改写平台 recognition');
+  deepEqual(secondSmartSort.watermarkRecordsByPhoto[completeMarki.id], platformWatermark, '第二次智拣不得改写平台 watermark');
+  deepEqual(secondSmartSort.archiveSuggestionsByPhoto[completeMarki.id], platformSuggestion, '第二次智拣不得改写平台 suggestion');
+  scenarioCount += 1;
+
+  const localPhoto = mergedA.photos.find((photo) => photo.sourceType === 'local_file');
+  const localOcrFields = {
+    date: '2026-07-19',
+    project: '测试小区',
+    watermarkCategory: '巡查检查类',
+    workContent: '设施巡查'
+  };
+  let mixedOcrCalls = 0;
+  let mixedGroupCalls = 0;
+  const mixedResult = await orchestrateSourceAwareRecognition({
+    photos: [completeMarki, localPhoto],
+    ...completeMaps,
+    getOcrAvailability: async () => ({ available: true }),
+    recognizePhoto: async (photo) => {
+      mixedOcrCalls += 1;
+      return {
+        photoId: photo.id,
+        status: 'success',
+        success: true,
+        rawText: '本地 OCR 测试文本',
+        testFields: localOcrFields
+      };
+    },
+    buildOcrArtifacts: ({ photo, recognitionResult }) => ({
+      recognitionResult,
+      watermarkRecord: {
+        photoId: photo.id,
+        captureDate: localOcrFields.date,
+        projectText: localOcrFields.project,
+        watermarkCategoryText: localOcrFields.watermarkCategory,
+        workContentText: localOcrFields.workContent
+      },
+      archiveSuggestion: {
+        photoId: photo.id,
+        status: 'suggestion_ready',
+        suggestedFields: localOcrFields,
+        missingRequiredFields: []
+      }
+    }),
+    getPhotoSortStatus: (_recognition, suggestion) => suggestion.status,
+    generateGroups: async ({ photos }) => {
+      mixedGroupCalls += 1;
+      return {
+        status: 'created',
+        groupCount: 1,
+        photoCount: photos.length,
+        groups: [{
+          id: 'mixed-group',
+          photos: photos.map((photo) => ({ photoId: photo.id }))
+        }]
+      };
+    }
+  });
+  equal(mixedOcrCalls, 1, '混合池智拣只能对一张本地照片执行 OCR');
+  equal(mixedResult.stats.platformOnlyCount, 1, '混合池应有一张 Marki 平台直用');
+  equal(mixedGroupCalls, 1, '混合池所有照片收口后只能统一分组一次');
+  equal(mixedResult.smartSortResult.groups[0].photos.length, 2, '本地与 Marki 必须进入同一业务分组');
+  scenarioCount += 1;
+
+  const snapshotRoot = path.join(root, 'snapshot');
+  const presentation = buildSourceAwareSmartSortPresentation({
+    smartSortResult: firstSmartSort.smartSortResult,
+    currentActivePhotoId: completeMarki.id
+  });
+  const snapshotWorkspace = {
+    ...createEmptyWorkspace(),
+    photos: mergedB.photos,
+    selectedIds: mergedB.selectedIds,
+    activePhotoId: presentation.activePhotoId,
+    recognitionResultsByPhoto: mixedResult.recognitionResultsByPhoto,
+    watermarkRecordsByPhoto: mixedResult.watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto: mixedResult.archiveSuggestionsByPhoto,
+    smartSortResult: firstSmartSort.smartSortResult,
+    smartSortViewMode: presentation.smartSortViewMode,
+    activeSmartSortGroupId: presentation.activeSmartSortGroupId,
+    searchText: presentation.searchText,
+    page: presentation.page
+  };
+  equal((await saveSortWorkspaceSnapshot(snapshotRoot, snapshotWorkspace)).success, true, '统一照片池与可见智拣结果必须可立即写入自动快照');
+  const restoredSnapshot = await loadSortWorkspaceSnapshot(snapshotRoot);
+  equal(restoredSnapshot.found, true, '全新实例必须能恢复统一照片池快照');
+  equal(restoredSnapshot.snapshot.workspace.photos.length, mergedB.photos.length, '恢复后目录 A、目录 B 和 Marki 照片必须全部存在');
+  equal(restoredSnapshot.snapshot.workspace.smartSortResult.groupCount, firstSmartSort.smartSortResult.groupCount, '恢复后 smartSortResult 必须存在');
+  equal(restoredSnapshot.snapshot.workspace.smartSortViewMode, 'smartSortGroup', '恢复后必须保持可见分组视图');
+  equal(restoredSnapshot.snapshot.workspace.activeSmartSortGroupId, presentation.activeSmartSortGroupId, '恢复后必须保持当前分组');
+  check(
+    restoredSnapshot.snapshot.workspace.photos.every((photo) => /^[a-f0-9]{64}$/.test(photo.sha256)),
+    '恢复后的统一照片池必须保留或补齐全部内容 SHA-256'
+  );
+  scenarioCount += 1;
+
+  {
+    const pageSource = await fs.readFile(path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'), 'utf8');
+    const poolSource = await fs.readFile(path.join(process.cwd(), 'src', 'utils', 'unifiedPhotoPool.js'), 'utf8');
+    const fileServiceSource = await fs.readFile(path.join(process.cwd(), 'electron', 'services', 'fileService.cjs'), 'utf8');
+    const scanHandlerSource = pageSource
+      .split('async function scanPhotos', 2)[1]
+      ?.split('async function importOrScanPhotos', 1)[0] || '';
+    assert.match(pageSource, /mergeScannedLocalPhotoSubpool\(\{/);
+    sourceContractCount += 1;
+    assert.match(pageSource, /setPhotos\(mergedPool\.photos\)/);
+    sourceContractCount += 1;
+    assert.equal(pageSource.includes('setPhotos(scanned)'), false);
+    sourceContractCount += 1;
+    assert.match(pageSource, /buildSourceAwareSmartSortPresentation\(\{/);
+    sourceContractCount += 1;
+    assert.match(pageSource, /setSmartSortViewMode\(nextSmartSortViewMode\)/);
+    sourceContractCount += 1;
+    assert.match(pageSource, /saveAutomaticSnapshotImmediately\(scannedWorkspace\)/);
+    sourceContractCount += 1;
+    assert.equal(poolSource.includes('originalPath.includes'), false);
+    sourceContractCount += 1;
+    assert.match(fileServiceSource, /sha256: await hashFile\(file\.path\)/);
+    sourceContractCount += 1;
+    assert.match(scanHandlerSource, /const nextSmartSortResult = mergedPool\.localPoolChanged \? null : smartSortResult/);
+    sourceContractCount += 1;
+    assert.equal(scanHandlerSource.includes('orchestrateSourceAwareRecognition'), false);
+    sourceContractCount += 1;
+    assert.equal(scanHandlerSource.includes('generateSmartSortGroups('), false);
+    sourceContractCount += 1;
+  }
+
+  check(scenarioCount === 6, '统一照片池和可见 Marki 智拣应执行六个真实行为场景');
+  console.log(
+    `统一照片池与可见 Marki 智拣自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
+  );
+}
+
+async function checkCurrentFormContract(root) {
+  const {
+    buildArchiveFormSeed,
     buildArchiveSuggestion,
     buildCurrentPhotoArchiveServiceForm,
     confirmArchiveSuggestion,
     parseWatermarkRecord,
+    resolveCanonicalPhotoResult,
+    updateArchiveSuggestion,
     validateRequiredArchiveFields,
     validateSortForm
   } = await import('../src/utils/sortRightPanelState.js');
@@ -3902,6 +8423,247 @@ async function checkCurrentFormContract() {
     ['项目'],
     'Marki 未匹配项目只能保留候选值，不得通过工作台四项必填校验'
   );
+
+  await fs.mkdir(root, { recursive: true });
+  const canonicalConfigs = {
+    projects: ['测试小区'],
+    watermarkCategories: {
+      工程: { items: ['电梯故障维修', '消防设施维修'] },
+      巡查检查: {
+        items: [
+          '电梯巡查',
+          '消防设施巡查',
+          '水泵房巡检',
+          '人工复核电梯巡查'
+        ]
+      }
+    }
+  };
+  const createLocalArtifacts = (photoId, workContent) => {
+    const recognitionResult = {
+      photoId,
+      status: 'success',
+      success: true,
+      rawText: [
+        '日期：2026-07-19',
+        '小区名称：测试小区',
+        `工作内容：${workContent}`
+      ].join('\n')
+    };
+    const watermarkRecord = parseWatermarkRecord(recognitionResult);
+    const archiveSuggestion = buildArchiveSuggestion(watermarkRecord, {
+      configs: canonicalConfigs,
+      currentProject: '测试小区'
+    });
+    const photo = {
+      id: photoId,
+      sourceType: 'local_file',
+      originalName: `${photoId}.jpg`,
+      originalPath: path.join(root, `${photoId}.jpg`),
+      smartSortStatus: 'completed',
+      sortStatus: archiveSuggestion.status
+    };
+    const group = {
+      id: `group-${photoId}`,
+      title: archiveSuggestion.suggestedFields.workContent,
+      basis: 'archive_suggestion_work_content',
+      photos: [{
+        photoId,
+        archiveSuggestion
+      }],
+      photoCount: 1
+    };
+    return {
+      photo,
+      recognitionResult,
+      watermarkRecord,
+      archiveSuggestion,
+      group
+    };
+  };
+
+  const elevator = createLocalArtifacts('local-elevator-inspection', '电梯巡查');
+  assert.equal(elevator.group.title, '电梯巡查', '本地 OCR 左侧分组应读取电梯巡查');
+  assert.equal(elevator.archiveSuggestion.suggestedFields.watermarkCategory, '巡查检查', '巡查行为不得按设备对象误判为工程');
+  assert.equal(elevator.archiveSuggestion.suggestedFields.workContent, '电梯巡查', '本地 OCR 建议应保留有效电梯巡查工作内容');
+  const elevatorCanonical = resolveCanonicalPhotoResult({
+    ...elevator,
+    configs: canonicalConfigs
+  });
+  assert.equal(elevatorCanonical.watermarkCategory, '巡查检查', '本地 canonical 分类必须为巡查检查');
+  assert.equal(elevatorCanonical.workContent, '电梯巡查', '本地 canonical 工作内容必须为电梯巡查');
+  assert.equal(elevatorCanonical.fieldSources.watermarkCategory, 'archive_suggestion', '本地 canonical 应优先读取本次智拣建议');
+  const elevatorForm = buildArchiveFormSeed({
+    ...elevator,
+    configs: canonicalConfigs
+  });
+  assert.equal(elevatorForm.watermarkCategory, '巡查检查', '右侧归档分类必须与本地分组一致');
+  assert.equal(elevatorForm.workContent, '电梯巡查', '右侧工作内容必须与本地分组一致且不得为空');
+  assert.deepEqual(validateSortForm(elevatorForm, canonicalConfigs), [], '本地 canonical 表单四项应通过正式校验');
+
+  const fireInspection = createLocalArtifacts('local-fire-inspection', '消防设施巡查');
+  const pumpInspection = createLocalArtifacts('local-pump-inspection', '水泵房巡检');
+  const elevatorRepair = createLocalArtifacts('local-elevator-repair', '电梯故障维修');
+  assert.equal(fireInspection.archiveSuggestion.suggestedFields.watermarkCategory, '巡查检查', '消防设施巡查应按巡查行为分类');
+  assert.equal(pumpInspection.archiveSuggestion.suggestedFields.watermarkCategory, '巡查检查', '水泵房巡检应按巡检行为分类');
+  assert.equal(elevatorRepair.archiveSuggestion.suggestedFields.watermarkCategory, '工程', '电梯故障维修应进入维修分类');
+  assert.equal(elevatorRepair.archiveSuggestion.suggestedFields.workContent, '电梯故障维修', '维修工作内容必须保持');
+
+  const markiRecognition = {
+    photoId: 'marki-canonical',
+    source: 'marki_api',
+    providerType: 'structured_data',
+    status: 'recognized',
+    sourceAwareProcessing: {
+      platformBaseline: {
+        requiredFields: {
+          date: '2026-07-19',
+          project: '测试小区',
+          watermarkCategory: '巡查检查',
+          workContent: '消防设施巡查'
+        }
+      },
+      effectiveResult: {
+        requiredFields: {
+          date: '2026-07-19',
+          project: '测试小区',
+          watermarkCategory: '巡查检查',
+          workContent: '消防设施巡查'
+        }
+      },
+      conflicts: []
+    }
+  };
+  const markiWatermark = {
+    photoId: 'marki-canonical',
+    captureDate: '2026-07-19',
+    projectText: '测试小区',
+    watermarkCategoryText: '巡查检查',
+    workContentText: '消防设施巡查'
+  };
+  const markiSuggestion = {
+    photoId: 'marki-canonical',
+    suggestedFields: {
+      date: '2026-07-19',
+      project: '测试小区',
+      watermarkCategory: '巡查检查',
+      workContent: '消防设施巡查'
+    },
+    fieldSources: {
+      date: 'marki_api',
+      project: 'marki_api',
+      watermarkCategory: 'marki_api',
+      workContent: 'marki_api'
+    },
+    missingRequiredFields: [],
+    status: 'suggestion_ready'
+  };
+  const markiBefore = structuredClone({
+    recognitionResult: markiRecognition,
+    watermarkRecord: markiWatermark,
+    archiveSuggestion: markiSuggestion
+  });
+  const markiForm = buildArchiveFormSeed({
+    photo: {
+      id: 'marki-canonical',
+      sourceType: 'marki_api'
+    },
+    recognitionResult: markiRecognition,
+    watermarkRecord: markiWatermark,
+    archiveSuggestion: markiSuggestion,
+    configs: canonicalConfigs
+  });
+  assert.equal(markiForm.watermarkCategory, '巡查检查', 'Marki 正确分类必须保持');
+  assert.equal(markiForm.workContent, '消防设施巡查', 'Marki 正确工作内容必须保持');
+  assert.deepEqual(
+    {
+      recognitionResult: markiRecognition,
+      watermarkRecord: markiWatermark,
+      archiveSuggestion: markiSuggestion
+    },
+    markiBefore,
+    'canonical 表单适配不得修改 Marki 三个可信对象'
+  );
+
+  const switchToFire = buildArchiveFormSeed({
+    ...fireInspection,
+    configs: canonicalConfigs
+  });
+  const switchBackToElevator = buildArchiveFormSeed({
+    ...elevator,
+    configs: canonicalConfigs
+  });
+  assert.equal(switchToFire.workContent, '消防设施巡查', '切换到消防分组时表单必须使用消防巡查');
+  assert.equal(switchBackToElevator.workContent, '电梯巡查', '从消防分组返回后不得残留上一组字段');
+  assert.notEqual(switchToFire.workContent, switchBackToElevator.workContent, '两个本地分组表单不得串值');
+
+  const manualElevatorSuggestion = updateArchiveSuggestion(
+    elevator.archiveSuggestion,
+    { workContent: '人工复核电梯巡查' },
+    { configs: canonicalConfigs, photoId: elevator.photo.id }
+  );
+  const manualElevatorForm = buildArchiveFormSeed({
+    ...elevator,
+    archiveSuggestion: manualElevatorSuggestion,
+    configs: canonicalConfigs
+  });
+  assert.equal(manualElevatorForm.workContent, '人工复核电梯巡查', '人工草稿必须优先于 canonical 自动结果');
+  const afterManualSwitchBack = buildArchiveFormSeed({
+    ...elevator,
+    archiveSuggestion: manualElevatorSuggestion,
+    configs: canonicalConfigs
+  });
+  assert.equal(afterManualSwitchBack.workContent, '人工复核电梯巡查', '切换后返回必须恢复当前照片人工草稿');
+
+  await fs.writeFile(elevator.photo.originalPath, createTestJpeg(7, 5));
+  const snapshotWorkspace = {
+    ...createEmptyWorkspace(),
+    photos: [elevator.photo],
+    selectedIds: [elevator.photo.id],
+    activePhotoId: elevator.photo.id,
+    recognitionResultsByPhoto: {
+      [elevator.photo.id]: elevator.recognitionResult
+    },
+    watermarkRecordsByPhoto: {
+      [elevator.photo.id]: elevator.watermarkRecord
+    },
+    archiveSuggestionsByPhoto: {
+      [elevator.photo.id]: manualElevatorSuggestion
+    },
+    smartSortResult: {
+      id: 'canonical-snapshot-result',
+      status: 'created',
+      groupCount: 1,
+      photoCount: 1,
+      groups: [elevator.group]
+    },
+    smartSortViewMode: 'smartSortGroup',
+    activeSmartSortGroupId: elevator.group.id,
+    form: manualElevatorForm
+  };
+  assert.equal((await saveSortWorkspaceSnapshot(root, snapshotWorkspace)).success, true, 'canonical 表单状态应写入自动快照');
+  const restoredCanonical = await loadSortWorkspaceSnapshot(root);
+  const restoredPhoto = restoredCanonical.snapshot.workspace.photos[0];
+  const restoredGroup = restoredCanonical.snapshot.workspace.smartSortResult.groups[0];
+  const restoredForm = buildArchiveFormSeed({
+    photo: restoredPhoto,
+    recognitionResult: restoredCanonical.snapshot.workspace.recognitionResultsByPhoto[restoredPhoto.id],
+    watermarkRecord: restoredCanonical.snapshot.workspace.watermarkRecordsByPhoto[restoredPhoto.id],
+    archiveSuggestion: restoredCanonical.snapshot.workspace.archiveSuggestionsByPhoto[restoredPhoto.id],
+    group: restoredGroup,
+    configs: canonicalConfigs
+  });
+  assert.equal(restoredGroup.title, '电梯巡查', '快照恢复后左侧分组内容必须保持');
+  assert.equal(restoredForm.watermarkCategory, '巡查检查', '快照恢复后右侧分类必须与分组一致');
+  assert.equal(restoredForm.workContent, '人工复核电梯巡查', '快照恢复后人工草稿必须保持');
+
+  const pageSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  assert.match(pageSource, /setForm\(buildArchiveFormSeed\(\{/);
+  assert.match(pageSource, /group: currentPanelSmartGroup/);
+  console.log('统一照片整理结果自检通过：8 个行为场景，25 个行为断言，2 个源码契约断言。');
 }
 
 async function checkSmartSortOutcomes(userDataDir) {
@@ -4348,12 +9110,28 @@ async function checkDownstreamPages({ root, archiveRoot, ledgerRecord }) {
 }
 
 async function checkSourceContracts() {
-  const [mainSource, preloadSource, workspaceSource, settingsSource, serviceBriefSource] = await Promise.all([
+  const [
+    mainSource,
+    preloadSource,
+    workspaceSource,
+    settingsSource,
+    serviceBriefSource,
+    appConstantsSource,
+    mainRouterSource,
+    markiImportPageSource,
+    markiClientSource,
+    mainCssSource
+  ] = await Promise.all([
     fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/pages/SettingsPage.jsx'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'src/pages/ServiceBriefPage.jsx'), 'utf8')
+    fs.readFile(path.join(process.cwd(), 'src/pages/ServiceBriefPage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/constants/app.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/pages/MainRouter.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/pages/MarkiPhotoImportPage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/utils/markiClient.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/styles/main.css'), 'utf8')
   ]);
   const invokedChannels = new Set([...preloadSource.matchAll(/ipcRenderer\.invoke\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
   const handledChannels = new Set([...mainSource.matchAll(/ipcMain\.handle\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
@@ -4376,6 +9154,600 @@ async function checkSourceContracts() {
   assert.equal(/项目部门照片来源/.test(settingsSource), false, '系统设置不应继续暴露已停用的旧版基础数据入口');
   assert.equal(serviceBriefSource.includes('archivedDateCounts'), true, '每日服务简报日期选择器应统计有归档的日期');
   assert.equal(serviceBriefSource.includes('archive-date-dot'), true, '每日服务简报日历应显示归档日期圆点');
+  assert.match(
+    appConstantsSource,
+    /dashboard[\s\S]*markiImport[\s\S]*sortWorkspace/,
+    '工作台导航顺序应为首页、马克照片导入、照片分拣工作台'
+  );
+  assert.equal(mainRouterSource.includes('MarkiPhotoImportPage'), true, '主路由应接入马克照片导入页');
+  assert.equal(
+    settingsSource.includes('listMarkiTeams') || settingsSource.includes('listMarkiMembers'),
+    false,
+    '设置页不得继续承担团队和成员筛选'
+  );
+  for (const method of [
+    'startMarkiPhotoQuerySession',
+    'getMarkiPhotoQuerySession',
+    'loadNextMarkiPhotoQueryPage',
+    'destroyMarkiPhotoQuerySession',
+    'importMarkiPhotoQuerySelection',
+    'listReadyMarkiImportBatches'
+  ]) {
+    assert.equal(markiImportPageSource.includes(method), true, `马克照片导入页应使用 ${method}`);
+    assert.equal(markiClientSource.includes(`function ${method}`), true, `Marki 客户端应公开 ${method}`);
+  }
+  assert.equal(markiImportPageSource.includes('sessionStorage'), true, '马克照片查询会话应支持页面刷新恢复');
+  assert.equal(markiImportPageSource.includes('appendMarkiImportBatch'), true, 'ready 批次应导航到现有工作台');
+  assert.equal(markiImportPageSource.includes('selectionToken'), true, '页面选择只能使用不透明 selectionToken');
+  assert.equal(
+    markiImportPageSource.includes("isRefreshingReadyBatches ? '刷新中...'"),
+    true,
+    '待处理批次刷新按钮应显示独立加载状态'
+  );
+  assert.equal(
+    markiImportPageSource.includes('setNotice(result.notice)'),
+    true,
+    '待处理批次刷新结果必须进入页面可见提示'
+  );
+  assert.equal(
+    markiImportPageSource.includes('createMarkiReadyBatchRefresh'),
+    true,
+    '待处理批次刷新必须使用单飞控制器避免并发请求'
+  );
+  assert.equal(markiImportPageSource.includes('.url'), false, '页面不得读取远程照片 URL');
+  assert.equal(markiImportPageSource.includes('momentId'), false, '页面不得读取真实 momentId');
+  assert.equal(markiImportPageSource.includes('sourceKey'), false, '页面不得读取 sourceKey');
+  assert.equal(mainCssSource.includes('.marki-import-page'), true, '马克导入页面样式应使用独立前缀');
+  assert.match(
+    mainSource,
+    /marki:import-photo-query-selection[\s\S]*safeMarkiCall/,
+    '可信照片导入 IPC 必须由主进程加载凭证'
+  );
+  assert.match(
+    mainSource,
+    /marki:list-ready-import-batches[\s\S]*safeMarkiLocalCall/,
+    'ready 批次发现 IPC 不得依赖马克凭证'
+  );
+  assert.equal(
+    /marki:import-photo-query-selection[\s\S]{0,500}getWritableDocumentsPath/.test(mainSource),
+    false,
+    '正式马克来源目录不得回退到 userData'
+  );
+}
+
+async function checkSortWorkspaceToolbar(root) {
+  await fs.mkdir(root, { recursive: true });
+  const sourceAwareModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/sourceAwareRecognition.js')).href
+  );
+  const workflowModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/photoWorkflowStage.js')).href
+  );
+  const snapshotModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js')).href
+  );
+  const recoveryModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiRecoveryDialog.js')).href
+  );
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  let sourceContractCount = 0;
+  const check = (condition, message) => {
+    assert.equal(Boolean(condition), true, message);
+    assertionCount += 1;
+  };
+  const equal = (actual, expected, message) => {
+    assert.equal(actual, expected, message);
+    assertionCount += 1;
+  };
+  const deepEqual = (actual, expected, message) => {
+    assert.deepEqual(actual, expected, message);
+    assertionCount += 1;
+  };
+
+  const makePhoto = (index, overrides = {}) => ({
+    id: `toolbar-photo-${index}`,
+    originalPath: path.join(root, `photo-${index}.jpg`),
+    originalName: `照片-${String(index).padStart(2, '0')}.jpg`,
+    extension: '.jpg',
+    size: 100 + index,
+    modifiedAt: `2026-07-${String(Math.min(index, 28)).padStart(2, '0')}T08:00:00.000Z`,
+    sourceType: 'local_file',
+    sortStatus: 'recognized',
+    smartSortStatus: index <= 15 ? 'completed' : 'not_run',
+    ...overrides
+  });
+  const photos = Array.from({ length: 20 }, (_, index) => makePhoto(index + 1));
+  photos[0] = makePhoto(1, {
+    sourceType: 'marki_api',
+    sourceKey: 'marki_api:100:photo-1',
+    sourceMetadataRef: 'marki_source_metadata:100:photo-1'
+  });
+  const platformArtifacts = {
+    recognitionResult: {
+      source: 'marki_api',
+      providerType: 'structured_data',
+      photoId: 'toolbar-photo-1',
+      parsedWatermark: {
+        date: '2026-07-19',
+        projectName: '测试项目',
+        watermarkCategory: '巡查',
+        workContent: '设备巡查'
+      },
+      platformBaseline: {
+        requiredFields: {
+          date: '2026-07-19',
+          project: '测试项目',
+          watermarkCategory: '巡查',
+          workContent: '设备巡查'
+        }
+      }
+    },
+    watermarkRecord: {
+      source: 'marki_api',
+      photoId: 'toolbar-photo-1',
+      captureDate: '2026-07-19',
+      projectText: '测试项目',
+      watermarkCategoryText: '巡查',
+      workContentText: '设备巡查'
+    },
+    archiveSuggestion: {
+      source: 'marki_api',
+      photoId: 'toolbar-photo-1',
+      suggestedFields: {
+        date: '2026-07-19',
+        project: '测试项目',
+        watermarkCategory: '巡查',
+        workContent: '设备巡查'
+      }
+    }
+  };
+  const recognitionResultsByPhoto = Object.fromEntries(photos.map((photo) => [
+    photo.id,
+    photo.id === photos[0].id
+      ? structuredClone(platformArtifacts.recognitionResult)
+      : { source: 'local_ocr', rawText: `识别-${photo.id}` }
+  ]));
+  const watermarkRecordsByPhoto = Object.fromEntries(photos.map((photo) => [
+    photo.id,
+    photo.id === photos[0].id
+      ? structuredClone(platformArtifacts.watermarkRecord)
+      : { workContentText: `巡查-${photo.id}` }
+  ]));
+  const archiveSuggestionsByPhoto = Object.fromEntries(photos.map((photo) => [
+    photo.id,
+    photo.id === photos[0].id
+      ? structuredClone(platformArtifacts.archiveSuggestion)
+      : { suggestedFields: { workContent: `巡查-${photo.id}` } }
+  ]));
+  const smartSortResult = {
+    status: 'created',
+    groups: [
+      {
+        id: 'group-a',
+        title: 'A 组',
+        photoIds: photos.slice(0, 10).map((photo) => photo.id),
+        photoCount: 10
+      },
+      {
+        id: 'group-b',
+        title: 'B 组',
+        photoIds: photos.slice(10, 15).map((photo) => photo.id),
+        photoCount: 5
+      }
+    ],
+    groupCount: 2,
+    photoCount: 15
+  };
+
+  const reset = sourceAwareModule.resetSelectedSmartSortResults({
+    photos,
+    selectedPhotoIds: photos.slice(0, 3).map((photo) => photo.id),
+    recognitionResultsByPhoto,
+    watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto,
+    smartSortResult
+  });
+  scenarioCount += 1;
+  equal(reset.targetPhotoIds.length, 3, '局部重置只能命中三个已选且可重置照片');
+  deepEqual(
+    reset.photos.slice(0, 3).map((photo) => photo.smartSortStatus),
+    ['not_run', 'not_run', 'not_run'],
+    '三个目标照片应回到待智拣'
+  );
+  check(
+    reset.photos.slice(3, 15).every((photo, index) => photo === photos[index + 3]),
+    '未选中的十二张已分组照片必须保持原对象'
+  );
+  equal(
+    sourceAwareModule.buildSmartSortGroupMembershipByPhotoId(reset.smartSortResult).size,
+    12,
+    '局部重置后应保留十二张未选中照片的 membership'
+  );
+  equal(reset.smartSortResult.groups.length, 2, '非空旧分组必须保留');
+
+  scenarioCount += 1;
+  deepEqual(
+    reset.recognitionResultsByPhoto[photos[0].id],
+    platformArtifacts.recognitionResult,
+    'Marki recognition 平台基线必须完整保留'
+  );
+  deepEqual(
+    reset.watermarkRecordsByPhoto[photos[0].id],
+    platformArtifacts.watermarkRecord,
+    'Marki watermark 平台基线必须完整保留'
+  );
+  deepEqual(
+    reset.archiveSuggestionsByPhoto[photos[0].id],
+    platformArtifacts.archiveSuggestion,
+    'Marki suggestion 平台基线必须完整保留'
+  );
+  equal(
+    sourceAwareModule.classifyPhotoRecognitionRoute({
+      photo: reset.photos[0],
+      recognitionResult: reset.recognitionResultsByPhoto[photos[0].id],
+      watermarkRecord: reset.watermarkRecordsByPhoto[photos[0].id],
+      archiveSuggestion: reset.archiveSuggestionsByPhoto[photos[0].id]
+    }),
+    'marki_platform_only',
+    '完整 Marki 重置后再次智拣仍应跳过 OCR'
+  );
+
+  scenarioCount += 1;
+  for (const localPhoto of photos.slice(1, 3)) {
+    equal(reset.recognitionResultsByPhoto[localPhoto.id], undefined, '本地 OCR recognition 应清除');
+    equal(reset.watermarkRecordsByPhoto[localPhoto.id], undefined, '本地 OCR watermark 应清除');
+    equal(reset.archiveSuggestionsByPhoto[localPhoto.id], undefined, '本地 OCR suggestion 应清除');
+  }
+  check(reset.photos.includes(photos[3]), '本地源照片记录必须保留');
+
+  scenarioCount += 1;
+  const protectedPhotos = [
+    makePhoto(21, { smartSortStatus: 'completed', sortStatus: 'archived' }),
+    makePhoto(22, { smartSortStatus: 'completed', sortStatus: 'archiving' }),
+    makePhoto(23, { smartSortStatus: 'completed', originalMissing: true })
+  ];
+  const protectedReset = sourceAwareModule.resetSelectedSmartSortResults({
+    photos: protectedPhotos,
+    selectedPhotoIds: protectedPhotos.map((photo) => photo.id),
+    smartSortResult: {
+      groups: [{ id: 'protected', photoIds: protectedPhotos.map((photo) => photo.id) }]
+    }
+  });
+  equal(protectedReset.targetPhotoIds.length, 0, '归档、归档中和原图缺失照片不得被普通重置');
+  check(
+    protectedReset.photos.every((photo, index) => photo === protectedPhotos[index]),
+    '高优先级照片必须保持原对象'
+  );
+
+  const localPool = Array.from({ length: 20 }, (_, index) => makePhoto(index + 101, {
+    smartSortStatus: index < 6 ? 'completed' : 'not_run'
+  }));
+  const sixMemberships = new Map(
+    localPool.slice(0, 6).map((photo) => [photo.id, 'six-group'])
+  );
+  scenarioCount += 1;
+  equal(
+    workflowModule.getWorkflowFilterCount('pending_sort', localPool, [], sixMemberships),
+    14,
+    '20 张照片局部智拣 6 张后待智拣应为 14'
+  );
+  equal(
+    workflowModule.getWorkflowFilterCount('pending_organize', localPool, [], sixMemberships),
+    6,
+    '20 张照片局部智拣 6 张后待整理应为 6'
+  );
+  const pendingSortIds = new Set(
+    workflowModule.getVisibleWorkflowPhotos({
+      photos: localPool,
+      groupMembershipByPhotoId: sixMemberships,
+      filter: 'pending_sort'
+    }).map((photo) => photo.id)
+  );
+  const pendingOrganizeIds = new Set(
+    workflowModule.getVisibleWorkflowPhotos({
+      photos: localPool,
+      groupMembershipByPhotoId: sixMemberships,
+      filter: 'pending_organize'
+    }).map((photo) => photo.id)
+  );
+  check(
+    [...pendingSortIds].every((photoId) => !pendingOrganizeIds.has(photoId)),
+    '待智拣和待整理必须互斥'
+  );
+  equal(new Set([...pendingSortIds, ...pendingOrganizeIds]).size, 20, '两个主阶段并集应覆盖 20 张照片');
+
+  scenarioCount += 1;
+  const seventeenPool = localPool.map((photo, index) => ({
+    ...photo,
+    smartSortStatus: index < 17 ? 'completed' : 'not_run'
+  }));
+  const seventeenMemberships = new Map(
+    seventeenPool.slice(0, 17).map((photo) => [photo.id, 'existing-group'])
+  );
+  equal(
+    workflowModule.getWorkflowFilterCount('pending_organize', seventeenPool, [], seventeenMemberships),
+    17,
+    '已有 15 张待整理再智拣 2 张后待整理应为 17'
+  );
+  equal(
+    workflowModule.getWorkflowFilterCount('pending_sort', seventeenPool, [], seventeenMemberships),
+    3,
+    '已有 15 张待整理再智拣 2 张后待智拣应为 3'
+  );
+
+  scenarioCount += 1;
+  const specialPhoto = makePhoto(130, {
+    originalMissing: true,
+    sortStatus: 'archived',
+    smartSortStatus: 'completed'
+  });
+  equal(
+    workflowModule.classifyPhotoWorkflowStage(specialPhoto, true),
+    'original_missing',
+    '原图缺失应优先于归档和智拣阶段'
+  );
+  equal(
+    workflowModule.getWorkflowFilterCount('original_missing', [specialPhoto], [], new Map([[specialPhoto.id, 'g']])),
+    1,
+    '徽标和筛选应复用同一高优先级阶段'
+  );
+
+  scenarioCount += 1;
+  const displayInput = localPool.slice(0, 4);
+  const displayBefore = structuredClone(displayInput);
+  const searched = workflowModule.getVisibleWorkflowPhotos({
+    photos: displayInput,
+    groupMembershipByPhotoId: new Map(),
+    filter: 'all',
+    searchText: '照片-',
+    selectedIds: [displayInput[3].id],
+    sortMode: 'nameDesc'
+  });
+  equal(searched.length, 4, '搜索应支持当前照片命名');
+  check(
+    searched[0].originalName.localeCompare(searched[1].originalName, 'zh-CN') >= 0,
+    '名称降序应只改变返回顺序'
+  );
+  deepEqual(displayInput, displayBefore, '搜索和排序不得修改照片业务对象');
+  equal(
+    workflowModule.getVisibleWorkflowPhotos({
+      photos: displayInput,
+      groupMembershipByPhotoId: new Map(),
+      filter: 'all',
+      searchText: ''
+    }).length,
+    4,
+    '清空搜索后全部照片应恢复'
+  );
+
+  scenarioCount += 1;
+  const localDirectory = workflowModule.resolvePhotoDirectoryTarget({
+    photos: [displayInput[0]],
+    activePhotoId: displayInput[0].id,
+    photoFolder: path.join(root, 'local-photos')
+  });
+  equal(localDirectory.sourceType, 'local_file', '本地照片应打开当前本地来源目录');
+  equal(localDirectory.targetPath, path.join(root, 'local-photos'), '本地照片目录目标必须稳定');
+  const markiDirectory = workflowModule.resolvePhotoDirectoryTarget({
+    photos: [photos[0]],
+    activePhotoId: photos[0].id,
+    photoFolder: path.join(root, 'local-photos')
+  });
+  equal(markiDirectory.sourceType, 'marki_api', 'Marki 照片应打开软件管理目录');
+  equal(markiDirectory.targetPath, path.dirname(photos[0].originalPath), 'Marki 目录应取托管 JPG 所在目录');
+  equal(
+    workflowModule.resolveArchiveDirectoryTarget('').success,
+    false,
+    '归档目录未配置时必须明确失败'
+  );
+
+  const manualPhotos = [
+    makePhoto(201, {
+      sourceType: 'marki_api',
+      sourceKey: 'marki_api:200:201',
+      sourceMetadataRef: 'marki_source_metadata:200:201',
+      previewUrl: 'local-photo://image/secret',
+      thumbnailPath: 'local-photo://image/secret',
+      smartSortStatus: 'completed'
+    }),
+    makePhoto(202, {
+      sortStatus: 'ignored',
+      ignoredPreviousSortStatus: 'recognized',
+      ignoredPreviousState: { smartSortStatus: 'completed' }
+    })
+  ];
+  await Promise.all(manualPhotos.map((photo) => fs.writeFile(photo.originalPath, `photo-${photo.id}`)));
+  const manualWorkspace = {
+    photos: manualPhotos,
+    selectedIds: [manualPhotos[0].id],
+    activePhotoId: manualPhotos[0].id,
+    recognitionResultsByPhoto: {
+      [manualPhotos[0].id]: {
+        ...platformArtifacts.recognitionResult,
+        sourceAwareProcessing: {
+          strategy: 'platform_only',
+          conflicts: []
+        }
+      }
+    },
+    watermarkRecordsByPhoto: {
+      [manualPhotos[0].id]: platformArtifacts.watermarkRecord
+    },
+    archiveSuggestionsByPhoto: {
+      [manualPhotos[0].id]: platformArtifacts.archiveSuggestion
+    },
+    smartSortResult: {
+      status: 'created',
+      groups: [{ id: 'manual-group', photoIds: [manualPhotos[0].id], photoCount: 1 }]
+    },
+    smartSortViewMode: 'smartSortGroup',
+    activeSmartSortGroupId: 'manual-group',
+    photoFolder: path.join(root, 'manual-local'),
+    archiveRoot: path.join(root, 'manual-archive'),
+    filter: 'pending_organize',
+    sortMode: 'nameDesc',
+    pageSize: 100,
+    rightPanelMode: 'recognition',
+    form: { project: '人工项目', workContent: '人工内容' },
+    searchText: '设备',
+    page: 2,
+    viewMode: 'list'
+  };
+  scenarioCount += 1;
+  const manualDraft = snapshotModule.buildSortWorkspaceManualDraft(manualWorkspace, {
+    savedAt: '2026-07-19T08:00:00.000Z'
+  });
+  const manualText = JSON.stringify(manualDraft);
+  check(!manualText.includes('local-photo://'), '手工草稿不得保存 Electron 临时预览 URL');
+  check(!manualText.includes('"previewUrl"'), '手工草稿不得保存 previewUrl');
+  check(!manualText.includes('"thumbnailPath"'), '手工草稿不得保存 thumbnailPath');
+  const parsedDraft = snapshotModule.readSortWorkspaceManualDraft(manualDraft);
+  deepEqual(parsedDraft.workspace.selectedIds, manualWorkspace.selectedIds, '手工草稿应保存选择');
+  equal(parsedDraft.workspace.activePhotoId, manualWorkspace.activePhotoId, '手工草稿应保存当前照片');
+  equal(parsedDraft.workspace.viewMode, 'list', '手工草稿应保存列表视图');
+  equal(parsedDraft.workspace.sortMode, 'nameDesc', '手工草稿应保存排序');
+  equal(parsedDraft.workspace.searchText, '设备', '手工草稿应保存搜索');
+  equal(parsedDraft.workspace.filter, 'pending_organize', '手工草稿应保存筛选');
+  equal(parsedDraft.workspace.smartSortResult.groups.length, 1, '手工草稿应保存 membership');
+  equal(
+    parsedDraft.workspace.recognitionResultsByPhoto[manualPhotos[0].id].sourceAwareProcessing.strategy,
+    'platform_only',
+    '手工草稿应保存来源感知处理层'
+  );
+
+  scenarioCount += 1;
+  const legacyDraft = snapshotModule.readSortWorkspaceManualDraft({
+    version: '1.3.3',
+    photos: [makePhoto(203)],
+    recognitionResultsByPhoto: {},
+    watermarkRecordsByPhoto: {},
+    archiveSuggestionsByPhoto: {}
+  });
+  equal(legacyDraft.workspace.viewMode, 'grid', '旧草稿缺少 viewMode 时应使用安全默认值');
+  equal(legacyDraft.workspace.sortMode, 'timeAsc', '旧草稿缺少 sortMode 时应使用安全默认值');
+  equal(legacyDraft.workspace.smartSortResult, null, '旧草稿缺少分组时不得伪造 membership');
+
+  scenarioCount += 1;
+  assert.throws(
+    () => snapshotModule.readSortWorkspaceManualDraft({
+      photos: [makePhoto(204), makePhoto(204)]
+    }),
+    /重复照片/,
+    '损坏草稿包含重复照片时必须整体拒绝'
+  );
+  assertionCount += 1;
+
+  scenarioCount += 1;
+  const snapshotRoot = path.join(root, 'snapshot');
+  const snapshotSave = await saveSortWorkspaceSnapshot(snapshotRoot, parsedDraft.workspace, {
+    now: new Date('2026-07-19T08:05:00.000Z')
+  });
+  equal(snapshotSave.success, true, '手工恢复结果应能立即进入自动快照');
+  const snapshotLoad = await loadSortWorkspaceSnapshot(snapshotRoot);
+  equal(snapshotLoad.success, true, '全新实例应能加载手工恢复后的自动快照');
+  equal(snapshotLoad.snapshot.workspace.photos.length, 2, '自动快照应恢复 Marki 和本地照片');
+  equal(snapshotLoad.snapshot.workspace.viewMode, 'list', '自动快照应恢复展示方式');
+  equal(
+    snapshotLoad.snapshot.workspace.smartSortResult.groups[0].photoIds[0],
+    manualPhotos[0].id,
+    '自动快照应恢复唯一 membership'
+  );
+
+  scenarioCount += 1;
+  const recoverySummary = recoveryModule.summarizeMarkiRecoveryCandidates([
+    { recoveryToken: 'a', status: 'recoverable' },
+    { recoveryToken: 'b', status: 'already_in_workbench' },
+    { recoveryToken: 'c', status: 'already_archived' },
+    { recoveryToken: 'd', status: 'missing_file' },
+    { recoveryToken: 'e', status: 'corrupted_file' },
+    { recoveryToken: 'f', status: 'invalid_record' }
+  ]);
+  deepEqual(recoverySummary, {
+    recoverable: 1,
+    alreadyInWorkbench: 1,
+    alreadyArchived: 1,
+    missingFile: 1,
+    abnormal: 2
+  }, '恢复弹窗应逐项统计五类安全状态');
+  deepEqual(
+    recoveryModule.getRecoverableMarkiRecoveryTokens([
+      { recoveryToken: 'a', status: 'recoverable' },
+      { recoveryToken: 'a', status: 'recoverable' },
+      { recoveryToken: 'b', status: 'already_in_workbench' }
+    ]),
+    ['a'],
+    '恢复全部只能提交唯一的可恢复令牌'
+  );
+  equal(
+    recoveryModule.buildMarkiRecoveryCompletionNotice({
+      recoveredCount: 2,
+      skippedCount: 1,
+      failedCount: 1
+    }),
+    '恢复完成：新增 2 张，跳过重复 1 张，失败 1 张。',
+    '恢复完成反馈必须包含新增、重复和失败统计'
+  );
+
+  scenarioCount += 1;
+  const pageSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/pages/SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const dialogSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/components/MarkiRehydrateDialog.jsx'),
+    'utf8'
+  );
+  const cssSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/styles/main.css'),
+    'utf8'
+  );
+  const sourceCheck = (condition, message) => {
+    assert.equal(Boolean(condition), true, message);
+    sourceContractCount += 1;
+  };
+  sourceCheck(pageSource.includes('ref={moreMenuRef}'), '更多菜单必须可受控关闭');
+  sourceCheck(pageSource.includes('moreMenuRef.current.open = false'), '打开恢复弹窗前必须关闭更多菜单');
+  sourceCheck(pageSource.includes('>恢复 Marki 照片</button>'), '更多菜单应使用可完整显示的短文案');
+  sourceCheck(pageSource.includes('<MarkiRehydrateDialog'), '恢复内容必须由独立弹窗承载');
+  sourceCheck(!pageSource.includes('aria-label="已下载马克照片恢复"'), '恢复面板不得继续内嵌在照片池');
+  sourceCheck(dialogSource.includes('createPortal'), '恢复弹窗必须使用 React portal');
+  sourceCheck(dialogSource.includes('document.body'), '恢复弹窗必须挂载到 document.body');
+  sourceCheck(dialogSource.includes('document.body.style.overflow = \'hidden\''), '弹窗打开时必须锁定背景滚动');
+  sourceCheck(dialogSource.includes('role="dialog"'), '恢复容器必须声明 dialog 语义');
+  sourceCheck(dialogSource.includes('aria-modal="true"'), '恢复容器必须阻止背景交互语义');
+  sourceCheck(dialogSource.includes('marki-rehydrate-table-wrap'), '长列表必须使用独立滚动容器');
+  sourceCheck(dialogSource.includes('恢复全部可恢复项'), '弹窗必须保留恢复全部入口');
+  sourceCheck(!dialogSource.includes('sourceKey'), '恢复弹窗不得显示 sourceKey');
+  sourceCheck(!dialogSource.includes('originalPath'), '恢复弹窗不得显示完整路径');
+  sourceCheck(!dialogSource.includes('url'), '恢复弹窗不得显示 URL');
+  sourceCheck(cssSource.includes('width: min(840px, 90vw)'), '恢复弹窗宽度必须受视口约束');
+  sourceCheck(cssSource.includes('max-height: 80vh'), '恢复弹窗高度必须受视口约束');
+  sourceCheck(cssSource.includes('grid-template-rows: auto auto minmax(0, 1fr) auto'), '标题、列表和底部操作区必须保持稳定布局');
+
+  scenarioCount += 1;
+  const searchHandlerSource = pageSource.slice(
+    pageSource.indexOf('function handleSearchTextChange'),
+    pageSource.indexOf('function handlePhotoClick')
+  );
+  sourceCheck(!searchHandlerSource.includes('setSelectedIds([])'), '搜索不得清除跨页选择');
+  sourceCheck(!searchHandlerSource.includes('setActivePhotoId('), '搜索不得改写当前照片');
+  const filterHandlerSource = pageSource.slice(
+    pageSource.indexOf('function applyStatusFilter'),
+    pageSource.indexOf('function viewSmartGroup')
+  );
+  sourceCheck(!filterHandlerSource.includes('setSelectedIds([])'), '状态筛选不得清除选择');
+  sourceCheck(!filterHandlerSource.includes('setActivePhotoId('), '状态筛选不得改写当前照片');
+  sourceCheck(pageSource.includes('getWorkflowFilterCount(key, photos'), '筛选数量必须复用统一逐照片分类');
+  sourceCheck(pageSource.includes('getPhotoWorkflowStageLabel(photo'), '状态徽标必须复用统一逐照片分类');
+  sourceCheck(pageSource.includes('buildSortWorkspaceManualDraft'), '手工保存必须复用完整工作台序列化');
+  sourceCheck(pageSource.includes('readSortWorkspaceManualDraft'), '手工恢复必须先完成安全解析');
+  sourceCheck(pageSource.includes('saveAutomaticSnapshotImmediately(restoredWorkspace)'), '手工恢复成功前必须先写自动快照');
+
+  check(scenarioCount === 16, '照片池工具栏闭环应执行十六个真实行为场景');
+  console.log(
+    `照片池工具栏闭环自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
+  );
 }
 
 function deepFreeze(value, seen = new WeakSet()) {

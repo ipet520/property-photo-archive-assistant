@@ -2,6 +2,44 @@ function getMarkiApi() {
   return window.archiveAssistant?.marki || null;
 }
 
+const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
+const MARKI_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+export function createDefaultMarkiImportFilters(nowValue = Date.now()) {
+  const now = normalizeNowValue(nowValue);
+  const beijingNow = new Date(now + BEIJING_OFFSET_MS);
+  const date = formatUtcDate(beijingNow);
+  return {
+    teamId: '',
+    uid: '',
+    start: `${date}T00:00`,
+    end: `${date}T${padDatePart(beijingNow.getUTCHours())}:${padDatePart(beijingNow.getUTCMinutes())}`
+  };
+}
+
+export function parseMarkiImportBeijingDateTime(value) {
+  const match = MARKI_DATE_TIME_PATTERN.exec(String(value || '').trim());
+  if (!match) return Number.NaN;
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const utcWallClock = Date.UTC(year, month - 1, day, hour, minute);
+  const normalized = new Date(utcWallClock);
+  if (
+    normalized.getUTCFullYear() !== year
+    || normalized.getUTCMonth() !== month - 1
+    || normalized.getUTCDate() !== day
+    || normalized.getUTCHours() !== hour
+    || normalized.getUTCMinutes() !== minute
+  ) {
+    return Number.NaN;
+  }
+  return utcWallClock - BEIJING_OFFSET_MS;
+}
+
 export async function getMarkiConfigStatus() {
   const api = getMarkiApi();
   if (!api?.getConfigStatus) return createUnavailableResult('马克平台配置接口不可用。');
@@ -102,6 +140,85 @@ export async function destroyMarkiPhotoQuerySession(sessionId) {
   }
 }
 
+export async function importMarkiPhotoQuerySelection(input = {}) {
+  const api = getMarkiApi();
+  if (!api?.importPhotoQuerySelection) return createUnavailableResult('马克照片导入接口不可用。');
+  try {
+    return await api.importPhotoQuerySelection(input);
+  } catch {
+    return createUnavailableResult('马克照片导入失败。');
+  }
+}
+
+export async function listReadyMarkiImportBatches() {
+  const api = getMarkiApi();
+  if (!api?.listReadyImportBatches) return createUnavailableResult('马克待处理批次查询接口不可用。');
+  try {
+    return await api.listReadyImportBatches();
+  } catch {
+    return createUnavailableResult('马克待处理批次查询失败。');
+  }
+}
+
+export function createMarkiReadyBatchRefresh(
+  requestReadyBatches = listReadyMarkiImportBatches
+) {
+  if (typeof requestReadyBatches !== 'function') {
+    throw new TypeError('马克待处理批次刷新函数无效。');
+  }
+  let pendingRequest = null;
+  return function refreshReadyBatches() {
+    if (pendingRequest) return pendingRequest;
+    const request = Promise.resolve()
+      .then(() => requestReadyBatches())
+      .then(
+        (result) => normalizeReadyBatchRefreshResult(result),
+        () => createReadyBatchRefreshFailure('马克待处理批次查询失败。')
+      );
+    pendingRequest = request.finally(() => {
+      pendingRequest = null;
+    });
+    return pendingRequest;
+  };
+}
+
+export function normalizeReadyBatchRefreshResult(result) {
+  if (result?.success !== true) {
+    return createReadyBatchRefreshFailure(
+      normalizeSafeMessage(result?.error?.message, '马克待处理批次查询失败。')
+    );
+  }
+  if (!Array.isArray(result.items) || !Number.isInteger(result.failedCount) || result.failedCount < 0) {
+    return createReadyBatchRefreshFailure('马克待处理批次返回数据异常，请重试。');
+  }
+  const items = [...result.items];
+  const failedCount = result.failedCount;
+  if (failedCount > 0) {
+    return {
+      success: true,
+      items,
+      failedCount,
+      notice: {
+        type: 'warning',
+        text: items.length > 0
+          ? `已刷新 ${items.length} 个待处理批次，另有 ${failedCount} 个批次文件无法读取。`
+          : `当前没有可用的待处理批次，另有 ${failedCount} 个批次文件无法读取。`
+      }
+    };
+  }
+  return {
+    success: true,
+    items,
+    failedCount,
+    notice: {
+      type: items.length > 0 ? 'success' : 'info',
+      text: items.length > 0
+        ? `已刷新，找到 ${items.length} 个待进入工作台的导入批次。`
+        : '当前没有待进入工作台的导入批次。'
+    }
+  };
+}
+
 function createUnavailableResult(message) {
   return {
     success: false,
@@ -111,4 +228,37 @@ function createUnavailableResult(message) {
       message
     }
   };
+}
+
+function createReadyBatchRefreshFailure(message) {
+  return {
+    success: false,
+    items: [],
+    failedCount: 0,
+    notice: {
+      type: 'error',
+      text: message
+    }
+  };
+}
+
+function normalizeSafeMessage(value, fallback) {
+  const message = String(value || '').trim();
+  return message || fallback;
+}
+
+function normalizeNowValue(value) {
+  const timestamp = value instanceof Date ? value.getTime() : Number(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new TypeError('马克导入默认时间无效。');
+  }
+  return timestamp;
+}
+
+function formatUtcDate(date) {
+  return `${date.getUTCFullYear()}-${padDatePart(date.getUTCMonth() + 1)}-${padDatePart(date.getUTCDate())}`;
+}
+
+function padDatePart(value) {
+  return String(value).padStart(2, '0');
 }

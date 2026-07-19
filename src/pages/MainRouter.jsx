@@ -2,6 +2,7 @@ import { PAGE_KEYS } from '../constants/app.js';
 import ArchiveRecordsPage from './ArchiveRecordsPage.jsx';
 import DashboardPage from './DashboardPage.jsx';
 import DataMaintenancePage from './DataMaintenancePage.jsx';
+import MarkiPhotoImportPage from './MarkiPhotoImportPage.jsx';
 import RectificationCenterPage from './RectificationCenterPage.jsx';
 import SettingsPage from './SettingsPage.jsx';
 import ServiceBriefPage from './ServiceBriefPage.jsx';
@@ -15,6 +16,9 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
   if (currentPage === PAGE_KEYS.quickArchive) {
     // 旧的独立快归入口已取消；历史导航请求统一回到照片分拣工作台。
     return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
+  }
+  if (currentPage === PAGE_KEYS.markiImport) {
+    return <MarkiPhotoImportPage onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
     return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;

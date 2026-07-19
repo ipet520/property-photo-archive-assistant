@@ -239,6 +239,57 @@ async function consumeMarkiImportBatch(userDataPath, batchId, options = {}) {
   });
 }
 
+async function listReadyMarkiImportBatches(userDataPath, options = {}) {
+  const fileSystem = resolveFileSystem(options);
+  const directoryPath = getMarkiImportBatchDirectory(userDataPath);
+  let entries;
+  try {
+    entries = await fileSystem.readdir(directoryPath, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { success: true, items: [], failedCount: 0 };
+    }
+    throw createBatchError(
+      'marki_import_batch_read_failed',
+      '马克导入批次读取失败，请重试。'
+    );
+  }
+  const now = resolveNow(options);
+  const items = [];
+  let failedCount = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    try {
+      const batchId = normalizeBatchId(entry.name.slice(0, -'.json'.length));
+      const batchPath = getMarkiImportBatchPath(userDataPath, batchId);
+      await withBatchWriteLock(batchPath, async () => {
+        const record = await loadBatchRecord(fileSystem, batchPath);
+        if (!record || isExpired(record, now) || record.status !== BATCH_STATUSES.READY) return;
+        items.push({
+          batchId: record.batchId,
+          status: record.status,
+          inputCount: record.inputCount,
+          metadataSavedCount: record.metadataSavedCount,
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+          expiresAt: record.expiresAt
+        });
+      });
+    } catch {
+      failedCount += 1;
+    }
+  }
+  items.sort((left, right) => (
+    Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    || left.batchId.localeCompare(right.batchId, 'en')
+  ));
+  return {
+    success: true,
+    items: cloneJson(items),
+    failedCount
+  };
+}
+
 async function cleanupExpiredMarkiImportBatches(userDataPath, options = {}) {
   const fileSystem = resolveFileSystem(options);
   const directoryPath = getMarkiImportBatchDirectory(userDataPath);
@@ -853,6 +904,7 @@ module.exports = {
   cleanupExpiredMarkiImportBatches,
   consumeMarkiImportBatch,
   getMarkiImportBatch,
+  listReadyMarkiImportBatches,
   markMarkiImportBatchFailed,
   markMarkiImportBatchReady
 };

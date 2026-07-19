@@ -432,6 +432,7 @@ function buildWorkbenchPhoto(photoId, normalized, mapped, archiveSuggestion) {
     originalName: download.fileName,
     extension: '.jpg',
     size: download.size,
+    sha256: download.sha256,
     width: download.width,
     height: download.height,
     modifiedAt: download.completedAt,
@@ -537,10 +538,22 @@ function normalizeDownloadResult(download) {
     localPath,
     fileName,
     size: normalizePositiveInteger(download.size, '马克照片文件大小无效。'),
+    sha256: normalizeSha256(download.sha256),
     width: normalizePositiveInteger(download.width, '马克照片宽度无效。'),
     height: normalizePositiveInteger(download.height, '马克照片高度无效。'),
     completedAt: normalizeIsoDate(download.completedAt || download.updatedAt)
   };
+}
+
+function normalizeSha256(value) {
+  const sha256 = String(value || '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new MarkiStructuredImportError(
+      'invalid_marki_download_file',
+      '马克照片下载文件信息无效。'
+    );
+  }
+  return sha256;
 }
 
 function resolveCaptureDate(fields, postTime) {

@@ -8,6 +8,7 @@ export const VERSION_SUMMARY = `软件版本 ${APP_VERSION} · RapidOCR 版本 $
 export const PAGE_KEYS = {
   dashboard: 'dashboard',
   quickArchive: 'quickArchive',
+  markiImport: 'markiImport',
   sortWorkspace: 'sortWorkspace',
   searchCenter: 'searchCenter',
   rectificationCenter: 'rectificationCenter',
@@ -23,6 +24,7 @@ export const NAV_GROUPS = [
     title: '工作台',
     items: [
       { key: PAGE_KEYS.dashboard, label: '首页总览', icon: 'dashboard' },
+      { key: PAGE_KEYS.markiImport, label: '马克照片导入', icon: 'archive' },
       { key: PAGE_KEYS.sortWorkspace, label: '照片分拣工作台', icon: 'grid' }
     ]
   },

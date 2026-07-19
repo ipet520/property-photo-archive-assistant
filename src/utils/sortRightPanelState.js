@@ -285,6 +285,132 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
   };
 }
 
+export function resolveCanonicalPhotoResult({
+  photo = {},
+  recognitionResult = null,
+  watermarkRecord = null,
+  archiveSuggestion = null,
+  sourceAwareProcessing = null,
+  group = null,
+  configs = {}
+} = {}) {
+  const processing = sourceAwareProcessing || recognitionResult?.sourceAwareProcessing || null;
+  const groupFields = getGroupCanonicalFields(group, photo?.id);
+  const suggestionFields = archiveSuggestion?.suggestedFields || {};
+  const watermarkFields = {
+    date: watermarkRecord?.captureDate,
+    project: watermarkRecord?.projectText,
+    watermarkCategory: watermarkRecord?.watermarkCategoryText,
+    workContent: watermarkRecord?.workContentText
+  };
+  const parsed = recognitionResult?.parsedWatermark || recognitionResult?.parsedFields || {};
+  const recognitionFields = {
+    date: parsed.date || parsed.capturedAt || parsed.dateTime,
+    project: parsed.projectName || parsed.project,
+    watermarkCategory: parsed.watermarkCategory || parsed.category,
+    workContent: parsed.workContent
+  };
+  const effectiveFields = processing?.effectiveResult?.requiredFields || {};
+  const platformFields = processing?.platformBaseline?.requiredFields || {};
+  const isMarki = photo?.sourceType === 'marki_api';
+  const sources = isMarki
+    ? [
+        ['effective_result', effectiveFields],
+        ['platform_baseline', platformFields],
+        ['archive_suggestion', suggestionFields],
+        ['watermark_record', watermarkFields],
+        ['recognition_result', recognitionFields],
+        ['smart_sort_group', groupFields]
+      ]
+    : [
+        ['archive_suggestion', suggestionFields],
+        ['watermark_record', watermarkFields],
+        ['recognition_result', recognitionFields],
+        ['smart_sort_group', groupFields]
+      ];
+  const fieldSources = {};
+  const values = {};
+  for (const key of ['date', 'project', 'watermarkCategory', 'workContent']) {
+    const manualValue = getManualSuggestionValue(archiveSuggestion, key);
+    if (manualValue) {
+      values[key] = manualValue;
+      fieldSources[key] = 'manual_draft';
+      continue;
+    }
+    for (const [source, fields] of sources) {
+      const value = normalizeValue(fields?.[key]);
+      if (!value) continue;
+      values[key] = value;
+      fieldSources[key] = source;
+      break;
+    }
+    if (!values[key]) values[key] = '';
+  }
+
+  if (!isMarki) {
+    const normalizedLocal = normalizeLocalCanonicalFields(values, configs, {
+      preserveCategory: fieldSources.watermarkCategory === 'manual_draft',
+      preserveWorkContent: fieldSources.workContent === 'manual_draft'
+    });
+    for (const key of ['watermarkCategory', 'workContent']) {
+      if (normalizedLocal[key] && normalizedLocal[key] !== values[key]) {
+        values[key] = normalizedLocal[key];
+        if (fieldSources[key] !== 'manual_draft') fieldSources[key] = 'local_behavior_adapter';
+      }
+    }
+  }
+
+  const unresolvedFields = requiredFieldLabels
+    .filter(([, key]) => !normalizeValue(values[key]))
+    .map(([, key]) => key);
+  return {
+    date: normalizeSuggestionDate(values.date) || normalizeValue(values.date),
+    project: normalizeValue(values.project),
+    watermarkCategory: normalizeValue(values.watermarkCategory),
+    workContent: normalizeValue(values.workContent),
+    fieldSources,
+    conflicts: normalizeCanonicalConflicts(
+      processing?.ocrSupplement?.conflicts
+      || processing?.conflicts
+      || archiveSuggestion?.conflictFields
+    ),
+    unresolvedFields
+  };
+}
+
+export function buildArchiveFormSeed({
+  photo = {},
+  recognitionResult = null,
+  watermarkRecord = null,
+  archiveSuggestion = null,
+  sourceAwareProcessing = null,
+  group = null,
+  configs = {}
+} = {}) {
+  if (photo?.archiveInfo) {
+    return sanitizeArchiveFields({
+      ...photo.archiveInfo,
+      location: photo.archiveInfo.location ?? ''
+    }, configs);
+  }
+  const canonical = resolveCanonicalPhotoResult({
+    photo,
+    recognitionResult,
+    watermarkRecord,
+    archiveSuggestion,
+    sourceAwareProcessing,
+    group,
+    configs
+  });
+  return sanitizeArchiveFields({
+    ...(archiveSuggestion?.suggestedFields || {}),
+    date: canonical.date,
+    project: canonical.project,
+    watermarkCategory: canonical.watermarkCategory,
+    workContent: canonical.workContent
+  }, configs);
+}
+
 export function normalizeConfirmedArchiveInfo(fields = {}) {
   return {
     project: fields.project || '',
@@ -468,6 +594,15 @@ function inferWorkContentLine(lines = []) {
 function matchCategory(text = '', categories = {}) {
   const normalizedText = normalizeCompareText(text);
   if (!normalizedText) return { category: '', candidates: [], source: '', confidence: 0 };
+  const behaviorCategory = inferBehaviorCategory(normalizedText, categories);
+  if (behaviorCategory) {
+    return {
+      category: behaviorCategory,
+      candidates: [behaviorCategory],
+      source: 'rule.behaviorCategory',
+      confidence: 0.9
+    };
+  }
   const candidates = Object.keys(categories).filter((category) => {
     const normalizedCategory = normalizeCompareText(category);
     return normalizedText.includes(normalizedCategory) || normalizedCategory.includes(normalizedText) || categoryKeywordHit(normalizedText, normalizedCategory);
@@ -483,7 +618,11 @@ function matchWorkContent(text = '', categories = {}, preferredCategory = '') {
   Object.entries(categories || {}).forEach(([category, config]) => {
     (config.items || []).forEach((item) => {
       const normalizedItem = normalizeCompareText(item);
-      if (normalizedText.includes(normalizedItem) || normalizedItem.includes(normalizedText)) {
+      if (
+        normalizedText.includes(normalizedItem)
+        || normalizedItem.includes(normalizedText)
+        || isEquivalentWorkBehavior(normalizedText, normalizedItem)
+      ) {
         rows.push({ category, item });
       }
     });
@@ -522,7 +661,7 @@ function normalizeCompareText(value = '') {
 
 function categoryKeywordHit(normalizedText = '', normalizedCategory = '') {
   const rules = [
-    ['太阳能|照明|设施|设备|维修|巡查', '工程|设施|设备|维修'],
+    ['太阳能|照明|设施|设备|维修', '工程|设施|设备|维修'],
     ['电动车|飞线|违停|车辆|秩序', '秩序|安全|车辆'],
     ['楼道|杂物|保洁|清扫|卫生|环境', '环境|保洁|楼道'],
     ['消防', '消防|安全']
@@ -530,6 +669,106 @@ function categoryKeywordHit(normalizedText = '', normalizedCategory = '') {
   return rules.some(([textPattern, categoryPattern]) =>
     new RegExp(textPattern).test(normalizedText) && new RegExp(categoryPattern).test(normalizedCategory)
   );
+}
+
+function inferBehaviorCategory(normalizedText = '', categories = {}) {
+  const categoryNames = Object.keys(categories || {});
+  const isRepair = /维修|维保|修复|故障处理|抢修/.test(normalizedText);
+  const isInspection = /巡查|巡检|检查|巡视|复查/.test(normalizedText);
+  if (isRepair) {
+    return categoryNames.find((category) => /工程|维修|维保/.test(category)) || '';
+  }
+  if (isInspection) {
+    return categoryNames.find((category) => /巡查|巡检|检查/.test(category)) || '';
+  }
+  return '';
+}
+
+function isEquivalentWorkBehavior(left = '', right = '') {
+  const leftFamily = getWorkBehaviorFamily(left);
+  const rightFamily = getWorkBehaviorFamily(right);
+  if (!leftFamily || leftFamily !== rightFamily) return false;
+  const leftSubject = normalizeWorkSubject(left);
+  const rightSubject = normalizeWorkSubject(right);
+  return Boolean(leftSubject && rightSubject)
+    && (leftSubject.includes(rightSubject) || rightSubject.includes(leftSubject));
+}
+
+function getWorkBehaviorFamily(value = '') {
+  if (/维修|维保|修复|故障处理|抢修/.test(value)) return 'repair';
+  if (/巡查|巡检|检查|巡视|复查/.test(value)) return 'inspection';
+  return '';
+}
+
+function normalizeWorkSubject(value = '') {
+  return normalizeCompareText(value)
+    .replace(/维修|维保|修复|故障|处理|抢修|巡查|巡检|检查|巡视|复查/g, '')
+    .replace(/公共|相关|设施|设备|现场/g, '');
+}
+
+function normalizeLocalCanonicalFields(fields = {}, configs = {}, options = {}) {
+  const workContent = normalizeValue(fields.workContent);
+  let watermarkCategory = normalizeValue(fields.watermarkCategory);
+  if (!options.preserveCategory) {
+    watermarkCategory = inferBehaviorCategory(normalizeCompareText(workContent), configs.watermarkCategories)
+      || watermarkCategory;
+  }
+  if (!options.preserveWorkContent) {
+    const matchedWork = matchWorkContent(
+      workContent,
+      configs.watermarkCategories,
+      watermarkCategory
+    );
+    if (matchedWork.workContent) {
+      return {
+        watermarkCategory: matchedWork.category || watermarkCategory,
+        workContent: matchedWork.workContent
+      };
+    }
+  }
+  return { watermarkCategory, workContent };
+}
+
+function getManualSuggestionValue(archiveSuggestion = null, key = '') {
+  const source = String(archiveSuggestion?.fieldSources?.[key] || '');
+  if (!source.includes('manual') && !source.includes('mixed')) return '';
+  return normalizeValue(archiveSuggestion?.suggestedFields?.[key]);
+}
+
+function getGroupCanonicalFields(group = null, photoId = '') {
+  if (!group || typeof group !== 'object') return {};
+  const members = [
+    ...(Array.isArray(group.photos) ? group.photos : []),
+    ...(Array.isArray(group.items) ? group.items : []),
+    ...(Array.isArray(group.groupPhotos) ? group.groupPhotos : []),
+    ...(Array.isArray(group.photoList) ? group.photoList : [])
+  ];
+  const member = members.find((item) => (
+    normalizeValue(item?.photoId || item?.id) === normalizeValue(photoId)
+  ));
+  const fields = member?.archiveSuggestion?.suggestedFields || group.suggestedFields || {};
+  const workContent = normalizeValue(fields.workContent)
+    || (String(group.basis || '').includes('work_content') ? normalizeValue(group.title) : '');
+  return {
+    date: fields.date || '',
+    project: fields.project || '',
+    watermarkCategory: fields.watermarkCategory || fields.category || '',
+    workContent
+  };
+}
+
+function normalizeCanonicalConflicts(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (item && typeof item === 'object') {
+      return {
+        field: normalizeValue(item.field),
+        platformValue: normalizeValue(item.platformValue),
+        ocrValue: normalizeValue(item.ocrValue)
+      };
+    }
+    return { field: normalizeValue(item), platformValue: '', ocrValue: '' };
+  }).filter((item) => item.field);
 }
 
 function calculateWatermarkConfidence({ captureDate, locationText, workContentText, rawText, success }) {

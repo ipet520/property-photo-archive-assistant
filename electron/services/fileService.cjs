@@ -1,3 +1,5 @@
+const crypto = require('node:crypto');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
@@ -11,17 +13,21 @@ async function scanImages(folderPath) {
   const files = [];
   await walk(folderPath, files);
 
-  return files
-    .sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'))
-    .map((file, index) => ({
+  const sortedFiles = files.sort((a, b) => a.path.localeCompare(b.path, 'zh-CN'));
+  const results = [];
+  for (const [index, file] of sortedFiles.entries()) {
+    results.push({
       id: `${Date.now()}-${index}`,
       name: file.name,
       path: file.path,
       extension: file.extension,
       size: file.size,
       modifiedAt: file.modifiedAt,
+      sha256: await hashFile(file.path),
       previewUrl: `local-photo://image/${encodeURIComponent(file.path)}`
-    }));
+    });
+  }
+  return results;
 }
 
 async function walk(currentPath, files) {
@@ -47,6 +53,16 @@ async function walk(currentPath, files) {
       modifiedAt: stat.mtime.toISOString()
     });
   }
+}
+
+function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fsSync.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 module.exports = { scanImages };

@@ -16,6 +16,12 @@ const IDLE_TTL_MS = 15 * 60 * 1000;
 const HARD_TTL_MS = 30 * 60 * 1000;
 const MAX_ACTIVE_SESSIONS = 3;
 const MAX_SESSION_PHOTOS = 1000;
+const IMPORT_TASK_STATUSES = Object.freeze({
+  IDLE: 'idle',
+  IN_PROGRESS: 'in_progress',
+  FAILED: 'failed',
+  COMPLETED: 'completed'
+});
 const SESSION_INPUT_KEYS = new Set(['credentials', 'documentsPath', 'filters']);
 const FILTER_KEYS = new Set(['teamId', 'uid', 'start', 'end']);
 const SAFE_SOURCE_STATUSES = new Set([
@@ -55,7 +61,25 @@ function createMarkiPhotoQuerySessionService(baseOptions = {}) {
     cleanup: (options = {}) => cleanupSessions(sessions, {
       ...baseOptions,
       ...options
-    })
+    }),
+    beginImport: (sessionId, selectionTokens, options = {}) => beginSelectionImport(
+      sessions,
+      sessionId,
+      selectionTokens,
+      {
+        ...baseOptions,
+        ...options
+      }
+    ),
+    settleImport: (sessionId, input, options = {}) => settleSelectionImport(
+      sessions,
+      sessionId,
+      input,
+      {
+        ...baseOptions,
+        ...options
+      }
+    )
   };
 }
 
@@ -79,6 +103,14 @@ async function destroyMarkiPhotoQuerySession(sessionId, options = {}) {
 
 async function cleanupExpiredMarkiPhotoQuerySessions(options = {}) {
   return defaultSessionService.cleanup(options);
+}
+
+async function beginMarkiPhotoSelectionImport(sessionId, selectionTokens, options = {}) {
+  return defaultSessionService.beginImport(sessionId, selectionTokens, options);
+}
+
+async function settleMarkiPhotoSelectionImport(sessionId, input, options = {}) {
+  return defaultSessionService.settleImport(sessionId, input, options);
 }
 
 async function createSession(sessions, input, options) {
@@ -111,6 +143,7 @@ async function createSession(sessions, input, options) {
     momentsBySelectionToken: new Map(),
     selectionTokenBySourceKey: new Map(),
     orderedSelectionTokens: [],
+    importTasks: new Map(),
     createdAt: now,
     lastAccessedAt: now,
     idleExpiresAt: Math.min(now + IDLE_TTL_MS, now + HARD_TTL_MS),
@@ -246,7 +279,9 @@ async function appendPageToSession(session, result, dependencies) {
       moment: entry.moment,
       sourceKey: entry.sourceKey,
       displayId: entry.displayId,
-      selectedSourceStatus: entry.selectedSourceStatus
+      selectedSourceStatus: entry.selectedSourceStatus,
+      importStatus: IMPORT_TASK_STATUSES.IDLE,
+      importTaskId: ''
     });
     session.selectionTokenBySourceKey.set(entry.sourceKey, entry.selectionToken);
     session.orderedSelectionTokens.push(entry.selectionToken);
@@ -263,6 +298,219 @@ async function appendPageToSession(session, result, dependencies) {
       '马克照片查询结果缺少下一页信息。'
     );
   }
+}
+
+function beginSelectionImport(sessions, sessionId, selectionTokens, options) {
+  const now = getNow(options);
+  const session = requireActiveSession(sessions, sessionId, now);
+  const normalizedTokens = normalizeSelectionTokens(selectionTokens);
+  const tokenSetKey = [...normalizedTokens].sort().join('|');
+  const entries = normalizedTokens.map((selectionToken) => {
+    const entry = session.momentsBySelectionToken.get(selectionToken);
+    if (!entry) {
+      throw new MarkiPhotoQuerySessionError(
+        'marki_photo_import_selection_invalid',
+        '所选马克照片不存在或已失效。'
+      );
+    }
+    return entry;
+  });
+  const retryTask = [...session.importTasks.values()].find(
+    (task) => task.status === IMPORT_TASK_STATUSES.FAILED && task.tokenSetKey === tokenSetKey
+  );
+
+  if (retryTask) {
+    for (const entry of entries) {
+      if (
+        entry.importStatus !== IMPORT_TASK_STATUSES.FAILED
+        || entry.importTaskId !== retryTask.taskId
+      ) {
+        throw new MarkiPhotoQuerySessionError(
+          'marki_photo_import_retry_state_invalid',
+          '马克照片导入重试状态已变化，请重新查询。'
+        );
+      }
+    }
+    retryTask.status = IMPORT_TASK_STATUSES.IN_PROGRESS;
+    retryTask.updatedAt = now;
+    for (const entry of entries) {
+      entry.importStatus = IMPORT_TASK_STATUSES.IN_PROGRESS;
+    }
+    touchSession(session, now);
+    return buildTrustedImportTaskResult(session, retryTask, true);
+  }
+
+  if (entries.some((entry) => entry.importStatus === IMPORT_TASK_STATUSES.IN_PROGRESS)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_in_progress',
+      '所选马克照片正在导入，请勿重复操作。'
+    );
+  }
+  if (entries.some((entry) => entry.importStatus === IMPORT_TASK_STATUSES.COMPLETED)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_completed',
+      '所选马克照片已完成导入。'
+    );
+  }
+  if (entries.some((entry) => entry.importStatus === IMPORT_TASK_STATUSES.FAILED)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_retry_token_mismatch',
+      '失败任务只能使用原照片集合重试。'
+    );
+  }
+
+  const dependencies = resolveDependencies(options);
+  const taskId = createOpaqueId(dependencies.randomUUID);
+  const task = {
+    taskId,
+    tokenSetKey,
+    selectionTokens: [...normalizedTokens],
+    effectiveSelectionTokens: [],
+    batchId: '',
+    status: IMPORT_TASK_STATUSES.IN_PROGRESS,
+    createdAt: now,
+    updatedAt: now
+  };
+  session.importTasks.set(taskId, task);
+  for (const entry of entries) {
+    entry.importStatus = IMPORT_TASK_STATUSES.IN_PROGRESS;
+    entry.importTaskId = taskId;
+  }
+  touchSession(session, now);
+  return buildTrustedImportTaskResult(session, task, false);
+}
+
+function settleSelectionImport(sessions, sessionId, input, options) {
+  const normalizedSessionId = normalizeOpaqueId(sessionId, 'sessionId');
+  const session = sessions.get(normalizedSessionId);
+  if (!session) {
+    return {
+      success: true,
+      sessionAvailable: false
+    };
+  }
+  const normalized = normalizeSettleInput(input);
+  const task = session.importTasks.get(normalized.taskId);
+  if (!task || task.status !== IMPORT_TASK_STATUSES.IN_PROGRESS) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入任务状态无效。'
+    );
+  }
+  const taskTokenSet = new Set(task.selectionTokens);
+  if (normalized.effectiveSelectionTokens.some((token) => !taskTokenSet.has(token))) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入任务范围无效。'
+    );
+  }
+  const now = getNow(options);
+  task.status = normalized.status;
+  task.batchId = normalized.batchId;
+  task.effectiveSelectionTokens = [...normalized.effectiveSelectionTokens];
+  task.updatedAt = now;
+  for (const selectionToken of task.selectionTokens) {
+    const entry = session.momentsBySelectionToken.get(selectionToken);
+    if (!entry || entry.importTaskId !== task.taskId) continue;
+    entry.importStatus = normalized.status;
+    if (normalized.status === IMPORT_TASK_STATUSES.COMPLETED) {
+      entry.selectedSourceStatus = 'imported';
+    }
+  }
+  touchSession(session, now);
+  return {
+    success: true,
+    sessionAvailable: true,
+    taskId: task.taskId,
+    status: task.status
+  };
+}
+
+function buildTrustedImportTaskResult(session, task, retry) {
+  return {
+    success: true,
+    sessionId: session.sessionId,
+    orgId: session.orgId,
+    taskId: task.taskId,
+    retry,
+    batchId: task.batchId,
+    selectionTokens: [...task.selectionTokens],
+    effectiveSelectionTokens: [...task.effectiveSelectionTokens],
+    items: task.selectionTokens.map((selectionToken) => {
+      const entry = session.momentsBySelectionToken.get(selectionToken);
+      return {
+        selectionToken,
+        displayId: entry.displayId,
+        sourceKey: entry.sourceKey,
+        selectedSourceStatus: entry.selectedSourceStatus,
+        moment: cloneMoment(entry.moment)
+      };
+    })
+  };
+}
+
+function normalizeSelectionTokens(selectionTokens) {
+  if (
+    !Array.isArray(selectionTokens)
+    || selectionTokens.length === 0
+    || selectionTokens.length > MAX_SESSION_PHOTOS
+  ) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_selection_invalid',
+      '请选择需要导入的马克照片。'
+    );
+  }
+  const normalized = selectionTokens.map((value) => normalizeOpaqueId(value, 'selectionToken'));
+  if (new Set(normalized).size !== normalized.length) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_selection_invalid',
+      '所选马克照片包含重复项。'
+    );
+  }
+  return normalized;
+}
+
+function normalizeSettleInput(input) {
+  const allowedKeys = new Set(['taskId', 'status', 'batchId', 'effectiveSelectionTokens']);
+  if (!isPlainObject(input) || Object.keys(input).some((key) => !allowedKeys.has(key))) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入任务结果无效。'
+    );
+  }
+  const status = String(input.status || '').trim();
+  if (![IMPORT_TASK_STATUSES.FAILED, IMPORT_TASK_STATUSES.COMPLETED].includes(status)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入任务结果无效。'
+    );
+  }
+  const batchId = String(input.batchId || '').trim();
+  if (batchId && !/^[A-Za-z0-9_-]{1,200}$/.test(batchId)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入批次标识无效。'
+    );
+  }
+  return {
+    taskId: normalizeOpaqueId(input.taskId, 'taskId'),
+    status,
+    batchId,
+    effectiveSelectionTokens: input.effectiveSelectionTokens === undefined
+      ? []
+      : normalizeEffectiveSelectionTokens(input.effectiveSelectionTokens)
+  };
+}
+
+function normalizeEffectiveSelectionTokens(value) {
+  if (!Array.isArray(value) || value.length > MAX_SESSION_PHOTOS) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_task_state_invalid',
+      '马克照片导入任务范围无效。'
+    );
+  }
+  if (value.length === 0) return [];
+  return normalizeSelectionTokens(value);
 }
 
 function buildSafeSessionResult(session) {
@@ -481,13 +729,16 @@ function isPlainObject(value) {
 module.exports = {
   HARD_TTL_MS,
   IDLE_TTL_MS,
+  IMPORT_TASK_STATUSES,
   MAX_ACTIVE_SESSIONS,
   MAX_SESSION_PHOTOS,
   MarkiPhotoQuerySessionError,
+  beginMarkiPhotoSelectionImport,
   cleanupExpiredMarkiPhotoQuerySessions,
   createMarkiPhotoQuerySession,
   createMarkiPhotoQuerySessionService,
   destroyMarkiPhotoQuerySession,
   getMarkiPhotoQuerySession,
-  loadNextMarkiPhotoQueryPage
+  loadNextMarkiPhotoQueryPage,
+  settleMarkiPhotoSelectionImport
 };

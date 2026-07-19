@@ -72,6 +72,10 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     getPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:get-photo-query-session', sessionId),
     loadNextPhotoQueryPage: (sessionId) => ipcRenderer.invoke('marki:load-next-photo-query-page', sessionId),
     destroyPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:destroy-photo-query-session', sessionId),
+    importPhotoQuerySelection: (input) => ipcRenderer.invoke('marki:import-photo-query-selection', input),
+    listReadyImportBatches: () => ipcRenderer.invoke('marki:list-ready-import-batches'),
+    scanWorkbenchRecoveryCandidates: () => ipcRenderer.invoke('marki:scan-workbench-recovery-candidates'),
+    recoverWorkbenchCandidates: (input) => ipcRenderer.invoke('marki:recover-workbench-candidates', input),
     getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
     consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)
   },
@@ -138,5 +142,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   },
   saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
   loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
+  saveSortWorkspaceSnapshot: (workspace) => ipcRenderer.invoke('sortWorkspaceSnapshot:save', workspace),
+  loadSortWorkspaceSnapshot: () => ipcRenderer.invoke('sortWorkspaceSnapshot:load'),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')
 });

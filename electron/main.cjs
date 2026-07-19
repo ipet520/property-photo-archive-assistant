@@ -116,7 +116,8 @@ const {
 } = require('./services/markiApiService.cjs');
 const {
   consumeMarkiImportBatch,
-  getMarkiImportBatch
+  getMarkiImportBatch,
+  listReadyMarkiImportBatches
 } = require('./services/markiImportBatchService.cjs');
 const {
   createMarkiPhotoQuerySession,
@@ -124,6 +125,17 @@ const {
   getMarkiPhotoQuerySession,
   loadNextMarkiPhotoQueryPage
 } = require('./services/markiPhotoQuerySessionService.cjs');
+const {
+  importMarkiPhotoQuerySelection
+} = require('./services/markiTrustedImportService.cjs');
+const {
+  loadSortWorkspaceSnapshot,
+  saveSortWorkspaceSnapshot
+} = require('./services/sortWorkspaceSnapshotService.cjs');
+const {
+  recoverMarkiWorkbenchCandidates,
+  scanMarkiWorkbenchRecoveryCandidates
+} = require('./services/markiWorkbenchRehydrateService.cjs');
 
 const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, net, protocol, safeStorage, shell, screen } = electron;
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -841,6 +853,13 @@ ipcMain.handle('sortDraft:load', async () => {
   return { success: true, filePath: result.filePaths[0], draft: JSON.parse(content) };
 });
 
+ipcMain.handle('sortWorkspaceSnapshot:save', async (_event, workspace) => safeSortWorkspaceSnapshotCall(
+  () => saveSortWorkspaceSnapshot(app.getPath('userData'), workspace)
+));
+ipcMain.handle('sortWorkspaceSnapshot:load', async () => safeSortWorkspaceSnapshotCall(
+  () => loadSortWorkspaceSnapshot(app.getPath('userData'))
+));
+
 ipcMain.handle('system:openPath', async (_event, targetPath) => {
   if (!targetPath) return { success: false, message: '路径为空' };
   const error = await shell.openPath(targetPath);
@@ -889,6 +908,30 @@ ipcMain.handle('marki:load-next-photo-query-page', async (_event, sessionId) => 
 ));
 ipcMain.handle('marki:destroy-photo-query-session', async (_event, sessionId) => safeMarkiLocalCall(
   () => destroyMarkiPhotoQuerySession(sessionId)
+));
+ipcMain.handle('marki:import-photo-query-selection', async (_event, input) => safeMarkiCall(
+  (credentials) => importMarkiPhotoQuerySelection({
+    credentials,
+    documentsPath: app.getPath('documents'),
+    userDataPath: app.getPath('userData'),
+    request: input
+  })
+));
+ipcMain.handle('marki:list-ready-import-batches', async () => safeMarkiLocalCall(
+  () => listReadyMarkiImportBatches(app.getPath('userData'))
+));
+ipcMain.handle('marki:scan-workbench-recovery-candidates', async () => safeMarkiLocalCall(
+  () => scanMarkiWorkbenchRecoveryCandidates({
+    documentsPath: app.getPath('documents'),
+    userDataPath: app.getPath('userData')
+  })
+));
+ipcMain.handle('marki:recover-workbench-candidates', async (_event, input) => safeMarkiLocalCall(
+  () => recoverMarkiWorkbenchCandidates({
+    ...normalizeMarkiWorkbenchRecoveryRequest(input),
+    documentsPath: app.getPath('documents'),
+    userDataPath: app.getPath('userData')
+  })
 ));
 ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiLocalCall(
   () => getMarkiImportBatch(app.getPath('userData'), batchId)
@@ -1066,6 +1109,37 @@ async function safeMarkiLocalCall(callback) {
     return {
       success: false,
       error: toSafeMarkiError(error)
+    };
+  }
+}
+
+function normalizeMarkiWorkbenchRecoveryRequest(input) {
+  if (
+    !input
+    || typeof input !== 'object'
+    || Array.isArray(input)
+    || Object.keys(input).length !== 1
+    || !Object.hasOwn(input, 'recoveryTokens')
+  ) {
+    const error = new Error('恢复请求无效。');
+    error.code = 'marki_recovery_input_invalid';
+    throw error;
+  }
+  return {
+    recoveryTokens: input.recoveryTokens
+  };
+}
+
+async function safeSortWorkspaceSnapshotCall(callback) {
+  try {
+    return await callback();
+  } catch {
+    return {
+      success: false,
+      error: {
+        code: 'sort_workspace_snapshot_unavailable',
+        message: '工作台自动快照暂时不可用，请稍后重试。'
+      }
     };
   }
 }

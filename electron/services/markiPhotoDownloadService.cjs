@@ -48,6 +48,7 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
       '来源清单读取失败，请重试。'
     );
     if (record.importStatus === 'imported') {
+      await verifyImportedFile(importRoot, record, options);
       return buildImportedResult(importRoot, record, true);
     }
 
@@ -114,6 +115,38 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
     );
     return buildImportedResult(importRoot, record, reusedExisting);
   });
+}
+
+async function verifyImportedFile(importRoot, record, options) {
+  const downloadInfo = record?.downloadInfo;
+  if (!downloadInfo) {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_integrity_failed',
+      '已导入的马克照片文件记录不完整，请人工核查。'
+    );
+  }
+  const localPath = path.join(importRoot, ...downloadInfo.relativePath.split('/'));
+  let inspected;
+  try {
+    inspected = await inspectJpegFile(localPath, options);
+  } catch {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_integrity_failed',
+      '已导入的马克照片文件未通过完整性校验，请人工核查。'
+    );
+  }
+  if (
+    inspected.size !== downloadInfo.size
+    || inspected.width !== downloadInfo.width
+    || inspected.height !== downloadInfo.height
+    || inspected.sha256 !== downloadInfo.sha256
+  ) {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_integrity_failed',
+      '已导入的马克照片文件与来源记录不一致，请人工核查。'
+    );
+  }
+  return inspected;
 }
 
 async function retryMarkiPhotoDownload(documentsPath, input = {}, options = {}) {
@@ -560,6 +593,7 @@ function buildImportedResult(importRoot, record, reusedExisting) {
     width: downloadInfo.width,
     height: downloadInfo.height,
     sha256: downloadInfo.sha256,
+    completedAt: downloadInfo.completedAt,
     downloadAttemptCount: record.downloadAttemptCount,
     reusedExisting
   };

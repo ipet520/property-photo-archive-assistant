@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import MarkiRehydrateDialog from '../components/MarkiRehydrateDialog.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import {
   SMART_SORT_CONFIDENCE_LABELS,
@@ -10,6 +11,47 @@ import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import {
+  beginSmartSortExecution,
+  buildSmartSortGroupMembershipByPhotoId,
+  buildSourceAwareRecognitionNotice,
+  buildSourceAwareSmartSortPresentation,
+  completeSmartSortExecution,
+  failSmartSortExecution,
+  hasPhotoSmartSortResult,
+  invalidateSmartSortExecution,
+  mergeScopedSmartSortResult,
+  orchestrateSourceAwareRecognition,
+  resetSelectedSmartSortResults
+} from '../utils/sourceAwareRecognition.js';
+import {
+  getIgnoredRecognitionStageStatus,
+  ignorePhotosInWorkspace,
+  restoreIgnoredPhotosInWorkspace
+} from '../utils/ignoredPhotoState.js';
+import { mergeScannedLocalPhotoSubpool } from '../utils/unifiedPhotoPool.js';
+import {
+  getVisibleWorkflowPhotos,
+  getWorkflowFilterCount,
+  getPhotoWorkflowStageLabel,
+  hasArchivedPhotoState,
+  isPhotoWorkflowActionable,
+  resolveArchiveDirectoryTarget,
+  resolvePhotoDirectoryTarget
+} from '../utils/photoWorkflowStage.js';
+import {
+  buildMarkiRecoveryCompletionNotice,
+  summarizeMarkiRecoveryCandidates
+} from '../utils/markiRecoveryDialog.js';
+import {
+  buildSortWorkspaceManualDraft,
+  buildSortWorkspaceSnapshotWorkspace,
+  createDebouncedSnapshotSaver,
+  getEmptySortWorkspaceSnapshotWorkspace,
+  persistMarkiWorkbenchImport,
+  readSortWorkspaceManualDraft
+} from '../utils/sortWorkspaceSnapshot.js';
+import {
+  buildArchiveFormSeed,
   buildArchiveSuggestion,
   buildCurrentPhotoArchiveServiceForm,
   buildRecognitionSuggestionDisplayModel,
@@ -19,6 +61,7 @@ import {
   getSuggestionSourceLabel,
   parseWatermarkRecord,
   regenerateArchiveSuggestion,
+  resolveCanonicalPhotoResult,
   sanitizeDraftFields,
   updateArchiveSuggestion,
   validateRequiredArchiveFields,
@@ -38,6 +81,7 @@ import {
   clearSmartSortGroups,
   generateSmartSortGroups
 } from '../utils/smartSortClient.js';
+import { buildSmartGroupDescriptor } from '../utils/smartGroupKey.js';
 
 const defaultForm = {
   project: '',
@@ -106,6 +150,19 @@ function normalizeStatusFilter(filter) {
   return filter === 'assigned' ? 'unarchived' : (filter || 'all');
 }
 
+function restoreAutomaticSnapshotPhotos(snapshotPhotos) {
+  return (Array.isArray(snapshotPhotos) ? snapshotPhotos : []).map((photo) => {
+    const localPreviewUrl = photo.originalPath
+      ? `local-photo://image/${encodeURIComponent(photo.originalPath)}`
+      : '';
+    return {
+      ...photo,
+      previewUrl: localPreviewUrl,
+      thumbnailPath: localPreviewUrl
+    };
+  });
+}
+
 export default function SortWorkspacePage({ archiveState, onNavigate, navigationRequest }) {
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
@@ -117,7 +174,36 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const processedMarkiImportRequestNoncesRef = useRef(new Set());
   const pendingMarkiFocusPhotoIdRef = useRef('');
   const markiWorkbenchStateRef = useRef(null);
+  const automaticSnapshotSaverRef = useRef(null);
   const isSortWorkspaceMountedRef = useRef(true);
+  const moreMenuRef = useRef(null);
+  if (!automaticSnapshotSaverRef.current) {
+    automaticSnapshotSaverRef.current = createDebouncedSnapshotSaver({
+      delayMs: 500,
+      save: async (workspace) => {
+        try {
+          if (typeof window.archiveAssistant?.saveSortWorkspaceSnapshot !== 'function') {
+            return {
+              success: false,
+              error: {
+                code: 'sort_workspace_snapshot_unavailable',
+                message: '工作台自动快照服务暂不可用。'
+              }
+            };
+          }
+          return await window.archiveAssistant.saveSortWorkspaceSnapshot(workspace);
+        } catch {
+          return {
+            success: false,
+            error: {
+              code: 'sort_workspace_snapshot_unavailable',
+              message: '工作台自动快照服务暂不可用。'
+            }
+          };
+        }
+      }
+    });
+  }
   const cachedSession = cachedSessionRef.current || {};
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [configs, setConfigs] = useState(null);
@@ -156,49 +242,125 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [recognitionServiceStatus, setRecognitionServiceStatus] = useState(null);
   const [rightPanelMode, setRightPanelMode] = useState(() => ['form', 'recognition'].includes(cachedSession.rightPanelMode) ? cachedSession.rightPanelMode : 'form');
   const [batchPreparationUndo, setBatchPreparationUndo] = useState(() => cachedSession.batchPreparationUndo || null);
+  const [showMarkiRecovery, setShowMarkiRecovery] = useState(false);
+  const [markiRecoveryCandidates, setMarkiRecoveryCandidates] = useState([]);
+  const [selectedMarkiRecoveryTokens, setSelectedMarkiRecoveryTokens] = useState([]);
+  const [isMarkiRecoveryBusy, setIsMarkiRecoveryBusy] = useState(false);
+  const [markiRecoveryNotice, setMarkiRecoveryNotice] = useState({ type: 'idle', text: '' });
 
-  markiWorkbenchStateRef.current = {
+  markiWorkbenchStateRef.current = buildSortWorkspaceSnapshotWorkspace({
+    photoFolder,
+    archiveRoot,
     photos,
     recognitionResultsByPhoto,
     watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto,
     selectedIds,
-    activePhotoId
-  };
+    activePhotoId,
+    smartSortResult,
+    smartSortViewMode,
+    activeSmartSortGroupId,
+    filter,
+    sortMode,
+    pageSize,
+    rightPanelMode,
+    form,
+    searchText,
+    page,
+    viewMode
+  });
 
   useEffect(() => {
     isSortWorkspaceMountedRef.current = true;
     return () => {
       isSortWorkspaceMountedRef.current = false;
+      void automaticSnapshotSaverRef.current?.flush();
+      automaticSnapshotSaverRef.current?.setEnabled(false);
     };
   }, []);
 
   useEffect(() => {
     Promise.all([
-      window.archiveAssistant.loadConfigs(),
+      window.archiveAssistant.loadConfigs()
+        .then((value) => ({ success: true, value }))
+        .catch(() => ({ success: false, value: null })),
       window.archiveAssistant.loadSettings()
-    ]).then(([loadedConfigs, loadedSettings]) => {
+        .then((value) => ({ success: true, value }))
+        .catch(() => ({ success: false, value: null })),
+      typeof window.archiveAssistant.loadSortWorkspaceSnapshot === 'function'
+        ? window.archiveAssistant.loadSortWorkspaceSnapshot().catch(() => ({
+            success: false,
+            found: true,
+            error: {
+              code: 'sort_workspace_snapshot_load_failed',
+              message: '工作台快照读取失败，已使用空工作台。'
+            }
+          }))
+        : Promise.resolve({ success: true, found: false, snapshot: null })
+    ]).then(([configsResult, settingsResult, snapshotResult]) => {
       const cachedSession = cachedSessionRef.current;
+      const loadedConfigs = configsResult.value;
+      const loadedSettings = settingsResult.value;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
       const restoredPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
       const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
+      const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
+      const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
+      const restoredPhotos = restoredFromSnapshot
+        ? restoreAutomaticSnapshotPhotos(restoredWorkspace.photos)
+        : (Array.isArray(restoredWorkspace.photos) ? restoredWorkspace.photos : []);
+      const restoredSelectedIds = Array.isArray(restoredWorkspace.selectedIds)
+        ? restoredWorkspace.selectedIds.filter((id) => restoredPhotos.some((photo) => photo.id === id))
+        : [];
+      const restoredActivePhotoId = restoredPhotos.some((photo) => photo.id === restoredWorkspace.activePhotoId)
+        ? restoredWorkspace.activePhotoId
+        : restoredSelectedIds[0] || restoredPhotos[0]?.id || '';
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
-      setForm(reconcileForm(cachedSession?.form || defaultForm, safeConfigs));
-      if (cachedSession?.photoFolder) sessionPhotoFolderRef.current = cachedSession.photoFolder;
-      setPhotoFolder(cachedSession?.photoFolder || restoredPhotoFolder);
-      if (!cachedSession?.status && restoredPhotoFolder) {
+      setForm(reconcileForm(restoredWorkspace.form || defaultForm, safeConfigs));
+      if (restoredWorkspace.photoFolder) sessionPhotoFolderRef.current = restoredWorkspace.photoFolder;
+      setPhotoFolder(restoredWorkspace.photoFolder || restoredPhotoFolder);
+      setArchiveRoot(restoredWorkspace.archiveRoot || restoredArchiveRoot || '');
+      setPhotos(restoredPhotos);
+      setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
+      setWatermarkRecordsByPhoto(restoredWorkspace.watermarkRecordsByPhoto || {});
+      setArchiveSuggestionsByPhoto(restoredWorkspace.archiveSuggestionsByPhoto || {});
+      setSelectedIds(restoredSelectedIds);
+      setActivePhotoId(restoredActivePhotoId);
+      setFilter(normalizeStatusFilter(restoredWorkspace.filter));
+      setSortMode(restoredWorkspace.sortMode || 'timeAsc');
+      setPageSize([50, 100, 200].includes(Number(restoredWorkspace.pageSize)) ? Number(restoredWorkspace.pageSize) : 50);
+      setRightPanelMode(['form', 'recognition'].includes(restoredWorkspace.rightPanelMode) ? restoredWorkspace.rightPanelMode : 'form');
+      setSmartSortResult(restoredWorkspace.smartSortResult || null);
+      setSmartSortViewMode(restoredWorkspace.smartSortViewMode || 'statusFilter');
+      setActiveSmartSortGroupId(restoredWorkspace.activeSmartSortGroupId || '');
+      setSearchText(restoredWorkspace.searchText || '');
+      setPage(Math.max(1, Number(restoredWorkspace.page) || 1));
+      setViewMode(restoredWorkspace.viewMode || 'grid');
+      if (restoredFromSnapshot) {
+        const missingCount = restoredPhotos.filter((photo) => photo.originalMissing).length;
+        setStatus({
+          type: missingCount > 0 ? 'warning' : 'success',
+          text: `已自动恢复工作台，共 ${restoredPhotos.length} 张照片。${missingCount > 0 ? `其中 ${missingCount} 张原图缺失，请核对。` : ''}`
+        });
+      } else if (!cachedSession && snapshotResult?.success === false) {
+        setStatus({
+          type: 'warning',
+          text: snapshotResult?.error?.message || '工作台快照读取失败，已使用空工作台。'
+        });
+      } else if (!configsResult.success || !settingsResult.success) {
+        setStatus({ type: 'warning', text: '部分基础配置暂未加载，工作台已使用安全默认值。' });
+      } else if (!cachedSession?.status && restoredPhotoFolder) {
         setStatus({ type: 'idle', text: '点击扫描读取当前照片目录。' });
       }
-      if (cachedSession?.archiveRoot) setArchiveRoot(cachedSession.archiveRoot);
-      else if (restoredArchiveRoot) setArchiveRoot(restoredArchiveRoot);
       hasHydratedSessionRef.current = true;
+      automaticSnapshotSaverRef.current?.setEnabled(Boolean(cachedSession) || snapshotResult?.success === true);
       setIsSessionHydrated(true);
-    }).catch((error) => {
+    }).catch(() => {
       const safeConfigs = withRuntimeConfigFallback(null);
       setConfigs(safeConfigs);
       setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs));
-      setStatus({ type: 'error', text: `配置加载失败：${error.message}` });
+      setStatus({ type: 'error', text: '配置或工作台状态加载失败，已使用安全默认值。' });
       hasHydratedSessionRef.current = true;
       setIsSessionHydrated(true);
     });
@@ -336,6 +498,52 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, []);
 
   useEffect(() => {
+    if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
+    automaticSnapshotSaverRef.current?.schedule(buildSortWorkspaceSnapshotWorkspace({
+      photoFolder,
+      archiveRoot,
+      photos,
+      selectedIds,
+      activePhotoId,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto,
+      smartSortResult,
+      smartSortViewMode,
+      activeSmartSortGroupId,
+      filter,
+      sortMode,
+      pageSize,
+      rightPanelMode,
+      form,
+      searchText,
+      page,
+      viewMode
+    }));
+  }, [
+    photoFolder,
+    archiveRoot,
+    photos,
+    selectedIds,
+    activePhotoId,
+    recognitionResultsByPhoto,
+    watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto,
+    smartSortResult,
+    smartSortViewMode,
+    activeSmartSortGroupId,
+    filter,
+    sortMode,
+    pageSize,
+    rightPanelMode,
+    form,
+    searchText,
+    page,
+    viewMode,
+    isSessionHydrated
+  ]);
+
+  useEffect(() => {
     const refreshPhotoFolder = () => synchronizePhotoFolderFromSettings();
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') refreshPhotoFolder();
@@ -349,6 +557,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, []);
 
   const smartSortGroups = useMemo(() => Array.isArray(smartSortResult?.groups) ? smartSortResult.groups : [], [smartSortResult]);
+  const smartSortGroupMembershipByPhotoId = useMemo(
+    () => buildSmartSortGroupMembershipByPhotoId(smartSortResult),
+    [smartSortResult]
+  );
+  const smartSortGroupPhotoIds = useMemo(
+    () => new Set(smartSortGroupMembershipByPhotoId.keys()),
+    [smartSortGroupMembershipByPhotoId]
+  );
   const activeSmartGroup = useMemo(
     () => smartSortGroups.find((group) => group.id === activeSmartSortGroupId) || null,
     [smartSortGroups, activeSmartSortGroupId]
@@ -364,8 +580,16 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const currentPhotoKeySet = useMemo(() => new Set(photos.flatMap((photo) => [photo.id, photo.originalPath]).filter(Boolean)), [photos]);
 
   const visiblePhotos = useMemo(() => {
-    return getVisiblePhotosSnapshot({ photos, activeSmartGroupPhotoKeys, filter, searchText, selectedIds, sortMode });
-  }, [photos, activeSmartGroupPhotoKeys, filter, searchText, selectedIds, sortMode]);
+    return getVisibleWorkflowPhotos({
+      photos,
+      activeSmartGroupPhotoKeys,
+      groupMembershipByPhotoId: smartSortGroupMembershipByPhotoId,
+      filter,
+      searchText,
+      selectedIds,
+      sortMode
+    });
+  }, [photos, activeSmartGroupPhotoKeys, smartSortGroupMembershipByPhotoId, filter, searchText, selectedIds, sortMode]);
 
   const totalPages = Math.max(1, Math.ceil(visiblePhotos.length / pageSize));
   const safePage = Math.min(page, totalPages);
@@ -376,30 +600,45 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const primaryPhoto = activePhoto || selectedPagePhoto || pagePhotos[0] || null;
   const assignedCount = photos.filter((photo) => photo.sortStatus === 'assigned').length;
   const previewPhotos = photos.filter((photo) => photo.sortStatus === 'previewed' && photo.previewInfo);
-  const pendingCount = photos.filter((photo) => !['assigned', 'previewed', 'archived', 'ignored'].includes(photo.sortStatus)).length;
+  const pendingCount = getWorkflowFilterCount(
+    'pending_sort',
+    photos,
+    [],
+    smartSortGroupMembershipByPhotoId
+  );
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
   const effectivePhotoFolder = resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
   const selectedStateText = getSelectedStateText(selectedPhotos);
   const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
-  const selectedEditablePhotos = selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo) && !photo.originalMissing);
-  const selectedIgnorableCount = selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo)).length;
+  const selectedEditablePhotos = selectedPhotos.filter((photo) => (
+    isPhotoWorkflowActionable(photo, smartSortGroupPhotoIds.has(photo.id))
+  ));
+  const selectedIgnorableCount = selectedPhotos.filter((photo) => (
+    !isArchivedPhoto(photo)
+    && !isIgnoredPhoto(photo)
+    && !photo.originalMissing
+    && photo.sortStatus !== 'archiving'
+  )).length;
   const selectedSmartResultCount = selectedEditablePhotos.filter((photo) => (
-    recognitionResultsByPhoto[photo.id]
-    || watermarkRecordsByPhoto[photo.id]
-    || archiveSuggestionsByPhoto[photo.id]
+    hasPhotoSmartSortResult(photo, smartSortGroupPhotoIds.has(photo.id))
   )).length;
   const smartSortActionLabel = selectedSmartResultCount > 0 ? '重新智拣' : '智拣';
   const smartSortActionTitle = selectedSmartResultCount > 0
-    ? '重新识别已选照片，替换当前识别结果与归档建议，并重新生成智能分组。'
-    : '对已选照片执行水印识别、解析并生成智能分组。';
+    ? '重新评估已选照片，复用可信平台数据和已有补充，并重新生成智能分组。'
+    : '按照片来源处理已选照片，并生成智能分组。';
   const selectedIgnoredCount = selectedPhotos.filter(isIgnoredPhoto).length;
   const selectedSuggestionReadyCount = selectedEditablePhotos.filter((photo) => {
     const suggestion = archiveSuggestionsByPhoto[photo.id];
     return suggestion?.suggestedFields && validateRequiredArchiveFields(suggestion.suggestedFields, configs).length === 0;
   }).length;
   const currentPanelPhoto = primaryPhoto;
+  const currentPanelSmartGroup = currentPanelPhoto
+    ? smartSortGroups.find((group) => (
+        getSmartSortGroupPhotoIds(group).includes(currentPanelPhoto.id)
+      )) || null
+    : null;
   const currentPagePhotoIndex = currentPanelPhoto
     ? pagePhotos.findIndex((photo) => photo.id === currentPanelPhoto.id)
     : -1;
@@ -455,10 +694,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const currentFormLocked = currentPhotoOriginalMissing || currentPhotoArchived || currentPhotoIgnored || currentPhotoPreviewed;
   const currentPhotoStatusText = getPhotoWorkflowStatus(currentPanelPhoto, {
     recognitionResult: currentRecognitionResult,
-    requiredFieldsComplete: currentRequiredFieldsComplete
+    requiredFieldsComplete: currentRequiredFieldsComplete,
+    smartSortGroupMember: smartSortGroupPhotoIds.has(currentPanelPhoto?.id)
   });
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
-  const batchActionsBusy = isBusy || isRecognitionBusy || isSmartSortBusy;
+  const batchActionsBusy = isBusy || isRecognitionBusy || isSmartSortBusy || isMarkiRecoveryBusy;
   const smartSortProgressVisible = isRecognitionBusy || isSmartSortBusy;
   const smartSortProgressPercent = isSmartSortBusy
     ? 92
@@ -568,42 +808,68 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         return;
       }
 
-      let merged;
+      let transactionResult;
       try {
-        merged = mergeMarkiWorkbenchImportPackage(
-          markiWorkbenchStateRef.current,
-          batchResult.workbenchImportPackage
-        );
+        transactionResult = await persistMarkiWorkbenchImport({
+          currentWorkspace: markiWorkbenchStateRef.current,
+          workbenchImportPackage: batchResult.workbenchImportPackage,
+          mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+          prepareWorkspace: ({ merged, workspace }) => (
+            merged.stats.addedCount > 0
+              ? {
+                  ...workspace,
+                  photos: invalidateSmartSortExecution(workspace.photos),
+                  smartSortResult: null,
+                  filter: 'all',
+                  searchText: '',
+                  smartSortViewMode: 'statusFilter',
+                  activeSmartSortGroupId: ''
+                }
+              : workspace
+          ),
+          saveSnapshot: (workspace) => saveAutomaticSnapshotImmediately(workspace),
+          consumeBatch: () => markiApi.consumeImportBatch(batchId),
+          commitWorkspace: (merged, workspace) => {
+            if (!isSortWorkspaceMountedRef.current) return;
+            markiWorkbenchStateRef.current = workspace;
+            const nextSession = {
+              ...(sessionSnapshotRef.current || {}),
+              ...workspace,
+              hasUnsavedChanges: merged.stats.addedCount > 0
+                ? true
+                : Boolean(sessionSnapshotRef.current?.hasUnsavedChanges)
+            };
+            sessionSnapshotRef.current = nextSession;
+            sortWorkspaceSessionCache = nextSession;
+            if (merged.stats.addedCount > 0) {
+              pendingMarkiFocusPhotoIdRef.current = merged.addedPhotoIds[0];
+            }
+            setPhotos(workspace.photos);
+            setRecognitionResultsByPhoto(workspace.recognitionResultsByPhoto);
+            setWatermarkRecordsByPhoto(workspace.watermarkRecordsByPhoto);
+            setArchiveSuggestionsByPhoto(workspace.archiveSuggestionsByPhoto);
+            setSelectedIds(workspace.selectedIds);
+            setActivePhotoId(workspace.activePhotoId);
+            setFilter(workspace.filter);
+            setSearchText(workspace.searchText);
+            setSmartSortViewMode(workspace.smartSortViewMode);
+            setActiveSmartSortGroupId(workspace.activeSmartSortGroupId);
+            if (merged.stats.addedCount > 0) setHasUnsavedChanges(true);
+          }
+        });
       } catch {
         setStatus({ type: 'error', text: '马克工作台导入包校验失败，未修改当前工作台。' });
         return;
       }
       if (!isSortWorkspaceMountedRef.current) return;
-
-      if (merged.stats.addedCount > 0) {
-        markiWorkbenchStateRef.current = merged;
-        pendingMarkiFocusPhotoIdRef.current = merged.addedPhotoIds[0];
-        setPhotos(merged.photos);
-        setRecognitionResultsByPhoto(merged.recognitionResultsByPhoto);
-        setWatermarkRecordsByPhoto(merged.watermarkRecordsByPhoto);
-        setArchiveSuggestionsByPhoto(merged.archiveSuggestionsByPhoto);
-        setSelectedIds(merged.selectedIds);
-        setActivePhotoId(merged.activePhotoId);
-        setFilter('all');
-        setSearchText('');
-        setSmartSortViewMode('statusFilter');
-        setActiveSmartSortGroupId('');
-        setHasUnsavedChanges(true);
+      if (transactionResult.stage === 'snapshot') {
+        setStatus({
+          type: 'error',
+          text: '马克照片尚未加入工作台：自动快照保存失败，导入批次仍可重试。'
+        });
+        return;
       }
-
-      let consumeResult;
-      try {
-        consumeResult = await markiApi.consumeImportBatch(batchId);
-      } catch {
-        consumeResult = { success: false };
-      }
-      if (!isSortWorkspaceMountedRef.current) return;
-      if (consumeResult?.success !== true) {
+      if (transactionResult.consumeResult?.success !== true) {
         setStatus({
           type: 'warning',
           text: '照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。'
@@ -611,6 +877,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         return;
       }
 
+      const merged = transactionResult.merged;
       const { addedCount, duplicateCount, conflictCount } = merged.stats;
       if (addedCount === 0 && duplicateCount > 0 && conflictCount === 0) {
         setStatus({ type: 'success', text: '本批照片均已存在，未重复追加。' });
@@ -694,17 +961,22 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setRightPanelMode('form');
       return;
     }
-    const suggestion = archiveSuggestionsByPhoto[currentPanelPhoto.id];
-    if (suggestion?.suggestedFields) {
-      setForm(sanitizeDraftFields(suggestion.suggestedFields, configs));
-      return;
-    }
-    if (currentPanelPhoto.archiveInfo) {
-      setForm(sanitizeDraftFields(toArchiveForm(currentPanelPhoto.archiveInfo), configs));
-      return;
-    }
-    setForm(reconcileForm(defaultForm, configs));
-  }, [currentPanelPhoto, configs, archiveSuggestionsByPhoto]);
+    setForm(buildArchiveFormSeed({
+      photo: currentPanelPhoto,
+      recognitionResult: recognitionResultsByPhoto[currentPanelPhoto.id],
+      watermarkRecord: watermarkRecordsByPhoto[currentPanelPhoto.id],
+      archiveSuggestion: archiveSuggestionsByPhoto[currentPanelPhoto.id],
+      group: currentPanelSmartGroup,
+      configs
+    }));
+  }, [
+    currentPanelPhoto,
+    currentPanelSmartGroup,
+    configs,
+    recognitionResultsByPhoto,
+    watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto
+  ]);
 
   useEffect(() => {
     rightPanelRef.current?.scrollTo({ top: 0 });
@@ -712,6 +984,237 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   function markChanged() {
     setHasUnsavedChanges(true);
+  }
+
+  async function saveAutomaticSnapshotImmediately(workspace) {
+    const result = await automaticSnapshotSaverRef.current.flush(workspace);
+    if (result?.success === true) {
+      automaticSnapshotSaverRef.current.setEnabled(true);
+    }
+    return result;
+  }
+
+  function applyAutomaticSnapshotWorkspace(workspace) {
+    const restoredPhotos = restoreAutomaticSnapshotPhotos(workspace?.photos);
+    const restoredPhotoIds = new Set(restoredPhotos.map((photo) => photo.id));
+    const restoredSelectedIds = Array.isArray(workspace?.selectedIds)
+      ? workspace.selectedIds.filter((photoId) => restoredPhotoIds.has(photoId))
+      : [];
+    const restoredActivePhotoId = restoredPhotoIds.has(workspace?.activePhotoId)
+      ? workspace.activePhotoId
+      : restoredSelectedIds[0] || restoredPhotos[0]?.id || '';
+    const restoredWorkspace = {
+      ...workspace,
+      photos: restoredPhotos,
+      selectedIds: restoredSelectedIds,
+      activePhotoId: restoredActivePhotoId
+    };
+    markiWorkbenchStateRef.current = restoredWorkspace;
+    const nextSession = {
+      ...(sessionSnapshotRef.current || {}),
+      ...restoredWorkspace,
+      hasUnsavedChanges: true
+    };
+    sessionSnapshotRef.current = nextSession;
+    sortWorkspaceSessionCache = nextSession;
+    if (restoredActivePhotoId) pendingMarkiFocusPhotoIdRef.current = restoredActivePhotoId;
+    rememberSessionPhotoFolder(restoredWorkspace.photoFolder || '');
+    setArchiveRoot(restoredWorkspace.archiveRoot || '');
+    if (restoredWorkspace.archiveRoot) {
+      archiveState?.setCurrentArchiveRoot?.(restoredWorkspace.archiveRoot);
+    }
+    setPhotos(restoredPhotos);
+    setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
+    setWatermarkRecordsByPhoto(restoredWorkspace.watermarkRecordsByPhoto || {});
+    setArchiveSuggestionsByPhoto(restoredWorkspace.archiveSuggestionsByPhoto || {});
+    setSelectedIds(restoredSelectedIds);
+    setActivePhotoId(restoredActivePhotoId);
+    setFilter(normalizeStatusFilter(restoredWorkspace.filter));
+    setSearchText(restoredWorkspace.searchText || '');
+    setSmartSortResult(restoredWorkspace.smartSortResult || null);
+    setSmartSortViewMode(restoredWorkspace.smartSortViewMode || 'statusFilter');
+    setActiveSmartSortGroupId(restoredWorkspace.activeSmartSortGroupId || '');
+    setSortMode(restoredWorkspace.sortMode || 'timeAsc');
+    setPageSize([50, 100, 200].includes(Number(restoredWorkspace.pageSize))
+      ? Number(restoredWorkspace.pageSize)
+      : 50);
+    setRightPanelMode(['form', 'recognition'].includes(restoredWorkspace.rightPanelMode)
+      ? restoredWorkspace.rightPanelMode
+      : 'form');
+    setForm(reconcileForm(restoredWorkspace.form || defaultForm, configs));
+    setViewMode(restoredWorkspace.viewMode || 'grid');
+    setPage(Math.max(1, Number(restoredWorkspace.page) || 1));
+    setHasUnsavedChanges(true);
+  }
+
+  async function scanDownloadedMarkiPhotos() {
+    if (isMarkiRecoveryBusy) return;
+    setIsMarkiRecoveryBusy(true);
+    setShowMarkiRecovery(true);
+    setMarkiRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
+    setStatus({ type: 'idle', text: '正在核对已下载的马克照片...' });
+    try {
+      const snapshotResult = await saveAutomaticSnapshotImmediately(
+        markiWorkbenchStateRef.current
+      );
+      if (snapshotResult?.success !== true) {
+        setStatus({
+          type: 'error',
+          text: '当前工作台快照保存失败，已停止扫描以避免重复照片。'
+        });
+        setMarkiRecoveryNotice({
+          type: 'error',
+          text: '当前工作台快照保存失败，已停止核对以避免重复照片。'
+        });
+        return;
+      }
+      const markiApi = window.archiveAssistant?.marki;
+      if (typeof markiApi?.scanWorkbenchRecoveryCandidates !== 'function') {
+        setStatus({ type: 'error', text: '马克照片恢复服务暂不可用，请重新打开软件后再试。' });
+        setMarkiRecoveryNotice({
+          type: 'error',
+          text: 'Marki 照片恢复服务暂不可用，请重新打开软件后再试。'
+        });
+        return;
+      }
+      const result = await markiApi.scanWorkbenchRecoveryCandidates();
+      if (result?.success !== true) {
+        setMarkiRecoveryCandidates([]);
+        setSelectedMarkiRecoveryTokens([]);
+        setStatus({
+          type: 'error',
+          text: result?.error?.message || '已下载马克照片扫描失败，请重试。'
+        });
+        setMarkiRecoveryNotice({
+          type: 'error',
+          text: result?.error?.message || '已下载 Marki 照片核对失败，请重试。'
+        });
+        return;
+      }
+      const items = Array.isArray(result.items) ? result.items : [];
+      const summary = summarizeMarkiRecoveryCandidates(items);
+      const recoverableCount = summary.recoverable;
+      const abnormalCount = summary.missingFile + summary.abnormal;
+      setMarkiRecoveryCandidates(items);
+      setSelectedMarkiRecoveryTokens([]);
+      setMarkiRecoveryNotice({
+        type: abnormalCount > 0 ? 'warning' : 'success',
+        text: recoverableCount > 0
+          ? `发现 ${recoverableCount} 张可恢复照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常` : ''}。`
+          : `当前没有可恢复照片${abnormalCount > 0 ? `，检测到 ${abnormalCount} 项异常` : ''}。`
+      });
+      setStatus({
+        type: abnormalCount > 0 ? 'warning' : 'success',
+        text: recoverableCount > 0
+          ? `发现 ${recoverableCount} 张已下载但不在工作台的马克照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常需核对` : ''}。`
+          : `没有发现可恢复的马克照片${abnormalCount > 0 ? `；检测到 ${abnormalCount} 项异常来源资料` : ''}。`
+      });
+    } catch {
+      setMarkiRecoveryNotice({ type: 'error', text: '已下载 Marki 照片核对失败，请重试。' });
+      setStatus({ type: 'error', text: '已下载马克照片扫描失败，请重试。' });
+    } finally {
+      setIsMarkiRecoveryBusy(false);
+    }
+  }
+
+  function openMarkiRecoveryDialog() {
+    if (moreMenuRef.current) moreMenuRef.current.open = false;
+    if (showMarkiRecovery) return;
+    setShowMarkiRecovery(true);
+    setMarkiRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
+    void scanDownloadedMarkiPhotos();
+  }
+
+  function closeMarkiRecoveryDialog() {
+    if (isMarkiRecoveryBusy) return;
+    setShowMarkiRecovery(false);
+  }
+
+  function toggleMarkiRecoverySelection(recoveryToken) {
+    setSelectedMarkiRecoveryTokens((current) => (
+      current.includes(recoveryToken)
+        ? current.filter((token) => token !== recoveryToken)
+        : [...current, recoveryToken]
+    ));
+  }
+
+  async function recoverDownloadedMarkiPhotos(recoveryTokens = selectedMarkiRecoveryTokens) {
+    const safeRecoveryTokens = Array.from(new Set(
+      (Array.isArray(recoveryTokens) ? recoveryTokens : [])
+        .map((token) => String(token || '').trim())
+        .filter(Boolean)
+    ));
+    if (isMarkiRecoveryBusy || safeRecoveryTokens.length === 0) return;
+    setIsMarkiRecoveryBusy(true);
+    setMarkiRecoveryNotice({ type: 'idle', text: '正在恢复选中的 Marki 照片...' });
+    setStatus({ type: 'idle', text: '正在恢复已下载的马克照片...' });
+    try {
+      const markiApi = window.archiveAssistant?.marki;
+      const result = await markiApi?.recoverWorkbenchCandidates?.({
+        recoveryTokens: safeRecoveryTokens
+      });
+      if (result?.success !== true) {
+        setMarkiRecoveryNotice({
+          type: 'error',
+          text: result?.error?.message || '恢复已下载 Marki 照片失败，请重试。'
+        });
+        setStatus({
+          type: 'error',
+          text: result?.error?.message || '恢复已下载马克照片失败，请重试。'
+        });
+        return;
+      }
+      if (result.status === 'nothing_to_recover') {
+        const recoveredTokens = new Set(safeRecoveryTokens);
+        setMarkiRecoveryCandidates((current) => current.map((item) => (
+          recoveredTokens.has(item.recoveryToken)
+            ? { ...item, status: 'already_in_workbench' }
+            : item
+        )));
+        setSelectedMarkiRecoveryTokens([]);
+        setMarkiRecoveryNotice({ type: 'success', text: '所选照片已在当前工作台中，未重复恢复。' });
+        setStatus({ type: 'success', text: '所选马克照片已在当前工作台中，未重复恢复。' });
+        return;
+      }
+      const snapshotResult = await window.archiveAssistant.loadSortWorkspaceSnapshot();
+      if (
+        snapshotResult?.success !== true
+        || snapshotResult?.found !== true
+        || !snapshotResult.snapshot?.workspace
+      ) {
+        setStatus({
+          type: 'warning',
+          text: '马克照片已写入自动快照，但界面刷新失败；重新进入工作台即可恢复。'
+        });
+        setMarkiRecoveryNotice({
+          type: 'warning',
+          text: '照片已写入自动快照，但界面刷新失败；重新进入工作台即可恢复。'
+        });
+        return;
+      }
+      applyAutomaticSnapshotWorkspace(snapshotResult.snapshot.workspace);
+      const recoveredTokens = new Set(safeRecoveryTokens);
+      setMarkiRecoveryCandidates((current) => current.map((item) => (
+        recoveredTokens.has(item.recoveryToken)
+          ? { ...item, status: 'already_in_workbench' }
+          : item
+      )));
+      setSelectedMarkiRecoveryTokens([]);
+      const completionNotice = buildMarkiRecoveryCompletionNotice(result);
+      setMarkiRecoveryNotice({
+        type: Number(result.conflictCount) > 0 ? 'warning' : 'success',
+        text: completionNotice
+      });
+      setStatus({
+        type: Number(result.conflictCount) > 0 ? 'warning' : 'success',
+        text: completionNotice
+      });
+    } catch {
+      setMarkiRecoveryNotice({ type: 'error', text: '恢复已下载 Marki 照片失败，请重试。' });
+      setStatus({ type: 'error', text: '恢复已下载马克照片失败，请重试。' });
+    } finally {
+      setIsMarkiRecoveryBusy(false);
+    }
   }
 
   // Only source-state mutations invalidate the one-step batch undo snapshot.
@@ -916,7 +1419,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   async function selectPhotoFolder({ scanAfterSelect = false } = {}) {
     const selected = await window.archiveAssistant.selectPhotoFolder();
     if (!selected) return false;
-    if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录并扫描会覆盖当前列表和分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
+    if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录后会把新目录中的照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return false;
     }
     rememberSessionPhotoFolder(selected);
@@ -930,27 +1433,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     return true;
   }
 
-  async function selectArchiveRoot() {
-    const selected = await window.archiveAssistant.selectArchiveRoot();
-    if (!selected) return;
-    const hadPreview = previewPhotos.length > 0;
-    setArchiveRoot(selected);
-    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
-    setSettings(nextSettings);
-    archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
-    if (hadPreview) {
-      setPhotos((current) => current.map(clearGeneratedPreview));
-    }
-    markChanged();
-    setStatus({ type: hadPreview ? 'warning' : 'success', text: hadPreview ? '归档根目录已变更，分拣信息已变化，请重新生成归档预览。' : '归档根目录已选择，分拣预览和台账将写入该目录。' });
-  }
-
   async function scanPhotos(force = false, folder = photoFolder) {
     if (!folder) {
       setStatus({ type: 'error', text: '请先选择照片文件夹。' });
       return;
     }
-    if (!force && photos.length > 0 && !window.confirm('重新扫描会覆盖当前列表和分拣状态，但不会删除、移动或修改原图。确定继续吗？')) {
+    if (!force && photos.length > 0 && !window.confirm('重新扫描会把尚未存在的新照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return;
     }
     setIsBusy(true);
@@ -976,29 +1464,84 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           });
         }
       }
-      const reconciledPhotos = reconcileScannedPhotoStatuses(scanned, photos, archivedMatches);
-      const archivedCount = reconciledPhotos.filter(hasArchivedPhotoState).length;
+      const mergedPool = mergeScannedLocalPhotoSubpool({
+        currentPhotos: photos,
+        scannedPhotos: scanned,
+        archivedMatches,
+        recognitionResultsByPhoto,
+        watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto,
+        selectedIds,
+        activePhotoId
+      });
+      const nextSmartSortResult = mergedPool.localPoolChanged ? null : smartSortResult;
+      const nextSmartSortViewMode = mergedPool.localPoolChanged ? 'statusFilter' : smartSortViewMode;
+      const nextActiveSmartSortGroupId = mergedPool.localPoolChanged ? '' : activeSmartSortGroupId;
+      const archivedCount = mergedPool.photos.filter((photo) => (
+        photo.sourceType === 'local_file' && hasArchivedPhotoState(photo)
+      )).length;
+      const scannedWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        ...markiWorkbenchStateRef.current,
+        photoFolder: folder,
+        photos: mergedPool.photos,
+        selectedIds: mergedPool.selectedIds,
+        activePhotoId: mergedPool.activePhotoId,
+        recognitionResultsByPhoto: mergedPool.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: mergedPool.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: mergedPool.archiveSuggestionsByPhoto,
+        smartSortResult: nextSmartSortResult,
+        smartSortViewMode: nextSmartSortViewMode,
+        activeSmartSortGroupId: nextActiveSmartSortGroupId,
+        filter: 'all',
+        page: 1
+      });
+      const snapshotResult = await saveAutomaticSnapshotImmediately(scannedWorkspace);
+      if (snapshotResult?.success !== true) {
+        setStatus({ type: 'error', text: '扫描结果未载入：自动快照保存失败，请重试。' });
+        return;
+      }
       invalidateBatchPreparationUndo();
-      resetSmartSortState({ type: 'idle', text: '' });
-      setRecognitionResultsByPhoto({});
-      setWatermarkRecordsByPhoto({});
-      setArchiveSuggestionsByPhoto({});
+      if (mergedPool.localPoolChanged) {
+        resetSmartSortState({
+          type: 'warning',
+          text: '本地照片子池已更新，原智能分组已失效；马克平台数据和未变化照片的识别结果已保留。'
+        });
+        void clearSmartSortGroups();
+      }
+      setRecognitionResultsByPhoto(mergedPool.recognitionResultsByPhoto);
+      setWatermarkRecordsByPhoto(mergedPool.watermarkRecordsByPhoto);
+      setArchiveSuggestionsByPhoto(mergedPool.archiveSuggestionsByPhoto);
       setRecognitionMessage({ type: 'idle', text: '' });
-      void clearSmartSortGroups();
-      setPhotos(reconciledPhotos);
-      setSelectedIds([]);
-      setActivePhotoId(reconciledPhotos[0]?.id || '');
+      setPhotos(mergedPool.photos);
+      setSelectedIds(mergedPool.selectedIds);
+      setActivePhotoId(mergedPool.activePhotoId);
       setPage(1);
       switchStatusFilter('all');
-      setSmartSortViewMode('statusFilter');
-      setActiveSmartSortGroupId('');
+      if (!mergedPool.localPoolChanged) {
+        setSmartSortViewMode(nextSmartSortViewMode);
+        setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
+      }
       setEditingPhotoId('');
+      markiWorkbenchStateRef.current = scannedWorkspace;
+      sessionSnapshotRef.current = {
+        ...(sessionSnapshotRef.current || {}),
+        ...scannedWorkspace,
+        hasUnsavedChanges: true
+      };
+      sortWorkspaceSessionCache = sessionSnapshotRef.current;
       markChanged();
+      const {
+        retainedMarkiCount,
+        addedLocalCount,
+        retainedLocalCount,
+        duplicateCount,
+        rejectedCount
+      } = mergedPool.stats;
       setStatus({
-        type: archiveMatchWarning ? 'warning' : 'success',
+        type: archiveMatchWarning || rejectedCount ? 'warning' : 'success',
         text: archiveMatchWarning
-          ? `扫描完成，共找到 ${scanned.length} 张照片；内容指纹核对失败，“未归档”状态可能不完整。`
-          : `扫描完成，共找到 ${scanned.length} 张照片，其中 ${archivedCount} 张已有归档记录。`
+          ? `本地照片扫描完成；已保留 ${retainedMarkiCount} 张马克照片。内容指纹核对失败，“未归档”状态可能不完整。`
+          : `本地照片扫描完成：新增 ${addedLocalCount} 张、跳过重复 ${duplicateCount} 张；保留原有 ${retainedLocalCount} 张本地照片和 ${retainedMarkiCount} 张马克照片，其中 ${archivedCount} 张本地照片已有归档记录。${rejectedCount ? `另有 ${rejectedCount} 条缺少有效内容指纹或来源异常的扫描结果未加入照片池。` : ''}`
       });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
@@ -1016,9 +1559,22 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     await selectPhotoFolder({ scanAfterSelect: true });
   }
 
-  function clearList() {
+  async function clearList() {
     if (photos.length === 0) return;
     if (!window.confirm('仅清空当前分拣列表和分拣状态，不会删除原始照片。确定清空吗？')) return;
+    const emptyWorkspace = getEmptySortWorkspaceSnapshotWorkspace({
+      archiveRoot,
+      form,
+      sortMode,
+      pageSize,
+      rightPanelMode,
+      viewMode
+    });
+    const snapshotResult = await saveAutomaticSnapshotImmediately(emptyWorkspace);
+    if (snapshotResult?.success !== true) {
+      setStatus({ type: 'error', text: '工作台未清空：自动快照保存失败，请重试。' });
+      return;
+    }
     sortWorkspaceSessionCache = null;
     sessionSnapshotRef.current = null;
     setPhotos([]);
@@ -1057,7 +1613,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setIsSmartSortBusy(true);
     setSmartSortMessage({ type: 'idle', text: '正在整理智能分拣分组...' });
     try {
-      const result = await generateSmartSortGroups(normalizePhotosForSmartSort(targetPhotos, recognitionMap, suggestionMap, watermarkMap), {
+      const result = await generateSmartSortGroups(normalizePhotosForSmartSort(
+        targetPhotos,
+        recognitionMap,
+        suggestionMap,
+        watermarkMap,
+        configs
+      ), {
         timeWindowMinutes: 30,
         maxPhotosPerGroup: 10,
         source: options.source || 'selected_photos'
@@ -1097,23 +1659,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setRecognitionMessage({ type: 'warning', text: '请先选择需要处理的照片。' });
       return;
     }
-    const rerunCount = targets.filter((photo) => recognitionResultsByPhoto[photo.id]).length;
-    if (alsoSort && confirmRerun && rerunCount > 0 && !window.confirm(`已选照片中有 ${rerunCount} 张已有智拣结果。\n\n重新智拣将替换这些照片的识别结果和归档建议，并重新生成分组。是否继续？`)) return;
-    const latestServiceStatus = await getRecognitionStatus();
-    setRecognitionServiceStatus(latestServiceStatus);
-    if (!latestServiceStatus?.available) {
-      const reason = latestServiceStatus?.reason || '未检测到可用 OCR 引擎。';
-      setRecognitionMessage({ type: 'error', text: reason });
-      setSmartSortMessage({ type: 'error', text: `OCR 引擎不可用：${reason}` });
-      void recordRuntimeLog({
-        page: '照片分拣工作台',
-        operation: 'OCR 引擎检测',
-        errorType: 'OCR 识别',
-        summary: reason,
-        level: 'error'
-      });
-      return;
-    }
+    const rerunCount = targets.filter((photo) => (
+      hasPhotoSmartSortResult(photo, smartSortGroupPhotoIds.has(photo.id))
+    )).length;
+    if (alsoSort && confirmRerun && rerunCount > 0 && !window.confirm(`已选照片中有 ${rerunCount} 张已有智拣结果。\n\n系统会保留完整的马克平台结构化数据，仅对本地照片或缺少必要字段的马克照片执行 OCR。是否继续？`)) return;
     const previousStagedIdByPhotoId = new Map(targets.map((photo) => [
       photo.id,
       recognitionResultsByPhoto[photo.id]?.stagedResultId || ''
@@ -1122,75 +1671,247 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     invalidateBatchPreparationUndo();
     setIsRecognitionBusy(true);
     setRecognitionProgress({ current: 0, total: targets.length });
-    setRecognitionMessage({ type: 'idle', text: `正在识别 0 / ${targets.length}` });
+    setRecognitionMessage({ type: 'idle', text: `正在智拣 0 / ${targets.length}` });
+    const runningPhotos = alsoSort
+      ? beginSmartSortExecution(photos, selectedPhotoIdsSnapshot)
+      : photos;
+    if (alsoSort) setPhotos(runningPhotos);
     try {
-      const results = [];
-      for (let index = 0; index < targets.length; index += 1) {
-        setRecognitionProgress({ current: index + 1, total: targets.length });
-        setRecognitionMessage({ type: 'idle', text: `正在识别 ${index + 1} / ${targets.length}` });
-        const result = await recognizePhoto(toRecognitionPhoto(targets[index]), { allowCloudUpload: false });
-        results.push(result);
-        const previousStagedId = previousStagedIdByPhotoId.get(targets[index].id);
-        if (previousStagedId && result?.stagedResultId && previousStagedId !== result.stagedResultId) {
-          const updatedPreviousRecord = await updateStagedResultStatus(previousStagedId, 'superseded');
-          if (!updatedPreviousRecord) supersedeSyncFailedCount += 1;
-        }
+      const orchestration = await orchestrateSourceAwareRecognition({
+        photos: targets,
+        recognitionResultsByPhoto,
+        watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto,
+        getOcrAvailability: async () => {
+          const latestServiceStatus = await getRecognitionStatus();
+          setRecognitionServiceStatus(latestServiceStatus);
+          if (!latestServiceStatus?.available) {
+            const reason = latestServiceStatus?.reason || '未检测到可用 OCR 引擎。';
+            void recordRuntimeLog({
+              page: '照片分拣工作台',
+              operation: 'OCR 引擎检测',
+              errorType: 'OCR 识别',
+              summary: reason,
+              level: 'error'
+            });
+          }
+          return latestServiceStatus;
+        },
+        recognizePhoto: (photo) => recognizePhoto(toRecognitionPhoto(photo), { allowCloudUpload: false }),
+        buildOcrArtifacts: ({ photo, route, recognitionResult }) => {
+          const watermarkRecord = parseWatermarkRecord({ ...recognitionResult, photoId: photo.id });
+          const suggestionContext = buildArchiveSuggestionContext({ configs, form, photoFolder, archiveRoot, photo });
+          return {
+            recognitionResult,
+            watermarkRecord,
+            archiveSuggestion: buildArchiveSuggestion(
+              watermarkRecord,
+              route === 'marki_ocr_fallback'
+                ? { ...suggestionContext, currentProject: '' }
+                : suggestionContext
+            )
+          };
+        },
+        getPhotoSortStatus: getPhotoRecognitionSortStatus,
+        onProgress: ({ current, total, route }) => {
+          const routeText = ['marki_platform_only', 'marki_existing_supplement'].includes(route)
+            ? '正在使用已有可信数据'
+            : '正在识别';
+          setRecognitionProgress({ current, total });
+          setRecognitionMessage({ type: 'idle', text: `${routeText} ${current} / ${total}` });
+        },
+        onOcrResult: async ({ photo, result }) => {
+          const previousStagedId = previousStagedIdByPhotoId.get(photo.id);
+          if (previousStagedId && result?.stagedResultId && previousStagedId !== result.stagedResultId) {
+            const updatedPreviousRecord = await updateStagedResultStatus(previousStagedId, 'superseded');
+            if (!updatedPreviousRecord) supersedeSyncFailedCount += 1;
+          }
+        },
+        generateGroups: alsoSort
+          ? ({ photos: groupPhotos, recognitionResultsByPhoto: recognitionMap, archiveSuggestionsByPhoto: suggestionMap, watermarkRecordsByPhoto: watermarkMap }) => (
+              generateSmartSortGroups(
+                normalizePhotosForSmartSort(
+                  groupPhotos,
+                  recognitionMap,
+                  suggestionMap,
+                  watermarkMap,
+                  configs
+                ),
+                {
+                  timeWindowMinutes: 30,
+                  maxPhotosPerGroup: 10,
+                  source: 'selected_photos'
+                }
+              )
+            )
+          : null
+      });
+      const processedPhotoById = new Map(orchestration.photos.map((photo) => [photo.id, photo]));
+      const processedWorkspacePhotos = runningPhotos.map((photo) => processedPhotoById.get(photo.id) || photo);
+      const smartGroupContextByPhotoId = Object.fromEntries(
+        normalizePhotosForSmartSort(
+          processedWorkspacePhotos,
+          orchestration.recognitionResultsByPhoto,
+          orchestration.archiveSuggestionsByPhoto,
+          orchestration.watermarkRecordsByPhoto,
+          configs
+        ).map((photo) => [photo.photoId, photo])
+      );
+      const nextSmartSortResult = alsoSort
+        ? mergeScopedSmartSortResult({
+            previousSmartSortResult: smartSortResult,
+            nextSmartSortResult: orchestration.smartSortResult,
+            targetPhotoIds: selectedPhotoIdsSnapshot,
+            groupContextByPhotoId: smartGroupContextByPhotoId
+          })
+        : null;
+      const nextPhotos = alsoSort
+        ? completeSmartSortExecution({
+            photos: processedWorkspacePhotos,
+            targetPhotoIds: selectedPhotoIdsSnapshot,
+            processingResults: orchestration.processingResults,
+            smartSortResult: nextSmartSortResult,
+            smartSortError: orchestration.smartSortError
+          })
+        : processedWorkspacePhotos;
+      const currentTargetActivePhotoId = (
+        !currentPanelPhoto?.id || !selectedSnapshotSet.has(currentPanelPhoto.id)
+      )
+        ? targets[0]?.id || ''
+        : activePhotoId;
+      const smartSortPresentation = alsoSort && orchestration.smartSortResult
+        ? buildSourceAwareSmartSortPresentation({
+            smartSortResult: orchestration.smartSortResult,
+            currentActivePhotoId: currentTargetActivePhotoId
+          })
+        : null;
+      const nextSmartSortViewMode = smartSortPresentation?.smartSortViewMode
+        || (alsoSort ? smartSortViewMode : 'statusFilter');
+      const nextActiveSmartSortGroupId = smartSortPresentation
+        ? smartSortPresentation.activeSmartSortGroupId
+        : alsoSort
+          ? activeSmartSortGroupId
+          : '';
+      const nextActivePhotoId = smartSortPresentation?.activePhotoId || currentTargetActivePhotoId;
+
+      setRecognitionResultsByPhoto(orchestration.recognitionResultsByPhoto);
+      setWatermarkRecordsByPhoto(orchestration.watermarkRecordsByPhoto);
+      setArchiveSuggestionsByPhoto(orchestration.archiveSuggestionsByPhoto);
+      setPhotos(nextPhotos);
+      const panelPhotoId = currentPanelPhoto?.id && selectedSnapshotSet.has(currentPanelPhoto.id)
+        ? currentPanelPhoto.id
+        : targets[0]?.id;
+      let nextForm = form;
+      const panelPhoto = nextPhotos.find((photo) => photo.id === panelPhotoId) || null;
+      if (panelPhoto) {
+        const panelGroupId = buildSmartSortGroupMembershipByPhotoId(nextSmartSortResult)
+          .get(panelPhoto.id);
+        const panelGroup = Array.isArray(nextSmartSortResult?.groups)
+          ? nextSmartSortResult.groups.find((group) => group.id === panelGroupId) || null
+          : null;
+        nextForm = buildArchiveFormSeed({
+          photo: panelPhoto,
+          recognitionResult: orchestration.recognitionResultsByPhoto[panelPhoto.id],
+          watermarkRecord: orchestration.watermarkRecordsByPhoto[panelPhoto.id],
+          archiveSuggestion: orchestration.archiveSuggestionsByPhoto[panelPhoto.id],
+          group: panelGroup,
+          configs
+        });
+        setForm(nextForm);
       }
-      const resultEntries = Object.fromEntries(results.map((result, index) => [targets[index].id, result]));
-      const nextMap = {
-        ...recognitionResultsByPhoto,
-        ...resultEntries
-      };
-      setRecognitionResultsByPhoto(nextMap);
-      const watermarkEntries = Object.fromEntries(results.map((result, index) => {
-        const photo = targets[index];
-        return [photo.id, parseWatermarkRecord({ ...result, photoId: photo.id })];
-      }));
-      const suggestionEntries = Object.fromEntries(results.map((result, index) => {
-        const photo = targets[index];
-        const watermarkRecord = watermarkEntries[photo.id];
-        return [photo.id, buildArchiveSuggestion(watermarkRecord, buildArchiveSuggestionContext({ configs, form, photoFolder, archiveRoot, photo }))];
-      }));
-      setWatermarkRecordsByPhoto((current) => ({ ...current, ...watermarkEntries }));
-      setArchiveSuggestionsByPhoto((current) => ({ ...current, ...suggestionEntries }));
-      setPhotos((current) => current.map((photo) => {
-        const suggestion = suggestionEntries[photo.id];
-        if (!suggestion || isIgnoredPhoto(photo) || isArchivedPhoto(photo)) return photo;
-        return {
-          ...photo,
-          sortStatus: getPhotoRecognitionSortStatus(resultEntries[photo.id], suggestion),
-          previewInfo: null,
-          archiveResult: null
-        };
-      }));
-      const panelPhotoId = currentPanelPhoto?.id || targets[0]?.id;
-      if (panelPhotoId && suggestionEntries[panelPhotoId]) {
-        setForm(sanitizeDraftFields(suggestionEntries[panelPhotoId].suggestedFields, configs));
-      }
-      const batchSummary = summarizeRecognitionBatch(results);
-      const recognitionNeedsAttention = batchSummary.empty > 0 || batchSummary.failed > 0 || supersedeSyncFailedCount > 0;
+      const { stats } = orchestration;
+      const recognitionNeedsAttention = stats.failedCount > 0
+        || stats.needsManualCount > 0
+        || stats.ocrUnavailableCount > 0
+        || supersedeSyncFailedCount > 0;
       setRecognitionMessage({
         type: recognitionNeedsAttention ? 'warning' : 'success',
-        text: `识别完成：成功 ${batchSummary.success} 张，未检测到水印文字 ${batchSummary.empty} 张（已转待补充），失败 ${batchSummary.failed} 张${batchSummary.pending ? `，待确认 ${batchSummary.pending} 张` : ''}。${supersedeSyncFailedCount ? `另有 ${supersedeSyncFailedCount} 条旧记录未能标记为已替代，请在数据中心核对。` : ''}`
+        text: buildSourceAwareRecognitionNotice(stats, { supersedeSyncFailedCount })
       });
       setRightPanelMode('form');
-      if (!currentPanelPhoto?.id || !selectedSnapshotSet.has(currentPanelPhoto.id)) {
-        setActivePhotoId(targets[0]?.id || '');
-      }
+      setActivePhotoId(nextActivePhotoId);
       if (alsoSort) {
-        const hasExecutedOcr = results.some(hasLocalOcrExecuted);
-        if (!hasExecutedOcr && batchSummary.success === 0 && batchSummary.empty === 0) {
-          setSmartSortMessage({ type: 'error', text: '未检测到可用 OCR 引擎，无法执行智能识别分拣。' });
-          return;
+        setSmartSortResult(nextSmartSortResult);
+        setSmartSortViewMode(nextSmartSortViewMode);
+        setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
+        if (orchestration.smartSortResult) {
+          if (smartSortPresentation?.hasVisibleGroup) {
+            setSearchText(smartSortPresentation.searchText);
+            setPage(smartSortPresentation.page);
+          }
+          if (orchestration.smartSortResult.status === 'failed') {
+            setSmartSortMessage({
+              type: 'error',
+              text: orchestration.smartSortResult.errors?.[0]?.message || '分拣组生成失败，识别结果已保留。'
+            });
+          } else if (orchestration.smartSortResult.groupCount > 0) {
+            setSmartSortMessage({
+              type: recognitionNeedsAttention ? 'warning' : 'success',
+              text: `智拣完成：已处理 ${Number(orchestration.smartSortResult.photoCount) || targets.length} 张照片，生成 ${orchestration.smartSortResult.groupCount} 个分组，已显示第一个分组。`
+            });
+          } else {
+            setSmartSortMessage({ type: 'warning', text: '当前照片缺少足够识别信息，暂未形成有效分组，您仍可手动选择照片进行归档。' });
+          }
+        } else if (orchestration.smartSortError) {
+          setSmartSortMessage({ type: 'error', text: orchestration.smartSortError.message });
+        } else {
+          const unavailableReason = orchestration.ocrAvailability?.reason || '未检测到可用 OCR 引擎。';
+          setSmartSortMessage({ type: 'error', text: `OCR 引擎不可用：${unavailableReason}` });
         }
-        await generateSmartGroups(targets, nextMap, { source: 'selected_photos' }, suggestionEntries, watermarkEntries);
       } else if (smartSortResult) {
         await clearSmartSortGroups();
         resetSmartSortState({ type: 'warning', text: '识别结果已更新，原智能分组已失效；可重新智拣生成分组。' });
       }
+      const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        ...markiWorkbenchStateRef.current,
+        photos: nextPhotos,
+        recognitionResultsByPhoto: orchestration.recognitionResultsByPhoto,
+        watermarkRecordsByPhoto: orchestration.watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto: orchestration.archiveSuggestionsByPhoto,
+        smartSortResult: nextSmartSortResult,
+        smartSortViewMode: nextSmartSortViewMode,
+        activeSmartSortGroupId: nextActiveSmartSortGroupId,
+        searchText: smartSortPresentation?.hasVisibleGroup ? smartSortPresentation.searchText : searchText,
+        page: smartSortPresentation?.hasVisibleGroup ? smartSortPresentation.page : page,
+        form: nextForm,
+        activePhotoId: nextActivePhotoId
+      });
+      markiWorkbenchStateRef.current = nextWorkspace;
+      sessionSnapshotRef.current = {
+        ...(sessionSnapshotRef.current || {}),
+        ...nextWorkspace,
+        hasUnsavedChanges: true
+      };
+      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
+      if (snapshotResult?.success !== true) {
+        setStatus({ type: 'warning', text: '智拣结果已保留在当前工作台，但自动快照保存失败，请稍后重试。' });
+      }
+      setHasUnsavedChanges(true);
+      markChanged();
     } catch (error) {
-      setRecognitionMessage({ type: 'error', text: `识别失败：${error.message || '未知错误'}` });
-      void recordRuntimeLog({ page: '照片分拣工作台', operation: 'OCR 识别', errorType: 'OCR 识别', summary: error.message || '未知错误', error });
+      const failedPhotos = alsoSort
+        ? failSmartSortExecution(photos, selectedPhotoIdsSnapshot)
+        : photos;
+      if (alsoSort) {
+        const failedSmartSortResult = mergeScopedSmartSortResult({
+          previousSmartSortResult: smartSortResult,
+          nextSmartSortResult: null,
+          targetPhotoIds: selectedPhotoIdsSnapshot
+        });
+        setPhotos(failedPhotos);
+        setSmartSortResult(failedSmartSortResult);
+        setSmartSortViewMode('statusFilter');
+        setActiveSmartSortGroupId('');
+      }
+      setRecognitionMessage({ type: 'error', text: '智拣失败，请重试或手工完善归档信息。' });
+      void recordRuntimeLog({
+        page: '照片分拣工作台',
+        operation: '来源感知智拣',
+        errorType: '智拣',
+        summary: '来源感知智拣未能完成。',
+        level: 'error'
+      });
     } finally {
       setIsRecognitionBusy(false);
       setRecognitionProgress({ current: 0, total: 0 });
@@ -1198,50 +1919,87 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function clearSelectedRecognitionResults() {
-    const targetPhotos = selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo));
-    if (targetPhotos.length === 0) {
-      setRecognitionMessage({ type: 'warning', text: '请先选择需要清空识别结果的照片。' });
+    const resetResult = resetSelectedSmartSortResults({
+      photos,
+      selectedPhotoIds: selectedIds,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto,
+      smartSortResult
+    });
+    if (resetResult.targetPhotos.length === 0) {
+      setRecognitionMessage({ type: 'warning', text: '已选照片没有可重置的智拣结果。' });
       return;
     }
-    if (!window.confirm('清除已选照片的 OCR 结果、识别建议并恢复为初始未归档状态？\n\n智能分组会同时失效，但不会删除、移动或修改原始照片。')) return;
-    const selectedSet = new Set(targetPhotos.map((photo) => photo.id));
-    setRecognitionResultsByPhoto((current) => Object.fromEntries(Object.entries(current).filter(([photoId]) => !selectedSet.has(photoId))));
-    setWatermarkRecordsByPhoto((current) => Object.fromEntries(Object.entries(current).filter(([photoId]) => !selectedSet.has(photoId))));
-    setArchiveSuggestionsByPhoto((current) => Object.fromEntries(Object.entries(current).filter(([photoId]) => !selectedSet.has(photoId))));
-    setPhotos((current) => current.map((photo) => {
-      if (!selectedSet.has(photo.id) || isArchivedPhoto(photo) || isIgnoredPhoto(photo)) return photo;
-      return {
-        ...photo,
-        sortStatus: 'unassigned',
-        archiveInfo: null,
-        previewInfo: null,
-        archiveResult: null
-      };
-    }));
+    if (!window.confirm('重置已选照片的智拣执行状态并清除当前智能分组？\n\n马克平台原始结构化数据会保留；本地照片的 OCR 结果会清除。原始照片不会被删除、移动或修改。')) return;
+    const selectedSet = new Set(resetResult.targetPhotoIds);
+    let nextForm = form;
     if (currentPanelPhoto?.id && selectedSet.has(currentPanelPhoto.id)) {
-      setForm(reconcileForm(defaultForm, configs));
+      const nextPanelPhoto = resetResult.photos.find((photo) => photo.id === currentPanelPhoto.id)
+        || currentPanelPhoto;
+      nextForm = buildArchiveFormSeed({
+        photo: nextPanelPhoto,
+        recognitionResult: resetResult.recognitionResultsByPhoto[currentPanelPhoto.id],
+        watermarkRecord: resetResult.watermarkRecordsByPhoto[currentPanelPhoto.id],
+        archiveSuggestion: resetResult.archiveSuggestionsByPhoto[currentPanelPhoto.id],
+        group: null,
+        configs
+      });
     }
-    await Promise.allSettled(targetPhotos.map(clearRecognitionPipelineForPhoto));
-    await clearSmartSortGroups();
-    resetSmartSortState({ type: 'idle', text: '识别结果已清除，已选照片已恢复为初始未归档状态；请重新“智拣”后生成分组。' });
-    const firstAllPhoto = getVisiblePhotosSnapshot({
-      photos,
-      activeSmartGroupPhotoKeys: null,
-      filter: 'all',
-      searchText: '',
-      selectedIds: [],
-      sortMode
-    })[0];
-    switchStatusFilter('all');
-    setSearchText('');
-    setSelectedIds([]);
-    setActivePhotoId(firstAllPhoto?.id || '');
-    setPage(1);
-    window.requestAnimationFrame(() => photoBrowserRef.current?.scrollTo({ top: 0, left: 0 }));
-    setRecognitionMessage({ type: 'success', text: `已清除 ${targetPhotos.length} 张照片的 OCR 结果、识别建议和后台暂存记录。` });
-    setStatus({ type: 'success', text: '已选照片已恢复为初始未归档状态，并返回全部照片；原始照片和台账未受影响。' });
+
+    await Promise.allSettled(resetResult.localTargetPhotos.map(clearRecognitionPipelineForPhoto));
+    const remainingGroupIds = new Set(
+      (resetResult.smartSortResult?.groups || []).map((group) => group?.id).filter(Boolean)
+    );
+    const nextActiveSmartSortGroupId = remainingGroupIds.has(activeSmartSortGroupId)
+      ? activeSmartSortGroupId
+      : '';
+    const nextSmartSortViewMode = nextActiveSmartSortGroupId
+      ? smartSortViewMode
+      : 'statusFilter';
+    const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+      ...markiWorkbenchStateRef.current,
+      photos: resetResult.photos,
+      recognitionResultsByPhoto: resetResult.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: resetResult.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: resetResult.archiveSuggestionsByPhoto,
+      smartSortResult: resetResult.smartSortResult,
+      smartSortViewMode: nextSmartSortViewMode,
+      activeSmartSortGroupId: nextActiveSmartSortGroupId,
+      form: nextForm,
+      selectedIds,
+      activePhotoId
+    });
+    const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
+    if (snapshotResult?.success !== true) {
+      setStatus({ type: 'error', text: '智拣结果未重置：自动快照保存失败，请重试。' });
+      return;
+    }
+
+    setRecognitionResultsByPhoto(resetResult.recognitionResultsByPhoto);
+    setWatermarkRecordsByPhoto(resetResult.watermarkRecordsByPhoto);
+    setArchiveSuggestionsByPhoto(resetResult.archiveSuggestionsByPhoto);
+    setPhotos(resetResult.photos);
+    setSmartSortResult(resetResult.smartSortResult);
+    setSmartSortViewMode(nextSmartSortViewMode);
+    setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
+    setForm(nextForm);
+    markiWorkbenchStateRef.current = nextWorkspace;
+    sessionSnapshotRef.current = {
+      ...(sessionSnapshotRef.current || {}),
+      ...nextWorkspace,
+      hasUnsavedChanges: true
+    };
+    sortWorkspaceSessionCache = sessionSnapshotRef.current;
+    setSmartSortMessage({ type: 'idle', text: '已选照片的智拣结果已重置；未选中照片及其分组保持不变。' });
+    setRecognitionMessage({
+      type: 'success',
+      text: `已重置 ${resetResult.targetPhotos.length} 张照片的智拣状态；保留 ${resetResult.markiTargetPhotos.length} 张 Marki 平台数据，清除 ${resetResult.localTargetPhotos.length} 张本地照片的 OCR 派生结果。`
+    });
+    setStatus({ type: 'success', text: '局部重置完成；选择、当前照片和未选中分组保持不变。' });
     setRightPanelMode('form');
     invalidateBatchPreparationUndo();
+    setHasUnsavedChanges(true);
     markChanged();
   }
 
@@ -1380,27 +2138,18 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   function applyStatusFilter(nextFilter) {
-    const nextVisiblePhotos = getVisiblePhotosSnapshot({
-      photos,
-      activeSmartGroupPhotoKeys: null,
-      filter: nextFilter,
-      searchText,
-      selectedIds: [],
-      sortMode
-    });
     switchStatusFilter(nextFilter);
     setSmartSortViewMode('statusFilter');
     setActiveSmartSortGroupId('');
-    setSelectedIds([]);
-    setActivePhotoId(nextVisiblePhotos[0]?.id || '');
     setPage(1);
   }
 
   function viewSmartGroup(groupId) {
     if (activeSmartSortGroupId === groupId && smartSortViewMode === 'smartSortGroup') {
-      const nextVisiblePhotos = getVisiblePhotosSnapshot({
+      const nextVisiblePhotos = getVisibleWorkflowPhotos({
         photos,
         activeSmartGroupPhotoKeys: null,
+        groupMembershipByPhotoId: smartSortGroupMembershipByPhotoId,
         filter,
         searchText,
         selectedIds: [],
@@ -1416,9 +2165,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
     const group = smartSortGroups.find((item) => item.id === groupId);
     const groupKeys = new Set(getSmartSortGroupKeys(group));
-    const nextVisiblePhotos = getVisiblePhotosSnapshot({
+    const nextVisiblePhotos = getVisibleWorkflowPhotos({
       photos,
       activeSmartGroupPhotoKeys: groupKeys,
+      groupMembershipByPhotoId: smartSortGroupMembershipByPhotoId,
       filter,
       searchText: '',
       selectedIds: [],
@@ -1441,17 +2191,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   function handleSearchTextChange(nextSearchText) {
-    const nextVisiblePhotos = getVisiblePhotosSnapshot({
-      photos,
-      activeSmartGroupPhotoKeys,
-      filter,
-      searchText: nextSearchText,
-      selectedIds: [],
-      sortMode
-    });
     setSearchText(nextSearchText);
-    setSelectedIds([]);
-    setActivePhotoId(nextVisiblePhotos[0]?.id || '');
     setPage(1);
   }
 
@@ -1514,7 +2254,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: '请先选择需要标记忽略的照片。' });
       return;
     }
-    const targetPhotos = selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo));
+    const targetPhotos = selectedPhotos.filter((photo) => (
+      !isArchivedPhoto(photo)
+      && !isIgnoredPhoto(photo)
+      && !photo.originalMissing
+      && photo.sortStatus !== 'archiving'
+    ));
     if (targetPhotos.length === 0) {
       setStatus({ type: 'warning', text: '当前没有可标记忽略的照片。' });
       return;
@@ -1523,7 +2268,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function ignoreCurrentPhoto() {
-    if (!currentPanelPhoto || isArchivedPhoto(currentPanelPhoto) || isIgnoredPhoto(currentPanelPhoto)) {
+    if (
+      !currentPanelPhoto
+      || isArchivedPhoto(currentPanelPhoto)
+      || isIgnoredPhoto(currentPanelPhoto)
+      || currentPanelPhoto.originalMissing
+      || currentPanelPhoto.sortStatus === 'archiving'
+    ) {
       setStatus({ type: 'warning', text: '当前照片不能标记忽略。' });
       return;
     }
@@ -1545,47 +2296,102 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         setStatus({ type: 'error', text: '后台 OCR 记录未能更新，照片尚未标记忽略，请稍后重试。' });
         return;
       }
-      const appliedIdSet = new Set(appliedPhotos.map((photo) => photo.id));
-      const resolvedAt = new Date().toISOString();
+      const recognitionStageStatusByPhotoId = Object.fromEntries(
+        appliedPhotos.map((photo) => [
+          photo.id,
+          getRecognitionStageStatusBeforeIgnore(recognitionResultsByPhoto[photo.id])
+        ])
+      );
+      const transition = ignorePhotosInWorkspace({
+        photos,
+        smartSortResult,
+        targetPhotoIds: appliedPhotos.map((photo) => photo.id),
+        recognitionStageStatusByPhotoId
+      });
+      const appliedIdSet = new Set(transition.ignoredPhotoIds);
+      if (appliedIdSet.size === 0) {
+        setStatus({ type: 'warning', text: '当前照片处于归档、归档中或原图缺失状态，不能标记忽略。' });
+        return;
+      }
       const recognitionIssueCount = appliedPhotos.filter((photo) => getRecognitionOutcome(recognitionResultsByPhoto[photo.id]) === 'failed').length;
-      setRecognitionResultsByPhoto((current) => Object.fromEntries(Object.entries(current).map(([photoId, result]) => {
-        if (!appliedIdSet.has(photoId) || !result) return [photoId, result];
-        const previousOutcome = getRecognitionOutcome(result);
-        return [photoId, {
-          ...result,
-          ignoredPreviousResolution: result.resolution || '',
-          ignoredPreviousResolvedAt: result.resolvedAt || '',
-          ignoredPreviousStageStatus: previousOutcome === 'manual_pending'
-            ? 'pending_review'
-            : previousOutcome === 'resolved' ? 'reviewed' : 'staged',
-          resolution: 'ignored',
-          resolvedAt
-        }];
-      })));
-      const invalidTip = invalidatePreviewMessage();
-      setPhotos((current) => current.map((photo) => {
-        if (appliedIdSet.has(photo.id)) {
-          return {
-            ...photo,
-            ignoredPreviousSortStatus: photo.sortStatus,
-            sortStatus: 'ignored',
-            previewInfo: null,
-            archiveResult: null
-          };
-        }
-        return invalidTip ? clearGeneratedPreview(photo) : photo;
-      }));
+      const nextSelectedIds = selectedIds.filter((photoId) => !appliedIdSet.has(photoId));
+      const nextMembershipByPhotoId = buildSmartSortGroupMembershipByPhotoId(
+        transition.smartSortResult
+      );
+      const nextActivePhotoId = appliedIdSet.has(activePhotoId)
+        ? nextSelectedIds.find((photoId) => transition.photos.some((photo) => (
+            photo.id === photoId && !isIgnoredPhoto(photo)
+          )))
+          || transition.photos.find((photo) => (
+            nextMembershipByPhotoId.get(photo.id) === activeSmartSortGroupId
+            && !isIgnoredPhoto(photo)
+          ))?.id
+          || transition.photos.find((photo) => (
+            !isIgnoredPhoto(photo)
+            && !photo.originalMissing
+            && !isArchivedPhoto(photo)
+          ))?.id
+          || ''
+        : activePhotoId;
+      const activeGroupStillExists = Array.isArray(transition.smartSortResult?.groups)
+        && transition.smartSortResult.groups.some((group) => group.id === activeSmartSortGroupId);
+      const nextSmartSortViewMode = activeGroupStillExists
+        ? smartSortViewMode
+        : 'statusFilter';
+      const nextActiveSmartSortGroupId = activeGroupStillExists
+        ? activeSmartSortGroupId
+        : '';
+      const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        photoFolder,
+        archiveRoot,
+        photos: transition.photos,
+        selectedIds: nextSelectedIds,
+        activePhotoId: nextActivePhotoId,
+        recognitionResultsByPhoto,
+        watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto,
+        smartSortResult: transition.smartSortResult,
+        smartSortViewMode: nextSmartSortViewMode,
+        activeSmartSortGroupId: nextActiveSmartSortGroupId,
+        filter,
+        sortMode,
+        pageSize,
+        rightPanelMode,
+        form,
+        searchText,
+        page,
+        viewMode
+      });
+      const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
+      if (snapshotResult?.success !== true) {
+        await rollbackIgnoredRecognitionStages(
+          appliedPhotos,
+          recognitionResultsByPhoto,
+          recognitionStageStatusByPhotoId
+        );
+        setStatus({
+          type: 'error',
+          text: snapshotResult?.error?.message || '忽略状态未能保存，照片保持原状态，请稍后重试。'
+        });
+        return;
+      }
+      markiWorkbenchStateRef.current = nextWorkspace;
+      setPhotos(transition.photos);
+      setSmartSortResult(transition.smartSortResult);
+      setSmartSortViewMode(nextSmartSortViewMode);
+      setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
+      setSelectedIds(nextSelectedIds);
+      setActivePhotoId(nextActivePhotoId);
       if (recognitionIssueCount > 0) {
         setRecognitionMessage({ type: 'warning', text: `已忽略 ${recognitionIssueCount} 张识别异常照片，后台记录已保留并标记为已忽略。` });
       }
-      setSelectedIds((current) => current.filter((id) => failedIdSet.has(id)));
       setEditingPhotoId((current) => appliedIdSet.has(current) ? '' : current);
       invalidateBatchPreparationUndo();
       markChanged();
       const failedTip = failedIdSet.size ? `另有 ${failedIdSet.size} 张因后台记录更新失败而保持原状态。` : '';
       setStatus({
-        type: invalidTip || failedTip ? 'warning' : 'success',
-        text: `已标记忽略 ${appliedPhotos.length} 张照片，原图未受影响。${invalidTip}${failedTip}`
+        type: failedTip ? 'warning' : 'success',
+        text: `已标记忽略 ${appliedIdSet.size} 张照片，来源数据、识别结果、人工信息和原图均已保留。${failedTip}`
       });
     } finally {
       setIsRecognitionBusy(false);
@@ -1593,9 +2399,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function cancelIgnored() {
-    const targetPhotos = selectedPhotos.filter(isIgnoredPhoto);
+    const targetPhotos = selectedPhotos.filter((photo) => (
+      isIgnoredPhoto(photo)
+      && !photo.originalMissing
+      && !isArchivedPhoto(photo)
+      && photo?.ignoredPreviousState?.sortStatus !== 'archiving'
+    ));
     if (targetPhotos.length === 0) {
-      setStatus({ type: 'warning', text: '请先在已忽略列表中选择需要还原的照片。' });
+      setStatus({ type: 'warning', text: '请先选择可还原的已忽略照片；归档中、已归档或原图缺失照片不能普通还原。' });
       return;
     }
     setIsRecognitionBusy(true);
@@ -1605,11 +2416,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         return {
           photo,
           result,
-          stageStatus: result?.ignoredPreviousStageStatus || (result?.manualPendingAt ? 'pending_review' : 'staged')
+          stageStatus: getIgnoredRecognitionStageStatus(photo)
         };
       });
       const stageResults = await Promise.all(restoreEntries.map(async ({ photo, result, stageStatus }) => {
-        if (result?.resolution !== 'ignored' || !result.stagedResultId) return { photoId: photo.id, success: true };
+        if (!result?.stagedResultId) return { photoId: photo.id, success: true };
         const updated = await updateStagedResultStatus(result.stagedResultId, stageStatus);
         return { photoId: photo.id, success: Boolean(updated) };
       }));
@@ -1619,47 +2430,70 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         setStatus({ type: 'error', text: '后台 OCR 记录未能恢复，照片仍保持已忽略状态，请稍后重试。' });
         return;
       }
-      const restoredIdSet = new Set(restoredPhotos.map((photo) => photo.id));
-      const nextRecognitionResults = { ...recognitionResultsByPhoto };
-      restoredPhotos.forEach((photo) => {
-        const result = recognitionResultsByPhoto[photo.id];
-        if (result?.resolution !== 'ignored') return;
-        const reopenedResult = {
-          ...result,
-          resolution: result.ignoredPreviousResolution || '',
-          resolvedAt: result.ignoredPreviousResolvedAt || ''
-        };
-        delete reopenedResult.ignoredPreviousResolution;
-        delete reopenedResult.ignoredPreviousResolvedAt;
-        delete reopenedResult.ignoredPreviousStageStatus;
-        nextRecognitionResults[photo.id] = reopenedResult;
+      const transition = restoreIgnoredPhotosInWorkspace({
+        photos,
+        smartSortResult,
+        targetPhotoIds: restoredPhotos.map((photo) => photo.id)
       });
-      setRecognitionResultsByPhoto(nextRecognitionResults);
-      const invalidTip = invalidatePreviewMessage();
-      setPhotos((current) => current.map((photo) => {
-        if (restoredIdSet.has(photo.id)) {
-          const result = nextRecognitionResults[photo.id];
-          const derivedStatus = result
-            ? getPhotoRecognitionSortStatus(result, archiveSuggestionsByPhoto[photo.id])
-            : 'unassigned';
-          const previousStatus = photo.ignoredPreviousSortStatus;
-          const restoredStatus = ['assigned', 'previewed'].includes(previousStatus) && photo.archiveInfo
-            ? 'assigned'
-            : previousStatus && previousStatus !== 'ignored' ? previousStatus : derivedStatus;
-          const { ignoredPreviousSortStatus, ...restoredPhoto } = photo;
-          return { ...restoredPhoto, sortStatus: restoredStatus, previewInfo: null, archiveResult: null };
-        }
-        return invalidTip ? clearGeneratedPreview(photo) : photo;
-      }));
+      const restoredIdSet = new Set(transition.restoredPhotoIds);
+      if (restoredIdSet.size === 0) {
+        setStatus({ type: 'warning', text: '当前已忽略照片处于归档或原图缺失状态，不能普通还原。' });
+        return;
+      }
+      const nextSelectedIds = selectedIds.filter((photoId) => !restoredIdSet.has(photoId));
+      const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        photoFolder,
+        archiveRoot,
+        photos: transition.photos,
+        selectedIds: nextSelectedIds,
+        activePhotoId,
+        recognitionResultsByPhoto,
+        watermarkRecordsByPhoto,
+        archiveSuggestionsByPhoto,
+        smartSortResult: transition.smartSortResult,
+        smartSortViewMode,
+        activeSmartSortGroupId,
+        filter,
+        sortMode,
+        pageSize,
+        rightPanelMode,
+        form,
+        searchText,
+        page,
+        viewMode
+      });
+      const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
+      if (snapshotResult?.success !== true) {
+        await Promise.all(restoredPhotos.map(async (photo) => {
+          const result = recognitionResultsByPhoto[photo.id];
+          if (!result?.stagedResultId) return;
+          try {
+            await updateStagedResultStatus(result.stagedResultId, 'dismissed');
+          } catch {
+            // Snapshot failure remains the user-visible source of truth.
+          }
+        }));
+        setStatus({
+          type: 'error',
+          text: snapshotResult?.error?.message || '还原状态未能保存，照片继续保持已忽略，请稍后重试。'
+        });
+        return;
+      }
+      markiWorkbenchStateRef.current = nextWorkspace;
+      setPhotos(transition.photos);
+      setSmartSortResult(transition.smartSortResult);
+      setSelectedIds(nextSelectedIds);
       setRecognitionMessage({ type: 'warning', text: `已恢复 ${restoredPhotos.length} 张照片的识别处理状态，请选择后继续整理。` });
-      setSelectedIds((current) => current.filter((id) => failedIdSet.has(id)));
       setEditingPhotoId((current) => restoredIdSet.has(current) ? '' : current);
       invalidateBatchPreparationUndo();
       markChanged();
       const failedTip = failedIdSet.size ? `另有 ${failedIdSet.size} 张因后台记录恢复失败而继续保持已忽略。` : '';
+      const expiredTip = transition.membershipExpiredPhotoIds.length
+        ? `另有 ${transition.membershipExpiredPhotoIds.length} 张的原分组已失效，已安全恢复为待智拣。`
+        : '';
       setStatus({
-        type: invalidTip || failedTip ? 'warning' : 'success',
-        text: `已还原 ${restoredPhotos.length} 张已忽略照片，并恢复忽略前状态。${invalidTip}${failedTip}`
+        type: failedTip || expiredTip ? 'warning' : 'success',
+        text: `已还原 ${restoredIdSet.size} 张已忽略照片，并恢复可用的忽略前阶段和分组。${expiredTip}${failedTip}`
       });
     } finally {
       setIsRecognitionBusy(false);
@@ -1824,75 +2658,129 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       return;
     }
     const savedAt = new Date().toISOString();
-    const payload = {
-      version: '1.3.3',
-      savedAt,
-      photoFolder,
-      archiveRoot,
-      filter,
-      selectedIds,
-      sortMode,
-      pageSize,
-      rightPanelMode,
-      recognitionResultsByPhoto,
-      watermarkRecordsByPhoto,
-      archiveSuggestionsByPhoto,
-      photos: photos.map(({ previewUrl, thumbnailPath, ...photo }) => photo)
-    };
-    const result = await window.archiveAssistant.saveSortDraft(payload);
-    if (result?.success) {
-      setLastDraftSavedAt(savedAt);
-      setHasSavedDraft(true);
-      window.localStorage.setItem(sortDraftAvailableKey, 'true');
-      setHasUnsavedChanges(false);
-      setStatus({ type: 'success', text: '分拣进度已保存。' });
+    try {
+      const payload = buildSortWorkspaceManualDraft(
+        markiWorkbenchStateRef.current,
+        { savedAt }
+      );
+      const result = await window.archiveAssistant.saveSortDraft(payload);
+      if (result?.success) {
+        setLastDraftSavedAt(savedAt);
+        setHasSavedDraft(true);
+        window.localStorage.setItem(sortDraftAvailableKey, 'true');
+        setHasUnsavedChanges(false);
+        setStatus({ type: 'success', text: '工作台草稿已完整保存。' });
+      } else if (!result?.canceled) {
+        setStatus({ type: 'error', text: '工作台草稿保存失败，请重试。' });
+      }
+    } catch {
+      setStatus({ type: 'error', text: '工作台草稿包含不可保存的数据，未写入文件。' });
     }
   }
 
   async function loadDraft() {
-    if (hasUnsavedChanges && !window.confirm('当前分拣进度尚未保存，恢复已保存进度将覆盖当前页面状态。是否继续？')) {
+    if (
+      (photos.length > 0 || hasUnsavedChanges)
+      && !window.confirm('恢复手工草稿将完整替换当前工作台，并立即同步自动快照。是否继续？')
+    ) {
       return;
     }
-    const result = await window.archiveAssistant.loadSortDraft();
-    if (!result?.success || !result.draft) return;
-    const loadedPhotos = await Promise.all((result.draft.photos || []).map(async (photo, index) => {
-      const exists = await window.archiveAssistant.validatePathExists(photo.originalPath);
-      return {
-        ...photo,
-        id: photo.id || `draft-${Date.now()}-${index}`,
-        previewUrl: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
-        thumbnailPath: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
-        originalMissing: !exists,
-        missingSortStatus: exists ? undefined : (photo.missingSortStatus || photo.sortStatus || 'unassigned'),
-        sortStatus: photo.missingSortStatus || photo.sortStatus || 'unassigned'
+    try {
+      const result = await window.archiveAssistant.loadSortDraft();
+      if (!result?.success || !result.draft) {
+        if (!result?.canceled) setStatus({ type: 'error', text: '工作台草稿读取失败，请重试。' });
+        return;
+      }
+      const parsedDraft = readSortWorkspaceManualDraft(result.draft);
+      const draftWorkspace = parsedDraft.workspace;
+      const loadedPhotos = await Promise.all(draftWorkspace.photos.map(async (photo, index) => {
+        const exists = await window.archiveAssistant.validatePathExists(photo.originalPath);
+        const photoId = photo.id || `legacy-draft-${index + 1}`;
+        return {
+          ...photo,
+          id: photoId,
+          previewUrl: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
+          thumbnailPath: `local-photo://image/${encodeURIComponent(photo.originalPath)}`,
+          originalMissing: !exists,
+          missingSortStatus: exists
+            ? undefined
+            : (photo.missingSortStatus || photo.sortStatus || 'unassigned'),
+          sortStatus: photo.missingSortStatus || photo.sortStatus || 'unassigned'
+        };
+      }));
+      const restoredPhotoIds = new Set(loadedPhotos.map((photo) => photo.id));
+      if (restoredPhotoIds.size !== loadedPhotos.length) {
+        throw new TypeError('分拣草稿包含重复照片');
+      }
+      const restoredSelectedIds = draftWorkspace.selectedIds.filter((id) => restoredPhotoIds.has(id));
+      const restoredActivePhotoId = restoredPhotoIds.has(draftWorkspace.activePhotoId)
+        ? draftWorkspace.activePhotoId
+        : restoredSelectedIds[0] || loadedPhotos[0]?.id || '';
+      const restoredSmartSortResult = draftWorkspace.smartSortResult
+        ? mergeScopedSmartSortResult({
+            previousSmartSortResult: null,
+            nextSmartSortResult: draftWorkspace.smartSortResult,
+            targetPhotoIds: loadedPhotos.map((photo) => photo.id)
+          })
+        : null;
+      const restoredGroupIds = new Set(
+        (restoredSmartSortResult?.groups || []).map((group) => group?.id).filter(Boolean)
+      );
+      const restoredActiveGroupId = restoredGroupIds.has(draftWorkspace.activeSmartSortGroupId)
+        ? draftWorkspace.activeSmartSortGroupId
+        : '';
+      const restoredWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        ...draftWorkspace,
+        photos: loadedPhotos,
+        selectedIds: restoredSelectedIds,
+        activePhotoId: restoredActivePhotoId,
+        recognitionResultsByPhoto: filterPhotoMapByIds(
+          draftWorkspace.recognitionResultsByPhoto,
+          restoredPhotoIds
+        ),
+        watermarkRecordsByPhoto: filterPhotoMapByIds(
+          draftWorkspace.watermarkRecordsByPhoto,
+          restoredPhotoIds
+        ),
+        archiveSuggestionsByPhoto: filterPhotoMapByIds(
+          draftWorkspace.archiveSuggestionsByPhoto,
+          restoredPhotoIds
+        ),
+        smartSortResult: restoredSmartSortResult,
+        smartSortViewMode: restoredActiveGroupId
+          ? draftWorkspace.smartSortViewMode
+          : 'statusFilter',
+        activeSmartSortGroupId: restoredActiveGroupId,
+        filter: normalizeStatusFilter(draftWorkspace.filter),
+        form: reconcileForm(draftWorkspace.form || defaultForm, configs)
+      });
+      const snapshotResult = await saveAutomaticSnapshotImmediately(restoredWorkspace);
+      if (snapshotResult?.success !== true) {
+        setStatus({ type: 'error', text: '工作台草稿未恢复：自动快照保存失败，请重试。' });
+        return;
+      }
+      applyAutomaticSnapshotWorkspace(restoredWorkspace);
+      invalidateBatchPreparationUndo();
+      setEditingPhotoId('');
+      setRecognitionMessage({ type: 'idle', text: '' });
+      setLastDraftSavedAt(parsedDraft.savedAt || '');
+      setHasSavedDraft(true);
+      window.localStorage.setItem(sortDraftAvailableKey, 'true');
+      setHasUnsavedChanges(false);
+      sessionSnapshotRef.current = {
+        ...(sessionSnapshotRef.current || {}),
+        ...restoredWorkspace,
+        hasUnsavedChanges: false
       };
-    }));
-    rememberSessionPhotoFolder(result.draft.photoFolder || '');
-    const restoredArchiveRoot = result.draft.archiveRoot || '';
-    setArchiveRoot(restoredArchiveRoot);
-    if (restoredArchiveRoot) archiveState?.setCurrentArchiveRoot?.(restoredArchiveRoot);
-    setFilter(normalizeStatusFilter(result.draft.filter));
-    setSmartSortViewMode('statusFilter');
-    setActiveSmartSortGroupId('');
-    setRecognitionMessage({ type: 'idle', text: '' });
-    setRecognitionResultsByPhoto(result.draft.recognitionResultsByPhoto || {});
-    setWatermarkRecordsByPhoto(result.draft.watermarkRecordsByPhoto || {});
-    setArchiveSuggestionsByPhoto(result.draft.archiveSuggestionsByPhoto || {});
-    setRightPanelMode(['form', 'recognition'].includes(result.draft.rightPanelMode) ? result.draft.rightPanelMode : 'form');
-    setSortMode(result.draft.sortMode || 'timeAsc');
-    const restoredPageSize = Number(result.draft.pageSize);
-    setPageSize([50, 100, 200].includes(restoredPageSize) ? restoredPageSize : 50);
-    setPhotos(loadedPhotos);
-    invalidateBatchPreparationUndo();
-    setSelectedIds((result.draft.selectedIds || []).filter((id) => loadedPhotos.some((photo) => photo.id === id)));
-    setPage(1);
-    setEditingPhotoId('');
-    setLastDraftSavedAt(result.draft.savedAt || '');
-    setHasSavedDraft(true);
-    window.localStorage.setItem(sortDraftAvailableKey, 'true');
-    setHasUnsavedChanges(false);
-    const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
-    setStatus({ type: missingCount ? 'warning' : 'success', text: `分拣进度已恢复，共 ${loadedPhotos.length} 张照片。${missingCount ? `其中 ${missingCount} 张原图缺失，请核对。` : ''}` });
+      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
+      setStatus({
+        type: missingCount ? 'warning' : 'success',
+        text: `工作台草稿已完整恢复，共 ${loadedPhotos.length} 张照片。${missingCount ? `其中 ${missingCount} 张原图缺失，请核对。` : ''}`
+      });
+    } catch {
+      setStatus({ type: 'error', text: '工作台草稿损坏或不兼容，当前工作台未被修改。' });
+    }
   }
 
   async function relocateMissingPhotos() {
@@ -2137,9 +3025,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (canRestorePreviousGroup) {
       const previousGroup = smartSortGroups.find((group) => group.id === batchPreparationUndo.activeSmartSortGroupId);
       const groupKeys = new Set(getSmartSortGroupKeys(previousGroup));
-      const restoredGroupPhotos = getVisiblePhotosSnapshot({
+      const restoredGroupPhotos = getVisibleWorkflowPhotos({
         photos: restoredPhotos,
         activeSmartGroupPhotoKeys: groupKeys,
+        groupMembershipByPhotoId: smartSortGroupMembershipByPhotoId,
         filter: batchPreparationUndo.filter || filter,
         searchText: batchPreparationUndo.searchText || '',
         selectedIds: [],
@@ -2204,7 +3093,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const result = mergeArchiveTransactionResults(groupResults);
       const resultMap = new Map(result.items.map((item) => [item.photoId || item.id, item]));
       const archivedAt = new Date().toISOString();
-      setPhotos((current) => current.map((photo) => {
+      const archivedPhotos = photos.map((photo) => {
         const item = resultMap.get(photo.id);
         if (!item) return photo;
         const committed = item.stage === 'committed' || item.status === '归档成功';
@@ -2216,16 +3105,30 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           archiveMethod: committed ? '手动分拣' : photo.archiveMethod,
           archivedAt: committed ? archivedAt : photo.archivedAt
         };
-      }));
-      setSelectedIds([]);
-      setShowConfirm(false);
+      });
       const firstCommittedItem = result.items.find((item) => item.stage === 'committed');
       const firstPendingItem = result.items.find((item) => item.stage === 'ledger_pending');
       const firstFailedItem = result.items.find((item) => ['copy_failed', 'target_conflict'].includes(item.stage));
-      switchStatusFilter(firstCommittedItem ? 'archived' : 'previewed');
+      const nextFilter = firstCommittedItem ? 'archived' : 'previewed';
+      const nextActivePhotoId = firstCommittedItem?.photoId || firstPendingItem?.photoId || firstFailedItem?.photoId || '';
+      const archivedWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        ...markiWorkbenchStateRef.current,
+        photos: archivedPhotos,
+        selectedIds: [],
+        activePhotoId: nextActivePhotoId,
+        filter: nextFilter,
+        smartSortViewMode: 'statusFilter',
+        activeSmartSortGroupId: '',
+        page: 1
+      });
+      const snapshotResult = await saveAutomaticSnapshotImmediately(archivedWorkspace);
+      setPhotos(archivedPhotos);
+      setSelectedIds([]);
+      setShowConfirm(false);
+      switchStatusFilter(nextFilter);
       setSmartSortViewMode('statusFilter');
       setActiveSmartSortGroupId('');
-      setActivePhotoId(firstCommittedItem?.photoId || firstPendingItem?.photoId || firstFailedItem?.photoId || '');
+      setActivePhotoId(nextActivePhotoId);
       setPage(1);
       setHasUnsavedChanges(true);
       const fingerprintWarning = String(result.fingerprintIndexWarning || '').trim();
@@ -2237,10 +3140,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             ? `归档完成，已复制 ${result.committedCount} 张照片并安全追加 Excel 台账，原图仍保留。`
             : `归档未完成：复制失败 ${result.failedCount} 张，目标冲突 ${result.conflictCount} 张。`;
       setStatus({
-        type: result.status === 'committed' && !fingerprintWarning
+        type: snapshotResult?.success !== true
+          ? 'warning'
+          : result.status === 'committed' && !fingerprintWarning
           ? 'success'
           : (result.committedCount > 0 || result.pendingLedgerCount > 0 ? 'warning' : 'error'),
-        text: `${summary}${fingerprintWarning ? ` ${fingerprintWarning}` : ''}`
+        text: `${summary}${fingerprintWarning ? ` ${fingerprintWarning}` : ''}${snapshotResult?.success !== true ? ' 工作台自动快照暂未更新，软件将继续重试保存。' : ''}`
       });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '确认归档', errorType: '确认归档失败', summary: error.message, error });
@@ -2250,11 +3155,68 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
   }
 
-  function openSelectedFolder() {
-    if (primaryPhoto?.originalPath) {
-      window.archiveAssistant.openPath(primaryPhoto.originalPath);
-    } else if (photoFolder) {
-      window.archiveAssistant.openPath(photoFolder);
+  async function openPhotoDirectory() {
+    try {
+      const resolution = resolvePhotoDirectoryTarget({
+        photos,
+        activePhotoId,
+        selectedIds,
+        photoFolder: effectivePhotoFolder
+      });
+      if (!resolution.success) {
+        setStatus({
+          type: 'error',
+          text: photos.length > 0
+            ? '当前照片没有可打开的本地目录。'
+            : '尚未选择照片来源目录。'
+        });
+        return;
+      }
+      const exists = await window.archiveAssistant.validatePathExists(resolution.targetPath);
+      if (!exists) {
+        setStatus({
+          type: 'error',
+          text: resolution.sourceType === 'marki_api'
+            ? '软件管理的 Marki 照片目录当前不存在。'
+            : '当前照片来源目录不存在，请重新选择目录。'
+        });
+        return;
+      }
+      const result = await window.archiveAssistant.openPath(resolution.targetPath);
+      setStatus({
+        type: result?.success ? 'success' : 'error',
+        text: result?.success
+          ? (resolution.sourceType === 'marki_api'
+              ? '已打开软件管理的 Marki 照片目录。'
+              : '已打开当前照片来源目录。')
+          : '照片目录打开失败，请核对目录权限。'
+      });
+    } catch {
+      setStatus({ type: 'error', text: '照片目录打开失败，请核对目录权限。' });
+    }
+  }
+
+  async function openArchiveDirectory() {
+    try {
+      const resolution = resolveArchiveDirectoryTarget(archiveRoot);
+      if (!resolution.success) {
+        setStatus({ type: 'error', text: '尚未配置归档根目录。' });
+        return;
+      }
+      const exists = await window.archiveAssistant.validatePathExists(resolution.targetPath);
+      if (!exists) {
+        setStatus({ type: 'error', text: '当前归档根目录不存在，请先在设置中重新配置。' });
+        return;
+      }
+      const result = await window.archiveAssistant.openPath(resolution.targetPath);
+      setStatus({
+        type: result?.success ? 'success' : 'error',
+        text: result?.success
+          ? '已打开当前归档根目录。'
+          : '归档目录打开失败，请核对目录权限。'
+      });
+    } catch {
+      setStatus({ type: 'error', text: '归档目录打开失败，请核对目录权限。' });
     }
   }
 
@@ -2277,7 +3239,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             {statusFilters.filter(([key, label]) => key && label).map(([key, label]) => (
               <button type="button" key={key} className={smartSortViewMode === 'statusFilter' && filter === key ? 'active' : ''} onClick={() => applyStatusFilter(key)} disabled={photos.length === 0}>
                 <span>{label}</span>
-                <strong>{getFilterCount(key, photos, selectedIds)}</strong>
+                <strong>{getWorkflowFilterCount(key, photos, selectedIds, smartSortGroupMembershipByPhotoId)}</strong>
               </button>
             ))}
           </SortSection>
@@ -2308,17 +3270,19 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
               </div>
               <div className="sort-toolbar-group sort-toolbar-smart-group">
               <button type="button" className="primary orange" title={selectedEditablePhotos.length > 0 ? smartSortActionTitle : '请先选择未归档且未忽略的照片'} onClick={() => recognizeSelected({ alsoSort: true })} disabled={batchActionsBusy || selectedEditablePhotos.length === 0}>{smartSortActionLabel}</button>
-              <button type="button" title={selectedSmartResultCount > 0 ? '清除已选照片的智拣结果与归档建议，并恢复为初始未归档状态' : '已选照片没有可重置的智拣结果'} onClick={clearSelectedRecognitionResults} disabled={batchActionsBusy || selectedSmartResultCount === 0}>重置智拣结果</button>
+              <button type="button" title={selectedSmartResultCount > 0 ? '清除已选照片的智拣执行状态与当前分组；马克平台数据会保留' : '已选照片没有可重置的智拣结果'} onClick={clearSelectedRecognitionResults} disabled={batchActionsBusy || selectedSmartResultCount === 0}>重置智拣结果</button>
               </div>
-              <details className="sort-toolbar-more">
+              <details ref={moreMenuRef} className="sort-toolbar-more">
                 <summary>更多</summary>
                 <div className="sort-toolbar-more-menu">
                   <span className="sort-toolbar-more-label">目录</span>
-                  <button type="button" className="wide" title="更换照片目录" onClick={() => selectPhotoFolder({ scanAfterSelect: true })} disabled={batchActionsBusy}>照片目录</button>
-                  <button type="button" className="wide" title="更换归档目录" onClick={selectArchiveRoot} disabled={batchActionsBusy}>归档目录</button>
+                  <button type="button" className="wide" title="打开当前照片目录" onClick={openPhotoDirectory} disabled={batchActionsBusy}>打开照片目录</button>
+                  <button type="button" className="wide" title="打开当前归档目录" onClick={openArchiveDirectory} disabled={batchActionsBusy}>打开归档目录</button>
                   <span className="sort-toolbar-more-label">归档进度</span>
                   <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || batchActionsBusy}>保存</button>
                   <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || batchActionsBusy}>恢复</button>
+                  <span className="sort-toolbar-more-label">马克照片</span>
+                  <button type="button" className="wide marki-recovery-menu-action" title="核对并恢复已下载、但未进入工作台的 Marki 照片" onClick={openMarkiRecoveryDialog} disabled={batchActionsBusy}>恢复 Marki 照片</button>
                 </div>
               </details>
             </div>
@@ -2360,6 +3324,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                 key={photo.id}
                 photo={photo}
                 recognitionResult={recognitionResultsByPhoto[photo.id]}
+                smartSortGroupMember={smartSortGroupPhotoIds.has(photo.id)}
                 selected={selectedIds.includes(photo.id)}
                 current={currentPanelPhoto?.id === photo.id}
                 onClick={(event) => handlePhotoClick(photo, event)}
@@ -2382,7 +3347,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                       <td>
                         <div className="sort-list-status-cell">
                           {currentPanelPhoto?.id === photo.id && <span className="sort-list-current-marker">当前</span>}
-                          <StatusBadge photo={photo} recognitionResult={recognitionResultsByPhoto[photo.id]} />
+                          <StatusBadge
+                            photo={photo}
+                            recognitionResult={recognitionResultsByPhoto[photo.id]}
+                            smartSortGroupMember={smartSortGroupPhotoIds.has(photo.id)}
+                          />
                         </div>
                       </td>
                       <td aria-label={photo.originalName}>{isPreviewAuditList ? <PreviewFileNames photo={photo} /> : photo.originalName}</td>
@@ -2664,6 +3633,18 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           isBusy={isBusy}
         />
       )}
+      <MarkiRehydrateDialog
+        open={showMarkiRecovery}
+        items={markiRecoveryCandidates}
+        selectedTokens={selectedMarkiRecoveryTokens}
+        busy={isMarkiRecoveryBusy}
+        notice={markiRecoveryNotice}
+        onToggle={toggleMarkiRecoverySelection}
+        onRefresh={scanDownloadedMarkiPhotos}
+        onRecoverSelected={() => recoverDownloadedMarkiPhotos(selectedMarkiRecoveryTokens)}
+        onRecoverAll={recoverDownloadedMarkiPhotos}
+        onClose={closeMarkiRecoveryDialog}
+      />
       </>
     </div>
   );
@@ -2885,7 +3866,7 @@ function SortSection({ title, action, description = '', children, scrollable = f
   );
 }
 
-function PhotoCard({ photo, recognitionResult, selected, current, onClick, onSelect }) {
+function PhotoCard({ photo, recognitionResult, smartSortGroupMember, selected, current, onClick, onSelect }) {
   const gridSummary = buildGridPhotoSummary(photo);
   const newName = photo.previewInfo?.newName || photo.previewInfo?.newFileName || photo.previewInfo?.targetName || '';
   const handleSelectClick = (event) => {
@@ -2933,7 +3914,11 @@ function PhotoCard({ photo, recognitionResult, selected, current, onClick, onSel
       )}
       {newName && <p className="sort-grid-new-name" aria-label={newName}>新名：{newName}</p>}
       <footer>
-        <StatusBadge photo={photo} recognitionResult={recognitionResult} />
+        <StatusBadge
+          photo={photo}
+          recognitionResult={recognitionResult}
+          smartSortGroupMember={smartSortGroupMember}
+        />
         <small>{formatFileSize(photo.size)}</small>
       </footer>
     </button>
@@ -3053,9 +4038,13 @@ function PreviewSortSummary({ photo }) {
   );
 }
 
-function StatusBadge({ photo, recognitionResult }) {
+function StatusBadge({ photo, recognitionResult, smartSortGroupMember = false }) {
   const status = photo?.sortStatus || '';
-  return <span className={`sort-status-badge ${photo?.originalMissing ? 'failed' : status}`}>{getPhotoWorkflowStatus(photo, { recognitionResult })}</span>;
+  return (
+    <span className={`sort-status-badge ${photo?.originalMissing ? 'failed' : status}`}>
+      {getPhotoWorkflowStatus(photo, { recognitionResult, smartSortGroupMember })}
+    </span>
+  );
 }
 
 function reconcileForm(current, configs) {
@@ -3091,6 +4080,32 @@ function toArchiveForm(value) {
 
 function isIgnoredPhoto(photo) {
   return photo?.sortStatus === 'ignored';
+}
+
+function getRecognitionStageStatusBeforeIgnore(result = null) {
+  const outcome = getRecognitionOutcome(result);
+  if (outcome === 'manual_pending') return 'pending_review';
+  if (outcome === 'resolved') return 'reviewed';
+  return 'staged';
+}
+
+async function rollbackIgnoredRecognitionStages(
+  photos = [],
+  recognitionMap = {},
+  stageStatusByPhotoId = {}
+) {
+  await Promise.all(photos.map(async (photo) => {
+    const result = recognitionMap[photo?.id];
+    if (!result?.stagedResultId) return;
+    try {
+      await updateStagedResultStatus(
+        result.stagedResultId,
+        stageStatusByPhotoId?.[photo.id] || 'staged'
+      );
+    } catch {
+      // The snapshot error is reported by the caller; rollback is best effort.
+    }
+  }));
 }
 
 function buildRecognitionStageRestores(photoIds = [], recognitionMap = {}) {
@@ -3178,17 +4193,18 @@ function mergeArchiveTransactionResults(results = []) {
   };
 }
 
-function getPhotoWorkflowStatus(photo, { recognitionResult = null, requiredFieldsComplete } = {}) {
+function getPhotoWorkflowStatus(
+  photo,
+  {
+    recognitionResult = null,
+    requiredFieldsComplete,
+    smartSortGroupMember = false
+  } = {}
+) {
   if (!photo) return '暂无当前照片';
-  if (photo.originalMissing) return '原图缺失';
+  const sharedStageLabel = getPhotoWorkflowStageLabel(photo, smartSortGroupMember);
+  if (sharedStageLabel) return sharedStageLabel;
   const status = photo.sortStatus || 'unassigned';
-  if (status === 'archived' || photo.archiveResult?.status === '归档成功' || photo.archiveResult?.success === true) return '已归档';
-  if (photo.archiveResult?.stage === 'ledger_pending') return '台账待补记';
-  if (photo.archiveResult?.stage === 'target_conflict') return '目标冲突';
-  if (status === 'ignored') return '已忽略';
-  if (status === 'failed' || status === 'archive_failed' || photo.archiveResult?.status === '归档失败' || photo.archiveResult?.success === false) return '归档失败';
-  if (status === 'previewed') return '已生成预览';
-  if (status === 'assigned') return '待预览';
   if (status === 'recognition_failed') return '识别失败';
   if (status === 'recognizing') return '识别中';
   if (pendingSortStatuses.has(status)) return '待智拣';
@@ -3198,58 +4214,6 @@ function getPhotoWorkflowStatus(photo, { recognitionResult = null, requiredField
     return '待整理';
   }
   return statusLabels[status] || status;
-}
-
-function hasArchivedPhotoState(photo = {}) {
-  return photo.sortStatus === 'archived'
-    || photo.archiveResult?.status === '归档成功'
-    || photo.archiveResult?.success === true;
-}
-
-function reconcileScannedPhotoStatuses(scanned = [], previousPhotos = [], archivedMatches = {}) {
-  const previousArchivedByPath = new Map(
-    previousPhotos
-      .filter(hasArchivedPhotoState)
-      .map((photo) => [normalizePhotoPathKey(photo.originalPath), photo])
-      .filter(([key]) => Boolean(key))
-  );
-
-  return scanned.map((photo) => {
-    const basePhoto = createScannedPhotoState(photo);
-    const previous = previousArchivedByPath.get(normalizePhotoPathKey(basePhoto.originalPath));
-    if (previous && isSameScannedFile(basePhoto, previous)) {
-      return {
-        ...basePhoto,
-        sortStatus: 'archived',
-        archiveInfo: previous.archiveInfo || null,
-        previewInfo: previous.previewInfo || null,
-        archiveResult: previous.archiveResult || null,
-        archiveMethod: previous.archiveMethod || '照片分拣',
-        archivedAt: previous.archivedAt || ''
-      };
-    }
-    const ledgerRecord = archivedMatches[photo.id];
-    return ledgerRecord ? buildArchivedScannedPhoto(basePhoto, ledgerRecord) : basePhoto;
-  });
-}
-
-function createScannedPhotoState(photo = {}) {
-  return {
-    id: photo.id,
-    originalPath: photo.path,
-    originalName: photo.name,
-    extension: photo.extension,
-    size: photo.size,
-    modifiedAt: photo.modifiedAt,
-    thumbnailPath: photo.previewUrl,
-    previewUrl: photo.previewUrl,
-    selected: false,
-    sortStatus: 'unassigned',
-    archiveInfo: null,
-    previewInfo: null,
-    archiveResult: null,
-    originalMissing: false
-  };
 }
 
 function buildArchivedScannedPhoto(photo, record = {}) {
@@ -3278,28 +4242,6 @@ function buildArchivedScannedPhoto(photo, record = {}) {
     archiveMethod: '归档台账',
     archivedAt: record.archivedAt || ''
   };
-}
-
-function normalizePhotoPathKey(value = '') {
-  return String(value || '').trim().replaceAll('/', '\\').toLocaleLowerCase('zh-CN');
-}
-
-function isSameScannedFile(nextPhoto, previousPhoto) {
-  return Number(nextPhoto.size) === Number(previousPhoto.size)
-    && String(nextPhoto.modifiedAt || '') === String(previousPhoto.modifiedAt || '');
-}
-
-function getFilterCount(key, photos, selectedIds) {
-  if (key === 'all') return photos.length;
-  if (key === 'unarchived') return photos.filter((photo) => !hasArchivedPhotoState(photo) && photo.sortStatus !== 'ignored').length;
-  if (key === 'pending_sort') return photos.filter((photo) => pendingSortStatuses.has(photo.sortStatus)).length;
-  if (key === 'pending_organize') return photos.filter((photo) => pendingOrganizeStatuses.has(photo.sortStatus)).length;
-  if (key === 'selected') return photos.filter((photo) => selectedIds.includes(photo.id)).length;
-  if (key === 'recognition_issue') return photos.filter((photo) => photo.sortStatus === 'recognition_failed').length;
-  if (key === 'original_missing') return photos.filter((photo) => photo.originalMissing).length;
-  if (key === 'failed') return photos.filter((photo) => ['failed', 'archive_failed'].includes(photo.sortStatus) && !photo.originalMissing).length;
-  if (key === 'archived') return photos.filter(hasArchivedPhotoState).length;
-  return photos.filter((photo) => photo.sortStatus === key).length;
 }
 
 function getSelectedStateText(selectedPhotos) {
@@ -3375,22 +4317,49 @@ function formatDateTime(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function normalizePhotosForSmartSort(photos, recognitionMap = {}, suggestionMap = {}, watermarkMap = {}) {
-  return photos.map((photo, index) => ({
-    photoId: photo.id,
-    filePath: photo.originalPath,
-    fileName: photo.originalName,
-    index,
-    capturedAt: photo.capturedAt || null,
-    modifiedAt: photo.modifiedAt || null,
-    sortStatus: photo.sortStatus || '',
-    archiveInfo: photo.archiveInfo || null,
-    previewInfo: photo.previewInfo || null,
-    archiveResult: photo.archiveResult || null,
-    archiveSuggestion: suggestionMap[photo.id] || null,
-    watermarkRecord: watermarkMap[photo.id] || null,
-    recognition: recognitionMap[photo.id] || null
-  }));
+function normalizePhotosForSmartSort(
+  photos,
+  recognitionMap = {},
+  suggestionMap = {},
+  watermarkMap = {},
+  configs = {}
+) {
+  return photos.map((photo, index) => {
+    const recognitionResult = recognitionMap[photo.id] || null;
+    const archiveSuggestion = suggestionMap[photo.id] || null;
+    const watermarkRecord = watermarkMap[photo.id] || null;
+    const canonicalFields = resolveCanonicalPhotoResult({
+      photo,
+      recognitionResult,
+      watermarkRecord,
+      archiveSuggestion,
+      configs
+    });
+    return {
+      photoId: photo.id,
+      filePath: photo.originalPath,
+      fileName: photo.originalName,
+      index,
+      sourceType: photo.sourceType || '',
+      capturedAt: photo.capturedAt || null,
+      postTime: photo.postTime || null,
+      modifiedAt: photo.modifiedAt || null,
+      sortStatus: photo.sortStatus || '',
+      archiveInfo: photo.archiveInfo || null,
+      previewInfo: photo.previewInfo || null,
+      archiveResult: photo.archiveResult || null,
+      archiveSuggestion,
+      watermarkRecord,
+      recognition: recognitionResult,
+      smartGrouping: buildSmartGroupDescriptor({
+        photo,
+        recognitionResult,
+        watermarkRecord,
+        archiveSuggestion,
+        canonicalFields
+      })
+    };
+  });
 }
 
 function toRecognitionPhoto(photo) {
@@ -3551,42 +4520,10 @@ function isSmartGroupBatchSelectable(photo) {
     && photo.sortStatus !== 'previewed';
 }
 
-function getVisiblePhotosSnapshot({
-  photos = [],
-  activeSmartGroupPhotoKeys = null,
-  filter = 'all',
-  searchText = '',
-  selectedIds = [],
-  sortMode = 'timeAsc'
-}) {
-  const keyword = searchText.trim().toLowerCase();
-  return [...photos]
-    .filter((photo) => {
-      if (activeSmartGroupPhotoKeys) return activeSmartGroupPhotoKeys.has(photo.id) || activeSmartGroupPhotoKeys.has(photo.originalPath);
-      if (filter === 'all') return true;
-      if (filter === 'unarchived') return !hasArchivedPhotoState(photo) && photo.sortStatus !== 'ignored';
-      if (filter === 'pending_sort') return pendingSortStatuses.has(photo.sortStatus);
-      if (filter === 'pending_organize') return pendingOrganizeStatuses.has(photo.sortStatus);
-      if (filter === 'selected') return selectedIds.includes(photo.id);
-      if (filter === 'recognition_issue') return photo.sortStatus === 'recognition_failed';
-      if (filter === 'original_missing') return photo.originalMissing;
-      if (filter === 'failed') return ['failed', 'archive_failed'].includes(photo.sortStatus) && !photo.originalMissing;
-      if (filter === 'ignored') return isIgnoredPhoto(photo);
-      if (filter === 'archived') return hasArchivedPhotoState(photo);
-      return photo.sortStatus === filter;
-    })
-    .filter((photo) => {
-      if (!keyword) return true;
-      return [photo.originalName, photo.archiveInfo?.remark, photo.archiveInfo?.workContent, photo.archiveInfo?.location, photo.archiveInfo?.keywords]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(keyword));
-    })
-    .sort((a, b) => {
-      if (sortMode === 'nameAsc') return a.originalName.localeCompare(b.originalName, 'zh-CN');
-      if (sortMode === 'nameDesc') return b.originalName.localeCompare(a.originalName, 'zh-CN');
-      if (sortMode === 'timeDesc') return String(b.modifiedAt || '').localeCompare(String(a.modifiedAt || ''));
-      return String(a.modifiedAt || '').localeCompare(String(b.modifiedAt || ''));
-    });
+function filterPhotoMapByIds(input = {}, photoIds = new Set()) {
+  return Object.fromEntries(
+    Object.entries(input || {}).filter(([photoId]) => photoIds.has(photoId))
+  );
 }
 
 function summarizeRecognitionResults(recognitionMap = {}) {

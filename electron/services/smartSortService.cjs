@@ -227,22 +227,42 @@ async function buildSelectionOrderGroups(userDataDir, photos, options = {}) {
 
 async function buildRecognitionGroups(userDataDir, photos) {
   const buckets = new Map();
-  const hasRecognitionInput = photos.some((photo) => photo.recognition || photo.archiveSuggestion || photo.archiveInfo || photo.previewInfo || photo.archiveResult);
-  photos.forEach((photo) => {
+  const hasRecognitionInput = photos.some((photo) => (
+    photo.smartGrouping
+    || photo.recognition
+    || photo.archiveSuggestion
+    || photo.archiveInfo
+    || photo.previewInfo
+    || photo.archiveResult
+  ));
+  photos.forEach((photo, photoIndex) => {
     const bucket = resolveSmartGroupBucket(photo);
-    const bucketKey = bucket.title;
-    if (!buckets.has(bucketKey)) buckets.set(bucketKey, []);
-    buckets.get(bucketKey).push(photo);
+    const descriptor = photo.smartGrouping;
+    const bucketKey = descriptor?.groupKey
+      || `missing_group_key:${photo.photoId || photoIndex}`;
+    if (!buckets.has(bucketKey)) {
+      buckets.set(bucketKey, {
+        bucket,
+        descriptor,
+        photos: []
+      });
+    }
+    buckets.get(bucketKey).photos.push(photo);
   });
   if (!hasRecognitionInput) return [];
   const entries = Array.from(buckets.entries());
-  return Promise.all(entries.map(([title, bucket], index) => buildGroup(userDataDir, bucket, {
+  return Promise.all(entries.map(([groupKey, entry], index) => buildGroup(userDataDir, entry.photos, {
     index,
-    titlePrefix: title,
-    fixedTitle: title,
-    basis: resolveSmartGroupBucket(bucket[0]).basis,
-    basisLabel: resolveSmartGroupBucket(bucket[0]).basisLabel,
-    confidenceLabel: resolveSmartGroupBucket(bucket[0]).confidenceLabel
+    titlePrefix: entry.descriptor?.title || entry.bucket.title,
+    fixedTitle: entry.descriptor?.title || entry.bucket.title,
+    basis: entry.descriptor ? 'business_fields' : entry.bucket.basis,
+    basisLabel: entry.descriptor
+      ? '按日期、项目、归档分类和工作内容分组'
+      : entry.bucket.basisLabel,
+    confidenceLabel: entry.descriptor ? 'high' : entry.bucket.confidenceLabel,
+    groupKey,
+    suggestedFields: entry.descriptor?.fields || {},
+    missingDate: entry.descriptor?.missingDate === true
   })));
 }
 
@@ -252,6 +272,7 @@ async function buildGroup(userDataDir, photos, meta) {
   const range = buildTimeRange(photos);
   return {
     id: createId('smart-sort-group'),
+    groupKey: String(meta.groupKey || ''),
     title: meta.fixedTitle || `${meta.titlePrefix} ${meta.index + 1}`,
     status: 'pending',
     basis: meta.basis,
@@ -265,8 +286,8 @@ async function buildGroup(userDataDir, photos, meta) {
       hasCandidateFields: recognitionSummary.hasCandidateFields,
       hasPatchDraft: recognitionSummary.hasPatchDraft
     },
-    suggestedFields: {},
-    warnings: [],
+    suggestedFields: normalizePlainObject(meta.suggestedFields) || {},
+    warnings: meta.missingDate ? ['该照片缺少有效日期，需要人工补充后重新智拣。'] : [],
     errors: [],
     createdAt: now,
     updatedAt: now,
@@ -314,6 +335,7 @@ function normalizePhoto(photo = {}, index = 0) {
     index: Number.isFinite(Number(photo.index)) ? Number(photo.index) : index,
     capturedAt,
     modifiedAt,
+    sourceType: String(photo.sourceType || ''),
     sortTimestamp: sortDate ? Date.parse(sortDate) : null,
     sortStatus: String(photo.sortStatus || ''),
     archiveInfo: normalizePlainObject(photo.archiveInfo),
@@ -321,6 +343,7 @@ function normalizePhoto(photo = {}, index = 0) {
     archiveResult: normalizePlainObject(photo.archiveResult),
     archiveSuggestion: normalizeArchiveSuggestionForGrouping(photo.archiveSuggestion),
     watermarkRecord: normalizePlainObject(photo.watermarkRecord),
+    smartGrouping: normalizeSmartGroupingDescriptor(photo.smartGrouping, String(photo.photoId || photo.id || '').trim()),
     source: 'photo_list',
     recognition: normalizeRecognitionForGrouping(photo.recognition || photo.ocrResult || null),
     createdAt: new Date().toISOString(),
@@ -548,6 +571,7 @@ function normalizeGroup(group = {}) {
   const photos = (Array.isArray(group.photos) ? group.photos : []).map((photo, index) => normalizePhoto(photo, index)).filter(Boolean);
   return {
     id: String(group.id || createId('smart-sort-group')),
+    groupKey: String(group.groupKey || ''),
     title: String(group.title || '分拣组'),
     status: ALLOWED_STATUSES.has(group.status) ? group.status : 'pending',
     basis: String(group.basis || 'selection_order'),
@@ -561,12 +585,35 @@ function normalizeGroup(group = {}) {
       hasCandidateFields: Boolean(group.summary?.hasCandidateFields),
       hasPatchDraft: Boolean(group.summary?.hasPatchDraft)
     },
-    suggestedFields: {},
+    suggestedFields: normalizePlainObject(group.suggestedFields) || {},
     warnings: Array.isArray(group.warnings) ? group.warnings : [],
     errors: Array.isArray(group.errors) ? group.errors : [],
     createdAt: String(group.createdAt || new Date().toISOString()),
     updatedAt: String(group.updatedAt || new Date().toISOString()),
     schemaVersion: SCHEMA_VERSION
+  };
+}
+
+function normalizeSmartGroupingDescriptor(value, photoId) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const fields = normalizePlainObject(value.fields) || {};
+  const date = String(value.date || fields.date || '').trim();
+  const safeFields = {
+    date,
+    project: String(fields.project || '').trim(),
+    watermarkCategory: String(fields.watermarkCategory || '').trim(),
+    workContent: String(fields.workContent || '').trim()
+  };
+  const groupKey = String(value.groupKey || '').trim();
+  if (!groupKey) return null;
+  return {
+    groupKey,
+    date,
+    dateSource: String(value.dateSource || '').trim(),
+    missingDate: value.missingDate === true || !date,
+    fields: safeFields,
+    title: String(value.title || '').trim()
+      || `${date || '日期待补充'}｜${safeFields.workContent || safeFields.watermarkCategory || safeFields.project || photoId || '待人工完善'}`
   };
 }
 
