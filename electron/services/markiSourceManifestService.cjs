@@ -235,6 +235,53 @@ async function updateMarkiSourceImportStatus(
   });
 }
 
+async function prepareMarkiSourceForRedownload(
+  documentsPath,
+  orgId,
+  sourceKey,
+  options = {}
+) {
+  const normalizedOrgId = normalizeOrgId(orgId);
+  const normalizedSourceKey = normalizeSourceKey(normalizedOrgId, sourceKey);
+  const manifestPath = getMarkiSourceManifestPath(documentsPath, normalizedOrgId);
+  return withManifestWriteLock(manifestPath, async () => {
+    const manifest = await loadMarkiSourceManifest(documentsPath, normalizedOrgId);
+    const existing = manifest.records[normalizedSourceKey];
+    if (!existing) {
+      throw createManifestError('source_record_not_found', '未找到对应的马克来源记录。');
+    }
+    if (existing.importStatus !== 'imported') {
+      throw createManifestError(
+        'invalid_import_status_transition',
+        '只有已下载完成但缓存失效的来源记录可以准备重新下载。'
+      );
+    }
+    const now = resolveNow(options);
+    const nextRecord = {
+      ...existing,
+      importStatus: 'download_failed',
+      downloadInfo: null,
+      lastDownloadError: normalizeDownloadError({
+        code: 'marki_import_cache_invalid',
+        message: '本地下载缓存缺失或校验失败，可重新下载。'
+      }, now),
+      updatedAt: now
+    };
+    validateDownloadState(nextRecord);
+    manifest.records[normalizedSourceKey] = nextRecord;
+    manifest.updatedAt = now;
+    await writeMarkiSourceManifest(manifestPath, manifest);
+    return {
+      success: true,
+      orgId: normalizedOrgId,
+      sourceKey: normalizedSourceKey,
+      previousStatus: existing.importStatus,
+      importStatus: nextRecord.importStatus,
+      record: cloneJson(nextRecord)
+    };
+  });
+}
+
 async function getMarkiSourceRecordByKey(documentsPath, orgId, sourceKey) {
   const normalizedOrgId = normalizeOrgId(orgId);
   const normalizedSourceKey = normalizeSourceKey(normalizedOrgId, sourceKey);
@@ -622,6 +669,7 @@ module.exports = {
   hasMarkiSourceKey,
   loadMarkiSourceManifest,
   loadMarkiSourceManifestForRecovery,
+  prepareMarkiSourceForRedownload,
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 };

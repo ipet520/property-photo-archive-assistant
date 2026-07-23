@@ -1,7 +1,6 @@
-const crypto = require('node:crypto');
-const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { inspectPhotoSourceFile } = require('./photoFileHealthService.cjs');
 
 const SNAPSHOT_DIRECTORY_NAME = 'sort-workspace';
 const SNAPSHOT_FILE_NAME = 'active-workbench.json';
@@ -18,6 +17,9 @@ const WORKSPACE_KEYS = new Set([
   'recognitionResultsByPhoto',
   'watermarkRecordsByPhoto',
   'archiveSuggestionsByPhoto',
+  'photoDraftByPhotoId',
+  'groupDraftByGroupId',
+  'archivePreviewPlan',
   'smartSortResult',
   'smartSortViewMode',
   'activeSmartSortGroupId',
@@ -62,7 +64,8 @@ const PHOTO_KEYS = new Set([
   'ignoredMembershipRestoreStatus',
   'sourceType',
   'sourceKey',
-  'sourceMetadataRef'
+  'sourceMetadataRef',
+  'fileHealth'
 ]);
 
 const FORBIDDEN_KEYS = new Set([
@@ -158,11 +161,7 @@ async function loadSortWorkspaceSnapshot(userDataPath, options = {}) {
       throw createSnapshotError('sort_workspace_snapshot_corrupt', '工作台快照已损坏，未自动恢复。');
     }
     const snapshot = validateSortWorkspaceSnapshot(parsed);
-    const workspace = await markMissingOriginalPhotos(
-      snapshot.workspace,
-      fileSystem,
-      options.hashFile || hashFile
-    );
+    const workspace = await markMissingOriginalPhotos(snapshot.workspace, fileSystem, options);
     return {
       success: true,
       found: true,
@@ -200,11 +199,12 @@ function createEmptyWorkspace() {
     recognitionResultsByPhoto: {},
     watermarkRecordsByPhoto: {},
     archiveSuggestionsByPhoto: {},
+    photoDraftByPhotoId: {},
+    groupDraftByGroupId: {},
+    archivePreviewPlan: null,
     smartSortResult: null,
     smartSortViewMode: 'statusFilter',
     activeSmartSortGroupId: '',
-    photoFolder: '',
-    archiveRoot: '',
     filter: 'all',
     sortMode: 'timeAsc',
     pageSize: 50,
@@ -236,11 +236,12 @@ function normalizeWorkspace(input, options = {}) {
     recognitionResultsByPhoto: normalizePhotoMap(input.recognitionResultsByPhoto, photoIds, 'recognitionResultsByPhoto'),
     watermarkRecordsByPhoto: normalizePhotoMap(input.watermarkRecordsByPhoto, photoIds, 'watermarkRecordsByPhoto'),
     archiveSuggestionsByPhoto: normalizePhotoMap(input.archiveSuggestionsByPhoto, photoIds, 'archiveSuggestionsByPhoto'),
+    photoDraftByPhotoId: normalizePhotoMap(input.photoDraftByPhotoId ?? {}, photoIds, 'photoDraftByPhotoId'),
+    groupDraftByGroupId: normalizeOptionalObjectMap(input.groupDraftByGroupId, 'groupDraftByGroupId'),
+    archivePreviewPlan: sanitizeJsonValue(input.archivePreviewPlan ?? null, 'archivePreviewPlan'),
     smartSortResult: sanitizeJsonValue(input.smartSortResult ?? null, 'smartSortResult'),
     smartSortViewMode: normalizeEnum(input.smartSortViewMode, ['statusFilter', 'smartSortGroup'], 'statusFilter'),
     activeSmartSortGroupId: normalizeText(input.activeSmartSortGroupId, 500),
-    photoFolder: normalizeText(input.photoFolder, 32767),
-    archiveRoot: normalizeText(input.archiveRoot, 32767),
     filter: normalizeText(input.filter, 100) || 'all',
     sortMode: normalizeEnum(input.sortMode, ['timeAsc', 'timeDesc', 'nameAsc', 'nameDesc'], 'timeAsc'),
     pageSize: normalizeEnumNumber(input.pageSize, [50, 100, 200], 50),
@@ -307,7 +308,8 @@ function normalizePhotos(input) {
       ),
       sourceType: normalizeText(photo.sourceType, 100),
       sourceKey: normalizeText(photo.sourceKey, 2000),
-      sourceMetadataRef: normalizeText(photo.sourceMetadataRef, 2000)
+      sourceMetadataRef: normalizeText(photo.sourceMetadataRef, 2000),
+      fileHealth: sanitizeJsonValue(photo.fileHealth ?? null, 'fileHealth')
     };
     return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== ''));
   });
@@ -324,6 +326,14 @@ function normalizePhotoMap(input, photoIds, fieldName) {
     result[photoId] = sanitizeJsonValue(value, fieldName);
   }
   return result;
+}
+
+function normalizeOptionalObjectMap(input, fieldName) {
+  if (input === undefined || input === null) return {};
+  if (!isPlainObject(input)) {
+    throw createSnapshotError('sort_workspace_snapshot_invalid', `${fieldName} 格式无效。`);
+  }
+  return sanitizeJsonValue(input, fieldName);
 }
 
 function sanitizeJsonValue(value, fieldName, depth = 0) {
@@ -359,21 +369,39 @@ function sanitizeJsonValue(value, fieldName, depth = 0) {
   return result;
 }
 
-async function markMissingOriginalPhotos(workspace, fileSystem, hashFileImpl) {
+async function markMissingOriginalPhotos(workspace, fileSystem, options = {}) {
+  const inspectFile = options.inspectPhotoSourceFile || inspectPhotoSourceFile;
   const photos = [];
   for (const photo of workspace.photos) {
-    let originalMissing = true;
-    let sha256 = '';
+    let fileHealth;
     try {
-      const stat = await fileSystem.stat(photo.originalPath);
-      originalMissing = !stat.isFile();
-      if (!originalMissing) sha256 = await hashFileImpl(photo.originalPath);
+      fileHealth = await inspectFile(photo, photo.sha256, {
+        fs: fileSystem,
+        ...(options.createReadStream ? { createReadStream: options.createReadStream } : {})
+      });
     } catch {
-      originalMissing = true;
+      fileHealth = {
+        resolvedPath: photo.originalPath,
+        exists: false,
+        isFile: false,
+        readable: false,
+        size: 0,
+        sizeValid: false,
+        mimeType: '',
+        extensionSupported: false,
+        decodable: false,
+        currentSha256: '',
+        expectedSha256: photo.sha256 || '',
+        fingerprintMatches: false,
+        healthStatus: 'unreadable',
+        failureReason: '照片文件健康检查失败。'
+      };
     }
+    const originalMissing = !['healthy', 'fingerprint_unknown'].includes(fileHealth.healthStatus);
     photos.push({
       ...photo,
-      sha256,
+      sha256: photo.sha256 || '',
+      fileHealth,
       originalMissing,
       missingSortStatus: originalMissing
         ? (photo.missingSortStatus || photo.sortStatus || 'unassigned')
@@ -385,16 +413,6 @@ async function markMissingOriginalPhotos(workspace, fileSystem, hashFileImpl) {
     ...workspace,
     photos
   };
-}
-
-function hashFile(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fsSync.createReadStream(filePath);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
 }
 
 async function assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath) {

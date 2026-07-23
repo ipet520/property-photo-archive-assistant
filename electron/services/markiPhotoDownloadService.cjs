@@ -5,6 +5,7 @@ const {
   buildMarkiSourceKey,
   getMarkiImportRoot,
   getMarkiSourceRecordByKey,
+  prepareMarkiSourceForRedownload,
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 } = require('./markiSourceManifestService.cjs');
@@ -42,14 +43,36 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
     );
 
     const importRoot = getMarkiImportRoot(documentsPath);
+    let quarantinedPath = '';
     let record = await runManifestOperation(
       () => manifestService.getMarkiSourceRecordByKey(documentsPath, identifiers.orgId, sourceKey),
       'marki_manifest_access_failed',
       '来源清单读取失败，请重试。'
     );
     if (record.importStatus === 'imported') {
-      await verifyImportedFile(importRoot, record, options);
-      return buildImportedResult(importRoot, record, true);
+      try {
+        await verifyImportedFile(importRoot, record, options);
+        return buildImportedResult(importRoot, record, true);
+      } catch (error) {
+        if (
+          options.allowImportedRedownload !== true
+          || error?.code === 'imported_file_path_invalid'
+        ) {
+          throw error;
+        }
+        const prepared = await runManifestOperation(
+          () => manifestService.prepareMarkiSourceForRedownload(
+            documentsPath,
+            identifiers.orgId,
+            sourceKey,
+            options
+          ),
+          'marki_manifest_access_failed',
+          '来源清单无法进入重新下载状态，请重试。'
+        );
+        quarantinedPath = await quarantineInvalidImportedFile(importRoot, record, options);
+        record = prepared.record;
+      }
     }
 
     const paths = buildDownloadPaths(importRoot, identifiers);
@@ -113,6 +136,7 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
       'marki_manifest_commit_failed',
       '照片文件已下载完成，但来源清单更新失败，请重试以恢复记录。'
     );
+    await cleanupQuarantinedFiles(paths.finalPath, quarantinedPath);
     return buildImportedResult(importRoot, record, reusedExisting);
   });
 }
@@ -125,7 +149,7 @@ async function verifyImportedFile(importRoot, record, options) {
       '已导入的马克照片文件记录不完整，请人工核查。'
     );
   }
-  const localPath = path.join(importRoot, ...downloadInfo.relativePath.split('/'));
+  const localPath = resolveImportedFilePath(importRoot, downloadInfo.relativePath);
   let inspected;
   try {
     inspected = await inspectJpegFile(localPath, options);
@@ -147,6 +171,74 @@ async function verifyImportedFile(importRoot, record, options) {
     );
   }
   return inspected;
+}
+
+async function quarantineInvalidImportedFile(importRoot, record, options = {}) {
+  const localPath = resolveImportedFilePath(importRoot, record?.downloadInfo?.relativePath);
+  let stat;
+  try {
+    stat = await fs.stat(localPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return '';
+    throw new MarkiPhotoDownloadError(
+      'imported_file_quarantine_failed',
+      '旧下载缓存无法安全隔离，请人工核查。'
+    );
+  }
+  if (!stat.isFile()) {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_quarantine_failed',
+      '旧下载缓存不是普通文件，请人工核查。'
+    );
+  }
+  const suffix = typeof options.randomUUID === 'function'
+    ? options.randomUUID()
+    : crypto.randomUUID();
+  const quarantinePath = `${localPath}.invalid-${suffix}`;
+  try {
+    await fs.rename(localPath, quarantinePath);
+  } catch {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_quarantine_failed',
+      '旧下载缓存无法安全隔离，请人工核查。'
+    );
+  }
+  return quarantinePath;
+}
+
+function resolveImportedFilePath(importRoot, relativePath) {
+  const normalizedRelativePath = String(relativePath || '').replaceAll('\\', '/');
+  if (!normalizedRelativePath || path.isAbsolute(normalizedRelativePath)) {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_path_invalid',
+      '已导入照片的缓存位置无效，请人工核查。'
+    );
+  }
+  const root = path.resolve(importRoot);
+  const localPath = path.resolve(root, ...normalizedRelativePath.split('/'));
+  const relative = path.relative(root, localPath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_path_invalid',
+      '已导入照片的缓存位置无效，请人工核查。'
+    );
+  }
+  return localPath;
+}
+
+async function cleanupQuarantinedFiles(finalPath, preferredPath = '') {
+  const directoryPath = path.dirname(finalPath);
+  const prefix = `${path.basename(finalPath)}.invalid-`;
+  try {
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+      .map((entry) => fs.rm(path.join(directoryPath, entry.name), { force: true })));
+  } catch {
+    if (preferredPath) {
+      await fs.rm(preferredPath, { force: true }).catch(() => {});
+    }
+  }
 }
 
 async function retryMarkiPhotoDownload(documentsPath, input = {}, options = {}) {
@@ -562,6 +654,9 @@ function resolveManifestService(options = {}) {
     getMarkiSourceRecordByKey: typeof overrides.getMarkiSourceRecordByKey === 'function'
       ? overrides.getMarkiSourceRecordByKey
       : getMarkiSourceRecordByKey,
+    prepareMarkiSourceForRedownload: typeof overrides.prepareMarkiSourceForRedownload === 'function'
+      ? overrides.prepareMarkiSourceForRedownload
+      : prepareMarkiSourceForRedownload,
     updateMarkiSourceImportStatus: typeof overrides.updateMarkiSourceImportStatus === 'function'
       ? overrides.updateMarkiSourceImportStatus
       : updateMarkiSourceImportStatus,
@@ -581,7 +676,7 @@ async function runManifestOperation(action, code, message) {
 
 function buildImportedResult(importRoot, record, reusedExisting) {
   const downloadInfo = record.downloadInfo;
-  const localPath = path.join(importRoot, ...downloadInfo.relativePath.split('/'));
+  const localPath = resolveImportedFilePath(importRoot, downloadInfo.relativePath);
   return {
     success: true,
     sourceKey: record.sourceKey,

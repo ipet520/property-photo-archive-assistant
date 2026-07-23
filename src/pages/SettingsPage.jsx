@@ -66,13 +66,19 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   const configPaths = archiveState.configPaths || {};
 
   useEffect(() => {
-    window.archiveAssistant.loadSettings()
-      .then((loaded) => setSettings(loaded))
+    window.archiveAssistant.loadRuntimeConfiguration()
+      .then((loaded) => setSettings(loaded.settings))
       .catch((error) => {
         recordRuntimeLog({ page: '系统设置', operation: '读取系统设置', errorType: '配置读取失败', summary: error.message, error });
         setMessage({ type: 'error', text: `设置加载失败：${error.message}` });
       });
   }, []);
+
+  useEffect(() => {
+    if (archiveState.runtimeConfiguration?.settings) {
+      setSettings(archiveState.runtimeConfiguration.settings);
+    }
+  }, [archiveState.runtimeConfiguration?.revision]);
 
   useEffect(() => {
     void loadRecognitionSettings();
@@ -290,9 +296,9 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
 
   async function saveSettings() {
     try {
-      const saved = await window.archiveAssistant.saveSettings(settings);
-      setSettings(saved);
-      archiveState?.applySavedSettings?.(saved);
+      const runtimeConfiguration = await window.archiveAssistant.saveRuntimeSettings(settings);
+      setSettings(runtimeConfiguration.settings);
+      archiveState?.applySavedSettings?.(runtimeConfiguration);
       setMessage({ type: 'success', text: '系统设置已保存到本地。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '保存系统设置', errorType: '配置保存失败', summary: error.message, error });
@@ -309,9 +315,26 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     setMessage({ type: 'idle', text: '目录已选择，请点击“保存设置”写入本地。' });
   }
 
-  async function openDirectory(pathValue) {
+  async function openDirectory(key, pathValue) {
     if (!pathValue) return;
-    await window.archiveAssistant.openPath(pathValue);
+    const directoryKind = key === 'defaultPhotoFolder'
+      ? 'photoSource'
+      : key === 'defaultArchiveRoot'
+        ? 'archiveRoot'
+        : 'archivePackage';
+    const persistedPath = directoryKind === 'photoSource'
+      ? archiveState.runtimeConfiguration?.photoSourceDirectory
+      : directoryKind === 'archiveRoot'
+        ? archiveState.runtimeConfiguration?.archiveRootDirectory
+        : archiveState.runtimeConfiguration?.archivePackageDirectory;
+    if (String(pathValue || '').trim() !== String(persistedPath || '').trim()) {
+      setMessage({ type: 'error', text: '请先保存设置，再打开该目录。' });
+      return;
+    }
+    const result = await window.archiveAssistant.openConfiguredDirectory(directoryKind);
+    setMessage(result?.success
+      ? { type: 'success', text: '目录已打开。' }
+      : { type: 'error', text: result?.message || '目录当前不可用。' });
   }
 
   async function copyText(text, label = '内容') {
@@ -338,7 +361,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     try {
       const result = await window.archiveAssistant.importConfigs();
       if (result?.canceled) return;
-      await archiveState.handleConfigsSaved(result.runtimeConfigs);
+      await archiveState.handleConfigsSaved(result);
       setMessage({ type: 'success', text: '设置已导入，主界面配置已刷新。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '导入配置', errorType: '配置读取失败', summary: error.message, error });
@@ -360,7 +383,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     if (!window.confirm('恢复默认配置会先备份当前配置，再覆盖基础数据配置。是否继续？')) return;
     try {
       const result = await window.archiveAssistant.resetConfigsToDefault();
-      await archiveState.handleConfigsSaved(result.runtimeConfigs);
+      await archiveState.handleConfigsSaved(result);
       setMessage({ type: 'success', text: '已恢复默认配置，主界面配置已刷新。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '恢复默认配置', errorType: '配置保存失败', summary: error.message, error });
@@ -434,7 +457,7 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
                     </div>
                     <button type="button" onClick={() => choosePath(row.key)}>选择目录</button>
                     <button type="button" onClick={() => updateSettings({ [row.key]: '' })} disabled={!row.value}>清空</button>
-                    <button type="button" onClick={() => openDirectory(row.value)} disabled={!row.value}>打开</button>
+                    <button type="button" onClick={() => openDirectory(row.key, row.value)} disabled={!row.value}>打开</button>
                   </article>
                 ))}
               </div>

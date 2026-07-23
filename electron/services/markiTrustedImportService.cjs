@@ -6,8 +6,13 @@ const {
   settleMarkiPhotoSelectionImport
 } = require('./markiPhotoQuerySessionService.cjs');
 const {
-  checkMarkiSourceKeys
-} = require('./markiSourceManifestService.cjs');
+  resolveMarkiImportSourceStatuses,
+  beginMarkiImportLifecycleBatch,
+  markMarkiImportLifecycleDownloading,
+  markMarkiImportLifecycleFailed,
+  markMarkiImportLifecycleReady,
+  settleMarkiImportLifecycleDownloads
+} = require('./markiImportLifecycleService.cjs');
 const {
   downloadMarkiPhoto
 } = require('./markiPhotoDownloadService.cjs');
@@ -22,7 +27,12 @@ const {
 } = require('./markiImportBatchService.cjs');
 
 const MAX_CONCURRENT_DOWNLOADS = 3;
-const REQUEST_KEYS = new Set(['sessionId', 'selectionTokens']);
+const REQUEST_KEYS = new Set([
+  'sessionId',
+  'selectionTokens',
+  'watermarkFilter',
+  'importStatusFilter'
+]);
 const INPUT_KEYS = new Set(['credentials', 'documentsPath', 'userDataPath', 'request']);
 const sourceReservations = new Map();
 
@@ -76,7 +86,11 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
               orgId: task.orgId,
               momentId: item.moment.id
             },
-            options.downloadOptions || {}
+            {
+              ...(options.downloadOptions || {}),
+              allowImportedRedownload: ['removed_reimportable', 'failed_retryable']
+                .includes(item.selectedSourceStatus)
+            }
           );
           return { success: true, item, download };
         } catch (error) {
@@ -117,11 +131,48 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
       });
     }
 
+    batchId = batchId || `marki-import-${dependencies.randomUUID()}`;
+    await dependencies.beginLifecycleBatch(
+      normalized.userDataPath,
+      {
+        batchId,
+        querySummary: {
+          ...task.querySummary,
+          watermarkFilter: normalized.request.watermarkFilter,
+          importStatusFilter: normalized.request.importStatusFilter,
+          duplicateCount: task.selectionTokens.length - effectiveItems.length
+        },
+        items: effectiveItems.map((item) => ({
+          sourceKey: item.sourceKey,
+          displayId: resolveSafeDisplayId(item, task.items),
+          markName: item.markName
+        }))
+      },
+      options.lifecycleOptions || {}
+    );
+    await dependencies.markLifecycleDownloading(
+      normalized.userDataPath,
+      batchId,
+      options.lifecycleOptions || {}
+    );
+    await dependencies.settleLifecycleDownloads(
+      normalized.userDataPath,
+      {
+        batchId,
+        items: downloadAttempts.map((attempt) => ({
+          sourceKey: attempt.item.sourceKey,
+          success: true,
+          code: '',
+          message: ''
+        }))
+      },
+      options.lifecycleOptions || {}
+    );
+
     const importItems = downloadAttempts.map(({ item, download }) => ({
       moment: item.moment,
       download
     }));
-    batchId = batchId || `marki-import-${dependencies.randomUUID()}`;
     const deduplication = buildDeduplication(importItems.length);
 
     let existingBatch = await getExistingBatch(
@@ -131,6 +182,17 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
       options.batchOptions || {}
     );
     if (existingBatch?.status === 'ready') {
+      await dependencies.markLifecycleReady(
+        normalized.userDataPath,
+        {
+          batchId,
+          photos: existingBatch.workbenchImportPackage.photos.map((photo) => ({
+            sourceKey: photo.sourceKey,
+            photoId: photo.id
+          }))
+        },
+        options.lifecycleOptions || {}
+      );
       await settleTask(
         dependencies,
         task,
@@ -173,6 +235,15 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
         );
       }
     } catch {
+      await recordLifecycleFailure(
+        dependencies,
+        normalized.userDataPath,
+        batchId,
+        effectiveItems,
+        'marki_import_batch_save_failed',
+        '马克导入批次保存失败，请重试。',
+        options
+      );
       await settleTask(
         dependencies,
         task,
@@ -249,6 +320,18 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
           )]
         });
       }
+      await dependencies.markLifecycleFailed(
+        normalized.userDataPath,
+        {
+          batchId,
+          failures: prepared.failures.map((failure) => ({
+            sourceKey: failure.sourceKey,
+            code: normalizeSafeCode(failure.code, 'marki_import_metadata_failed'),
+            message: '马克来源元数据保存失败，请重试。'
+          }))
+        },
+        options.lifecycleOptions || {}
+      );
       await settleTask(
         dependencies,
         task,
@@ -276,6 +359,15 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
         options.batchOptions || {}
       );
     } catch {
+      await recordLifecycleFailure(
+        dependencies,
+        normalized.userDataPath,
+        batchId,
+        effectiveItems,
+        'marki_import_batch_save_failed',
+        '马克导入批次保存失败，请重试。',
+        options
+      );
       await settleTask(
         dependencies,
         task,
@@ -300,6 +392,17 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
       });
     }
 
+    await dependencies.markLifecycleReady(
+      normalized.userDataPath,
+      {
+        batchId,
+        photos: readyBatch.workbenchImportPackage.photos.map((photo) => ({
+          sourceKey: photo.sourceKey,
+          photoId: photo.id
+        }))
+      },
+      options.lifecycleOptions || {}
+    );
     await settleTask(
       dependencies,
       task,
@@ -331,13 +434,57 @@ async function resolveEffectiveItems(task, input, dependencies) {
     const retryTokens = new Set(task.effectiveSelectionTokens);
     return task.items.filter((item) => retryTokens.has(item.selectionToken));
   }
-  const statusResult = await dependencies.checkSourceKeys(
-    input.documentsPath,
-    task.orgId,
-    task.items.map((item) => item.sourceKey)
-  );
+  const statusResult = await dependencies.resolveSourceStatuses({
+    documentsPath: input.documentsPath,
+    userDataPath: input.userDataPath,
+    orgId: task.orgId,
+    sourceKeys: task.items.map((item) => item.sourceKey)
+  });
   const statusBySourceKey = statusResult?.bySourceKey || {};
-  return task.items.filter((item) => statusBySourceKey[item.sourceKey]?.importStatus !== 'imported');
+  return task.items.flatMap((item) => {
+    const selectedSourceStatus = statusBySourceKey[item.sourceKey] || 'discovered';
+    const currentItem = { ...item, selectedSourceStatus };
+    if (!matchesTrustedImportFilters(currentItem, input.request)) return [];
+    return ['discovered', 'removed_reimportable', 'failed_retryable']
+      .includes(selectedSourceStatus)
+      ? [currentItem]
+      : [];
+  });
+}
+
+function matchesTrustedImportFilters(item, request) {
+  if (item.isWatermarked !== true) {
+    throw new MarkiTrustedImportError(
+      'marki_photo_import_unwatermarked_rejected',
+      '无水印照片仅供查看，不能导入。'
+    );
+  }
+  const watermarkFilter = request.watermarkFilter;
+  if (
+    watermarkFilter !== 'all'
+    && watermarkFilter !== 'watermarked'
+    && watermarkFilter !== item.watermarkKey
+  ) {
+    throw new MarkiTrustedImportError(
+      'marki_photo_import_filter_mismatch',
+      '所选照片不符合当前水印筛选条件。'
+    );
+  }
+  const status = String(item.selectedSourceStatus || '');
+  const importStatusFilter = request.importStatusFilter;
+  if (
+    importStatusFilter !== 'all'
+    && !(
+      (importStatusFilter === 'not_imported' && status === 'discovered')
+      || importStatusFilter === status
+    )
+  ) {
+    throw new MarkiTrustedImportError(
+      'marki_photo_import_filter_mismatch',
+      '所选照片不符合当前导入状态筛选条件。'
+    );
+  }
+  return true;
 }
 
 async function settleTask(dependencies, task, status, batchId, effectiveSelectionTokens) {
@@ -505,9 +652,43 @@ function normalizeInput(input) {
     userDataPath,
     request: {
       sessionId: normalizeUuid(input.request.sessionId),
-      selectionTokens: normalizeSelectionTokens(input.request.selectionTokens)
+      selectionTokens: normalizeSelectionTokens(input.request.selectionTokens),
+      watermarkFilter: normalizeWatermarkFilter(input.request.watermarkFilter),
+      importStatusFilter: normalizeImportStatusFilter(input.request.importStatusFilter)
     }
   };
+}
+
+function normalizeWatermarkFilter(value) {
+  const text = String(value || '').normalize('NFKC').trim();
+  if (
+    ['watermarked', 'unwatermarked', 'all'].includes(text)
+    || /^name:.{1,500}$/u.test(text)
+  ) {
+    return text;
+  }
+  throw new MarkiTrustedImportError(
+    'marki_photo_import_invalid_request',
+    '马克水印筛选条件无效。'
+  );
+}
+
+function normalizeImportStatusFilter(value) {
+  const text = String(value || '').trim();
+  if ([
+    'all',
+    'not_imported',
+    'imported_active',
+    'removed_reimportable',
+    'failed_retryable',
+    'filtered'
+  ].includes(text)) {
+    return text;
+  }
+  throw new MarkiTrustedImportError(
+    'marki_photo_import_invalid_request',
+    '马克导入状态筛选条件无效。'
+  );
 }
 
 function normalizeCredentials(value) {
@@ -572,13 +753,21 @@ function resolveDependencies(options) {
   const dependencies = {
     beginSelectionImport: options.beginSelectionImport || beginMarkiPhotoSelectionImport,
     settleSelectionImport: options.settleSelectionImport || settleMarkiPhotoSelectionImport,
-    checkSourceKeys: options.checkSourceKeys || checkMarkiSourceKeys,
+    resolveSourceStatuses: options.resolveSourceStatuses
+      || (typeof options.checkSourceKeys === 'function'
+        ? createLegacySourceStatusResolver(options.checkSourceKeys)
+        : resolveMarkiImportSourceStatuses),
     downloadMarkiPhoto: options.downloadMarkiPhoto || downloadMarkiPhoto,
     prepareStructuredImport: options.prepareStructuredImport || prepareMarkiStructuredImport,
     beginImportBatch: options.beginImportBatch || beginMarkiImportBatch,
     getImportBatch: options.getImportBatch || getMarkiImportBatch,
     markBatchFailed: options.markBatchFailed || markMarkiImportBatchFailed,
     markBatchReady: options.markBatchReady || markMarkiImportBatchReady,
+    beginLifecycleBatch: options.beginLifecycleBatch || beginMarkiImportLifecycleBatch,
+    markLifecycleDownloading: options.markLifecycleDownloading || markMarkiImportLifecycleDownloading,
+    settleLifecycleDownloads: options.settleLifecycleDownloads || settleMarkiImportLifecycleDownloads,
+    markLifecycleFailed: options.markLifecycleFailed || markMarkiImportLifecycleFailed,
+    markLifecycleReady: options.markLifecycleReady || markMarkiImportLifecycleReady,
     randomUUID: options.randomUUID || crypto.randomUUID
   };
   if (Object.values(dependencies).some((value) => typeof value !== 'function')) {
@@ -588,6 +777,46 @@ function resolveDependencies(options) {
     );
   }
   return dependencies;
+}
+
+function createLegacySourceStatusResolver(checkSourceKeys) {
+  return async ({ documentsPath, orgId, sourceKeys }) => {
+    const result = await checkSourceKeys(documentsPath, orgId, sourceKeys);
+    return {
+      success: true,
+      bySourceKey: Object.fromEntries(sourceKeys.map((sourceKey) => {
+        const item = result?.bySourceKey?.[sourceKey];
+        const status = String(item?.importStatus || '');
+        if (status === 'imported') return [sourceKey, 'imported_active'];
+        if (status === 'download_failed') return [sourceKey, 'failed_retryable'];
+        if (status === 'downloading') return [sourceKey, 'downloading'];
+        return [sourceKey, 'discovered'];
+      }))
+    };
+  };
+}
+
+async function recordLifecycleFailure(
+  dependencies,
+  userDataPath,
+  batchId,
+  items,
+  code,
+  message,
+  options
+) {
+  await dependencies.markLifecycleFailed(
+    userDataPath,
+    {
+      batchId,
+      failures: items.map((item) => ({
+        sourceKey: item.sourceKey,
+        code,
+        message
+      }))
+    },
+    options.lifecycleOptions || {}
+  ).catch(() => {});
 }
 
 function toSafeFailure(error, fallbackCode, fallbackMessage) {

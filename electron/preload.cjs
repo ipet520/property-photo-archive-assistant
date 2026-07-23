@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   selectPhotoFolder: () => ipcRenderer.invoke('dialog:selectPhotoFolder'),
   selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
+  scanConfiguredImages: () => ipcRenderer.invoke('photos:scanConfigured'),
+  inspectPhotoSourceFile: (input) => ipcRenderer.invoke('photos:inspectSourceFile', input),
   matchArchivedPhotos: (archiveRoot, photos) => ipcRenderer.invoke('photos:matchArchived', archiveRoot, photos),
   recognition: {
     getStatus: () => ipcRenderer.invoke('recognition:getStatus'),
@@ -74,6 +76,11 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     destroyPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:destroy-photo-query-session', sessionId),
     importPhotoQuerySelection: (input) => ipcRenderer.invoke('marki:import-photo-query-selection', input),
     listReadyImportBatches: () => ipcRenderer.invoke('marki:list-ready-import-batches'),
+    listImportRecords: () => ipcRenderer.invoke('marki:list-import-records'),
+    recoverImportLifecycle: () => ipcRenderer.invoke('marki:recover-import-lifecycle'),
+    undoImportBatch: (batchId) => ipcRenderer.invoke('marki:undo-import-batch', batchId),
+    clearImportRecord: (batchId) => ipcRenderer.invoke('marki:clear-import-record', batchId),
+    cleanupImportCache: (batchId) => ipcRenderer.invoke('marki:cleanup-import-cache', batchId),
     scanWorkbenchRecoveryCandidates: () => ipcRenderer.invoke('marki:scan-workbench-recovery-candidates'),
     recoverWorkbenchCandidates: (input) => ipcRenderer.invoke('marki:recover-workbench-candidates', input),
     getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
@@ -97,6 +104,22 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   backupConfigs: () => ipcRenderer.invoke('configs:backup'),
   getConfigPaths: () => ipcRenderer.invoke('configs:getPaths'),
   validateConfig: (configName, data) => ipcRenderer.invoke('configs:validate', configName, data),
+  loadRuntimeConfiguration: () => ipcRenderer.invoke('runtimeConfiguration:load'),
+  saveRuntimeSettings: (settings) => ipcRenderer.invoke('runtimeConfiguration:saveSettings', settings),
+  saveRuntimeDirectory: (directoryKind, directoryPath) => (
+    ipcRenderer.invoke('runtimeConfiguration:saveDirectory', directoryKind, directoryPath)
+  ),
+  inspectConfiguredDirectory: (directoryKind, requirements) => (
+    ipcRenderer.invoke('runtimeConfiguration:inspectDirectory', directoryKind, requirements)
+  ),
+  openConfiguredDirectory: (directoryKind) => (
+    ipcRenderer.invoke('runtimeConfiguration:openDirectory', directoryKind)
+  ),
+  onRuntimeConfigurationChanged: (callback) => {
+    const listener = (_event, runtimeConfiguration) => callback(runtimeConfiguration);
+    ipcRenderer.on('runtimeConfiguration:changed', listener);
+    return () => ipcRenderer.removeListener('runtimeConfiguration:changed', listener);
+  },
   onOpenConfigManager: (callback) => {
     const listener = () => callback();
     ipcRenderer.on('app:openConfigManager', listener);
@@ -104,7 +127,7 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   },
   buildArchivePreview: (payload) => ipcRenderer.invoke('archive:buildPreview', payload),
   archivePhotos: (archivePlan) => ipcRenderer.invoke('archive:archivePhotos', archivePlan),
-  recoverPendingArchiveTransactions: (archiveRoot) => ipcRenderer.invoke('archive:recoverPendingTransactions', archiveRoot),
+  recoverPendingArchiveTransactions: () => ipcRenderer.invoke('archive:recoverPendingTransactions'),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   updateLastPhotoFolder: (folderPath) => ipcRenderer.invoke('settings:updateLastPhotoFolder', folderPath),

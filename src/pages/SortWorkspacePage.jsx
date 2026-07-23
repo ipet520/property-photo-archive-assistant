@@ -9,7 +9,7 @@ import { OCR_COMPONENT_VERSION, PAGE_KEYS } from '../constants/app.js';
 import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
 import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
-import { getUsableArchiveRoot, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
+import { withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import {
   beginSmartSortExecution,
   buildSmartSortGroupMembershipByPhotoId,
@@ -34,9 +34,7 @@ import {
   getWorkflowFilterCount,
   getPhotoWorkflowStageLabel,
   hasArchivedPhotoState,
-  isPhotoWorkflowActionable,
-  resolveArchiveDirectoryTarget,
-  resolvePhotoDirectoryTarget
+  isPhotoWorkflowActionable
 } from '../utils/photoWorkflowStage.js';
 import {
   buildMarkiRecoveryCompletionNotice,
@@ -82,15 +80,50 @@ import {
   generateSmartSortGroups
 } from '../utils/smartSortClient.js';
 import { buildSmartGroupDescriptor } from '../utils/smartGroupKey.js';
+import {
+  buildGroupCanonical,
+  buildSourceCanonical,
+  resolveEffectivePhotoArchiveInfo
+} from '../utils/photoCanonical.js';
+import {
+  migrateGroupDraftsByGroupKey,
+  rebuildSmartSortResult
+} from '../utils/smartGroupBuilder.js';
+import {
+  ENGINEERING_ARCHIVE_CATEGORY,
+  getAvailableConstructionUnits,
+  NOT_APPLICABLE_WORK_CONTENT,
+  WATERMARK_TEMPLATE_TYPES
+} from '../utils/watermarkTemplateAdapter.js';
 
 const defaultForm = {
+  watermarkTemplateType: WATERMARK_TEMPLATE_TYPES.UNRESOLVED,
   project: '',
+  projectId: '',
+  projectName: '',
+  projectOriginalText: '',
+  projectConfirmed: false,
+  projectSource: '',
+  archiveCategory: '',
   watermarkCategory: '',
   workContent: '',
   date: new Date().toISOString().slice(0, 10),
   location: '',
+  locationArea: '',
   keywords: '',
-  remark: ''
+  remark: '',
+  remarks: '',
+  propertyCompany: '',
+  communityName: '',
+  vehiclePlate: '',
+  violationType: '',
+  constructionUnitId: '',
+  constructionUnitName: '',
+  constructionUnitOriginalText: '',
+  constructionUnitConfirmed: false,
+  constructionUnitSource: '',
+  fieldSources: {},
+  unresolvedFields: []
 };
 
 const statusLabels = {
@@ -138,14 +171,6 @@ const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
 let sortWorkspaceSessionCache = null;
 
-function resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolder) {
-  const selectedSessionFolder = String(sessionPhotoFolder || '').trim();
-  const defaultPhotoFolder = loadedSettings?.pathStatus?.defaultPhotoFolderExists
-    ? String(loadedSettings.defaultPhotoFolder || '').trim()
-    : '';
-  return selectedSessionFolder || defaultPhotoFolder;
-}
-
 function normalizeStatusFilter(filter) {
   return filter === 'assigned' ? 'unarchived' : (filter || 'all');
 }
@@ -166,7 +191,6 @@ function restoreAutomaticSnapshotPhotos(snapshotPhotos) {
 export default function SortWorkspacePage({ archiveState, onNavigate, navigationRequest }) {
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
-  const sessionPhotoFolderRef = useRef(window.sessionStorage.getItem(sortSessionPhotoFolderKey) || '');
   const cachedSessionRef = useRef(sortWorkspaceSessionCache);
   const sessionSnapshotRef = useRef(cachedSessionRef.current);
   const hasHydratedSessionRef = useRef(false);
@@ -236,6 +260,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [recognitionResultsByPhoto, setRecognitionResultsByPhoto] = useState(() => cachedSession.recognitionResultsByPhoto || {});
   const [watermarkRecordsByPhoto, setWatermarkRecordsByPhoto] = useState(() => cachedSession.watermarkRecordsByPhoto || {});
   const [archiveSuggestionsByPhoto, setArchiveSuggestionsByPhoto] = useState(() => cachedSession.archiveSuggestionsByPhoto || {});
+  const [photoDraftByPhotoId, setPhotoDraftByPhotoId] = useState(() => cachedSession.photoDraftByPhotoId || {});
+  const [groupDraftByGroupId, setGroupDraftByGroupId] = useState(() => cachedSession.groupDraftByGroupId || {});
+  const [archivePreviewPlan, setArchivePreviewPlan] = useState(() => cachedSession.archivePreviewPlan || null);
   const [isRecognitionBusy, setIsRecognitionBusy] = useState(false);
   const [recognitionMessage, setRecognitionMessage] = useState(() => cachedSession.recognitionMessage || { type: 'idle', text: '' });
   const [recognitionProgress, setRecognitionProgress] = useState({ current: 0, total: 0 });
@@ -255,6 +282,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     recognitionResultsByPhoto,
     watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto,
+    photoDraftByPhotoId,
+    groupDraftByGroupId,
+    archivePreviewPlan,
     selectedIds,
     activePhotoId,
     smartSortResult,
@@ -280,11 +310,22 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, []);
 
   useEffect(() => {
+    const runtimeConfiguration = archiveState?.runtimeConfiguration;
+    if (!runtimeConfiguration?.revision) return;
+    setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
+    setSettings(runtimeConfiguration.settings || {});
+    setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+    setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
+    setArchivePreviewPlan((current) => (
+      current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
+        ? current
+        : null
+    ));
+  }, [archiveState?.runtimeConfiguration?.revision]);
+
+  useEffect(() => {
     Promise.all([
-      window.archiveAssistant.loadConfigs()
-        .then((value) => ({ success: true, value }))
-        .catch(() => ({ success: false, value: null })),
-      window.archiveAssistant.loadSettings()
+      window.archiveAssistant.loadRuntimeConfiguration()
         .then((value) => ({ success: true, value }))
         .catch(() => ({ success: false, value: null })),
       typeof window.archiveAssistant.loadSortWorkspaceSnapshot === 'function'
@@ -297,13 +338,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             }
           }))
         : Promise.resolve({ success: true, found: false, snapshot: null })
-    ]).then(([configsResult, settingsResult, snapshotResult]) => {
+    ]).then(([runtimeResult, snapshotResult]) => {
       const cachedSession = cachedSessionRef.current;
-      const loadedConfigs = configsResult.value;
-      const loadedSettings = settingsResult.value;
+      const loadedRuntimeConfiguration = runtimeResult.value;
+      const loadedConfigs = loadedRuntimeConfiguration?.configs;
+      const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
-      const restoredPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
-      const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
+      const restoredPhotoFolder = loadedRuntimeConfiguration?.photoSourceDirectory || '';
+      const restoredArchiveRoot = loadedRuntimeConfiguration?.archiveRootDirectory || '';
       const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
       const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
       const restoredPhotos = restoredFromSnapshot
@@ -315,25 +357,72 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const restoredActivePhotoId = restoredPhotos.some((photo) => photo.id === restoredWorkspace.activePhotoId)
         ? restoredWorkspace.activePhotoId
         : restoredSelectedIds[0] || restoredPhotos[0]?.id || '';
+      const restoredRecognitionMap = restoredWorkspace.recognitionResultsByPhoto || {};
+      const restoredWatermarkMap = restoredWorkspace.watermarkRecordsByPhoto || {};
+      const restoredSuggestionMap = restoredWorkspace.archiveSuggestionsByPhoto || {};
+      const restoredPhotoDrafts = restoredWorkspace.photoDraftByPhotoId || {};
+      const restoredSourceCanonicalMap = Object.fromEntries(restoredPhotos.map((photo) => [
+        photo.id,
+        buildSourceCanonical({
+          photo,
+          recognitionResult: restoredRecognitionMap[photo.id],
+          watermarkRecord: restoredWatermarkMap[photo.id],
+          sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+          configs: safeConfigs
+        })
+      ]));
+      const restoredEffectiveMap = Object.fromEntries(restoredPhotos.map((photo) => [
+        photo.id,
+        resolveEffectivePhotoArchiveInfo({
+          photo,
+          sourceCanonical: restoredSourceCanonicalMap[photo.id],
+          sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+          photoDraft: restoredPhotoDrafts[photo.id]
+        })
+      ]));
+      const restoredSmartSortResult = restoredWorkspace.smartSortResult
+        ? rebuildSmartSortResult({
+            photos: restoredPhotos,
+            sourceCanonicalByPhotoId: restoredSourceCanonicalMap,
+            effectiveArchiveInfoByPhotoId: restoredEffectiveMap,
+            previousSmartSortResult: restoredWorkspace.smartSortResult
+          })
+        : null;
+      const restoredGroupIds = new Set((restoredSmartSortResult?.groups || []).map((group) => group.id));
+      const restoredGroupDrafts = migrateGroupDraftsByGroupKey(
+        restoredWorkspace.smartSortResult,
+        restoredSmartSortResult,
+        restoredWorkspace.groupDraftByGroupId || {}
+      );
+      const restoredActiveGroupId = restoredGroupIds.has(restoredWorkspace.activeSmartSortGroupId)
+        ? restoredWorkspace.activeSmartSortGroupId
+        : restoredSmartSortResult?.groups?.[0]?.id || '';
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
       setForm(reconcileForm(restoredWorkspace.form || defaultForm, safeConfigs));
-      if (restoredWorkspace.photoFolder) sessionPhotoFolderRef.current = restoredWorkspace.photoFolder;
-      setPhotoFolder(restoredWorkspace.photoFolder || restoredPhotoFolder);
-      setArchiveRoot(restoredWorkspace.archiveRoot || restoredArchiveRoot || '');
+      window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
+      setPhotoFolder(restoredPhotoFolder);
+      setArchiveRoot(restoredArchiveRoot);
       setPhotos(restoredPhotos);
-      setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
-      setWatermarkRecordsByPhoto(restoredWorkspace.watermarkRecordsByPhoto || {});
-      setArchiveSuggestionsByPhoto(restoredWorkspace.archiveSuggestionsByPhoto || {});
+      setRecognitionResultsByPhoto(restoredRecognitionMap);
+      setWatermarkRecordsByPhoto(restoredWatermarkMap);
+      setArchiveSuggestionsByPhoto(restoredSuggestionMap);
+      setPhotoDraftByPhotoId(restoredPhotoDrafts);
+      setGroupDraftByGroupId(restoredGroupDrafts);
+      setArchivePreviewPlan(
+        restoredWorkspace.archivePreviewPlan?.archiveRoot === restoredArchiveRoot
+          ? restoredWorkspace.archivePreviewPlan
+          : null
+      );
       setSelectedIds(restoredSelectedIds);
       setActivePhotoId(restoredActivePhotoId);
       setFilter(normalizeStatusFilter(restoredWorkspace.filter));
       setSortMode(restoredWorkspace.sortMode || 'timeAsc');
       setPageSize([50, 100, 200].includes(Number(restoredWorkspace.pageSize)) ? Number(restoredWorkspace.pageSize) : 50);
       setRightPanelMode(['form', 'recognition'].includes(restoredWorkspace.rightPanelMode) ? restoredWorkspace.rightPanelMode : 'form');
-      setSmartSortResult(restoredWorkspace.smartSortResult || null);
+      setSmartSortResult(restoredSmartSortResult);
       setSmartSortViewMode(restoredWorkspace.smartSortViewMode || 'statusFilter');
-      setActiveSmartSortGroupId(restoredWorkspace.activeSmartSortGroupId || '');
+      setActiveSmartSortGroupId(restoredActiveGroupId);
       setSearchText(restoredWorkspace.searchText || '');
       setPage(Math.max(1, Number(restoredWorkspace.page) || 1));
       setViewMode(restoredWorkspace.viewMode || 'grid');
@@ -348,7 +437,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           type: 'warning',
           text: snapshotResult?.error?.message || '工作台快照读取失败，已使用空工作台。'
         });
-      } else if (!configsResult.success || !settingsResult.success) {
+      } else if (!runtimeResult.success) {
         setStatus({ type: 'warning', text: '部分基础配置暂未加载，工作台已使用安全默认值。' });
       } else if (!cachedSession?.status && restoredPhotoFolder) {
         setStatus({ type: 'idle', text: '点击扫描读取当前照片目录。' });
@@ -381,7 +470,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     let active = true;
     void (async () => {
       if (typeof window.archiveAssistant.recoverPendingArchiveTransactions !== 'function') return;
-      const recovery = await window.archiveAssistant.recoverPendingArchiveTransactions(normalizedRoot);
+      const recovery = await window.archiveAssistant.recoverPendingArchiveTransactions();
       if (!active) return;
       if (recovery?.committedCount > 0 && photos.length > 0) {
         try {
@@ -453,6 +542,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       recognitionResultsByPhoto,
       watermarkRecordsByPhoto,
       archiveSuggestionsByPhoto,
+      photoDraftByPhotoId,
+      groupDraftByGroupId,
+      archivePreviewPlan,
       recognitionMessage,
       rightPanelMode,
       batchPreparationUndo
@@ -485,6 +577,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     recognitionResultsByPhoto,
     watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto,
+    photoDraftByPhotoId,
+    groupDraftByGroupId,
+    archivePreviewPlan,
     recognitionMessage,
     rightPanelMode,
     batchPreparationUndo,
@@ -508,6 +603,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       recognitionResultsByPhoto,
       watermarkRecordsByPhoto,
       archiveSuggestionsByPhoto,
+      photoDraftByPhotoId,
+      groupDraftByGroupId,
+      archivePreviewPlan,
       smartSortResult,
       smartSortViewMode,
       activeSmartSortGroupId,
@@ -529,6 +627,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     recognitionResultsByPhoto,
     watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto,
+    photoDraftByPhotoId,
+    groupDraftByGroupId,
+    archivePreviewPlan,
     smartSortResult,
     smartSortViewMode,
     activeSmartSortGroupId,
@@ -557,6 +658,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, []);
 
   const smartSortGroups = useMemo(() => Array.isArray(smartSortResult?.groups) ? smartSortResult.groups : [], [smartSortResult]);
+  const sourceCanonicalByPhotoId = useMemo(() => Object.fromEntries(photos.map((photo) => [
+    photo.id,
+    buildSourceCanonical({
+      photo,
+      recognitionResult: recognitionResultsByPhoto[photo.id],
+      watermarkRecord: watermarkRecordsByPhoto[photo.id],
+      sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
+      configs: configs || {}
+    })
+  ])), [photos, recognitionResultsByPhoto, watermarkRecordsByPhoto, configs]);
+  const effectiveArchiveInfoByPhotoId = useMemo(() => Object.fromEntries(photos.map((photo) => [
+    photo.id,
+    resolveEffectivePhotoArchiveInfo({
+      photo,
+      sourceCanonical: sourceCanonicalByPhotoId[photo.id],
+      sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
+      photoDraft: photoDraftByPhotoId[photo.id]
+    })
+  ])), [photos, recognitionResultsByPhoto, sourceCanonicalByPhotoId, photoDraftByPhotoId]);
   const smartSortGroupMembershipByPhotoId = useMemo(
     () => buildSmartSortGroupMembershipByPhotoId(smartSortResult),
     [smartSortResult]
@@ -609,7 +729,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
-  const effectivePhotoFolder = resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
+  const effectivePhotoFolder = photoFolder;
   const selectedStateText = getSelectedStateText(selectedPhotos);
   const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
   const selectedEditablePhotos = selectedPhotos.filter((photo) => (
@@ -639,6 +759,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         getSmartSortGroupPhotoIds(group).includes(currentPanelPhoto.id)
       )) || null
     : null;
+  const currentPanelGroupCanonical = useMemo(() => buildGroupCanonical(
+    (currentPanelSmartGroup ? getSmartSortGroupPhotoIds(currentPanelSmartGroup) : [])
+      .map((photoId) => ({
+        photoId,
+        effectiveInfo: effectiveArchiveInfoByPhotoId[photoId]
+      }))
+  ), [currentPanelSmartGroup, effectiveArchiveInfoByPhotoId]);
   const currentPagePhotoIndex = currentPanelPhoto
     ? pagePhotos.findIndex((photo) => photo.id === currentPanelPhoto.id)
     : -1;
@@ -676,6 +803,19 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       : 'scanned';
   const currentMissingRequiredFields = validateRequiredArchiveFields(form, configs);
   const currentRequiredFieldsComplete = currentMissingRequiredFields.length === 0;
+  const currentTemplateType = form.watermarkTemplateType;
+  const currentIsTimeLocation = currentTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION;
+  const currentIsVehicleViolation = currentTemplateType === WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION;
+  const currentIsEngineering = currentTemplateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD
+    && form.watermarkCategory === ENGINEERING_ARCHIVE_CATEGORY;
+  const safeRuntimeConfigs = configs || {};
+  const projectOptions = safeRuntimeConfigs.projectOptions
+    || (safeRuntimeConfigs.projects || []).map((name) => ({ id: '', name }));
+  const currentConstructionUnits = getAvailableConstructionUnits(
+    safeRuntimeConfigs,
+    form.projectId,
+    form.constructionUnitId
+  );
   const currentPhotoArchived = Boolean(
     currentPanelPhoto?.sortStatus === 'archived'
     || currentPanelPhoto?.archiveResult?.status === '归档成功'
@@ -819,6 +959,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
               ? {
                   ...workspace,
                   photos: invalidateSmartSortExecution(workspace.photos),
+                  archivePreviewPlan: null,
                   smartSortResult: null,
                   filter: 'all',
                   searchText: '',
@@ -848,6 +989,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             setRecognitionResultsByPhoto(workspace.recognitionResultsByPhoto);
             setWatermarkRecordsByPhoto(workspace.watermarkRecordsByPhoto);
             setArchiveSuggestionsByPhoto(workspace.archiveSuggestionsByPhoto);
+            setPhotoDraftByPhotoId(workspace.photoDraftByPhotoId || {});
+            setGroupDraftByGroupId(workspace.groupDraftByGroupId || {});
+            setArchivePreviewPlan(workspace.archivePreviewPlan || null);
             setSelectedIds(workspace.selectedIds);
             setActivePhotoId(workspace.activePhotoId);
             setFilter(workspace.filter);
@@ -967,15 +1111,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       watermarkRecord: watermarkRecordsByPhoto[currentPanelPhoto.id],
       archiveSuggestion: archiveSuggestionsByPhoto[currentPanelPhoto.id],
       group: currentPanelSmartGroup,
+      groupCanonical: currentPanelGroupCanonical,
+      sourceCanonical: sourceCanonicalByPhotoId[currentPanelPhoto.id],
+      groupDraft: currentPanelSmartGroup
+        ? groupDraftByGroupId[currentPanelSmartGroup.id]
+        : null,
+      photoDraft: photoDraftByPhotoId[currentPanelPhoto.id],
       configs
     }));
   }, [
     currentPanelPhoto,
     currentPanelSmartGroup,
+    currentPanelGroupCanonical,
     configs,
     recognitionResultsByPhoto,
     watermarkRecordsByPhoto,
-    archiveSuggestionsByPhoto
+    archiveSuggestionsByPhoto,
+    sourceCanonicalByPhotoId,
+    groupDraftByGroupId,
+    photoDraftByPhotoId
   ]);
 
   useEffect(() => {
@@ -1003,11 +1157,52 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     const restoredActivePhotoId = restoredPhotoIds.has(workspace?.activePhotoId)
       ? workspace.activePhotoId
       : restoredSelectedIds[0] || restoredPhotos[0]?.id || '';
+    const restoredRecognitionMap = workspace?.recognitionResultsByPhoto || {};
+    const restoredWatermarkMap = workspace?.watermarkRecordsByPhoto || {};
+    const restoredPhotoDrafts = workspace?.photoDraftByPhotoId || {};
+    const restoredSourceCanonicalMap = Object.fromEntries(restoredPhotos.map((photo) => [
+      photo.id,
+      buildSourceCanonical({
+        photo,
+        recognitionResult: restoredRecognitionMap[photo.id],
+        watermarkRecord: restoredWatermarkMap[photo.id],
+        sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+        configs: configs || {}
+      })
+    ]));
+    const restoredEffectiveMap = Object.fromEntries(restoredPhotos.map((photo) => [
+      photo.id,
+      resolveEffectivePhotoArchiveInfo({
+        photo,
+        sourceCanonical: restoredSourceCanonicalMap[photo.id],
+        sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+        photoDraft: restoredPhotoDrafts[photo.id]
+      })
+    ]));
+    const restoredSmartSortResult = workspace?.smartSortResult
+      ? rebuildSmartSortResult({
+          photos: restoredPhotos,
+          sourceCanonicalByPhotoId: restoredSourceCanonicalMap,
+          effectiveArchiveInfoByPhotoId: restoredEffectiveMap,
+          previousSmartSortResult: workspace.smartSortResult
+        })
+      : null;
+    const restoredGroupIds = new Set((restoredSmartSortResult?.groups || []).map((group) => group.id));
+    const restoredGroupDrafts = migrateGroupDraftsByGroupKey(
+      workspace?.smartSortResult,
+      restoredSmartSortResult,
+      workspace?.groupDraftByGroupId || {}
+    );
     const restoredWorkspace = {
       ...workspace,
       photos: restoredPhotos,
       selectedIds: restoredSelectedIds,
-      activePhotoId: restoredActivePhotoId
+      activePhotoId: restoredActivePhotoId,
+      smartSortResult: restoredSmartSortResult,
+      groupDraftByGroupId: restoredGroupDrafts,
+      activeSmartSortGroupId: restoredGroupIds.has(workspace?.activeSmartSortGroupId)
+        ? workspace.activeSmartSortGroupId
+        : restoredSmartSortResult?.groups?.[0]?.id || ''
     };
     markiWorkbenchStateRef.current = restoredWorkspace;
     const nextSession = {
@@ -1018,15 +1213,17 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     sessionSnapshotRef.current = nextSession;
     sortWorkspaceSessionCache = nextSession;
     if (restoredActivePhotoId) pendingMarkiFocusPhotoIdRef.current = restoredActivePhotoId;
-    rememberSessionPhotoFolder(restoredWorkspace.photoFolder || '');
-    setArchiveRoot(restoredWorkspace.archiveRoot || '');
-    if (restoredWorkspace.archiveRoot) {
-      archiveState?.setCurrentArchiveRoot?.(restoredWorkspace.archiveRoot);
-    }
     setPhotos(restoredPhotos);
     setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
     setWatermarkRecordsByPhoto(restoredWorkspace.watermarkRecordsByPhoto || {});
     setArchiveSuggestionsByPhoto(restoredWorkspace.archiveSuggestionsByPhoto || {});
+    setPhotoDraftByPhotoId(restoredWorkspace.photoDraftByPhotoId || {});
+    setGroupDraftByGroupId(restoredWorkspace.groupDraftByGroupId || {});
+    setArchivePreviewPlan(
+      restoredWorkspace.archivePreviewPlan?.archiveRoot === archiveRoot
+        ? restoredWorkspace.archivePreviewPlan
+        : null
+    );
     setSelectedIds(restoredSelectedIds);
     setActivePhotoId(restoredActivePhotoId);
     setFilter(normalizeStatusFilter(restoredWorkspace.filter));
@@ -1224,29 +1421,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   async function synchronizePhotoFolderFromSettings() {
     try {
-      const loadedSettings = await window.archiveAssistant.loadSettings();
-      setSettings(loadedSettings);
-      const resolvedPhotoFolder = resolveEffectivePhotoFolder(loadedSettings, sessionPhotoFolderRef.current);
-      setPhotoFolder(resolvedPhotoFolder);
-      return resolvedPhotoFolder;
+      const runtimeConfiguration = await window.archiveAssistant.loadRuntimeConfiguration();
+      setSettings(runtimeConfiguration.settings || {});
+      setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
+      setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+      setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
+      setArchivePreviewPlan((current) => (
+        current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
+          ? current
+          : null
+      ));
+      return runtimeConfiguration.photoSourceDirectory || '';
     } catch {
       // Keep the current directory when settings cannot be refreshed.
-      return resolveEffectivePhotoFolder(settings, sessionPhotoFolderRef.current);
+      return photoFolder;
     }
-  }
-
-  function rememberSessionPhotoFolder(folderPath) {
-    const normalizedFolder = String(folderPath || '').trim();
-    sessionPhotoFolderRef.current = normalizedFolder;
-    if (normalizedFolder) window.sessionStorage.setItem(sortSessionPhotoFolderKey, normalizedFolder);
-    else window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-    setPhotoFolder(normalizedFolder);
-  }
-
-  function clearSessionPhotoFolder() {
-    sessionPhotoFolderRef.current = '';
-    window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-    setPhotoFolder('');
   }
 
   function invalidatePreviewMessage() {
@@ -1291,6 +1480,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       photos,
       form,
       archiveSuggestionsByPhoto,
+      photoDraftByPhotoId,
+      groupDraftByGroupId,
+      archivePreviewPlan,
       recognitionResultsByPhoto,
       selectedIds: [...selectedIds],
       activePhotoId,
@@ -1341,6 +1533,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         setPhotos(snapshot.photos);
         setForm(snapshot.form);
         setArchiveSuggestionsByPhoto(snapshot.archiveSuggestionsByPhoto);
+        setPhotoDraftByPhotoId(snapshot.photoDraftByPhotoId || {});
+        setGroupDraftByGroupId(snapshot.groupDraftByGroupId || {});
+        setArchivePreviewPlan(snapshot.archivePreviewPlan || null);
         setRecognitionResultsByPhoto(snapshot.recognitionResultsByPhoto || {});
         setSelectedIds(snapshot.selectedIds);
         setActivePhotoId(snapshot.activePhotoId);
@@ -1357,7 +1552,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const snapshotPhotoMap = new Map((snapshot.photos || []).map((photo) => [photo.id, photo]));
       setPhotos((current) => current.map((photo) => restoredIdSet.has(photo.id) ? (snapshotPhotoMap.get(photo.id) || photo) : photo));
       setArchiveSuggestionsByPhoto((current) => restoreSnapshotEntries(current, snapshot.archiveSuggestionsByPhoto || {}, restoredIdSet));
+      setPhotoDraftByPhotoId((current) => restoreSnapshotEntries(current, snapshot.photoDraftByPhotoId || {}, restoredIdSet));
       setRecognitionResultsByPhoto((current) => restoreSnapshotEntries(current, snapshot.recognitionResultsByPhoto || {}, restoredIdSet));
+      setArchivePreviewPlan(null);
       setBatchPreparationUndo({
         ...snapshot,
         count: failedPhotoIds.length,
@@ -1394,16 +1591,113 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   function updateForm(patch, options = {}) {
     invalidateBatchPreparationUndo();
     setForm((current) => {
-      const next = { ...current, ...patch };
+      let normalizedPatch = { ...patch };
+      if (Object.hasOwn(patch, 'project')) {
+        const projectOption = (configs.projectOptions || [])
+          .find((item) => item.name === patch.project);
+        normalizedPatch = {
+          ...normalizedPatch,
+          project: projectOption?.name || '',
+          projectName: projectOption?.name || '',
+          projectId: projectOption?.id || '',
+          projectConfirmed: Boolean(projectOption),
+          projectSource: projectOption ? 'manual' : ''
+        };
+      }
+      if (Object.hasOwn(patch, 'watermarkCategory')) {
+        normalizedPatch.archiveCategory = patch.watermarkCategory;
+      }
+      if (Object.hasOwn(patch, 'location')) {
+        normalizedPatch.locationArea = patch.location;
+      }
+      if (Object.hasOwn(patch, 'remark')) {
+        normalizedPatch.remarks = patch.remark;
+      }
+      if (Object.hasOwn(patch, 'violationType')) {
+        normalizedPatch.workContent = patch.violationType;
+      }
+      if (Object.hasOwn(patch, 'constructionUnitName')) {
+        const unit = (configs.constructionUnits || [])
+          .find((item) => item.name === patch.constructionUnitName);
+        normalizedPatch = {
+          ...normalizedPatch,
+          constructionUnitId: unit?.id || '',
+          constructionUnitName: unit?.name || '',
+          constructionUnitConfirmed: Boolean(unit),
+          constructionUnitSource: unit ? 'manual' : ''
+        };
+      }
+      const next = { ...current, ...normalizedPatch };
       if (patch.watermarkCategory) {
         const items = configs?.watermarkCategories?.[patch.watermarkCategory]?.items || [];
         if (!items.includes(next.workContent)) next.workContent = '';
+        if (patch.watermarkCategory !== ENGINEERING_ARCHIVE_CATEGORY) {
+          next.constructionUnitId = '';
+          next.constructionUnitName = '';
+          next.constructionUnitOriginalText = '';
+          next.constructionUnitConfirmed = false;
+          next.constructionUnitSource = '';
+        }
+      }
+      if (
+        Object.hasOwn(patch, 'project')
+        && next.constructionUnitId
+        && !(configs.constructionUnits || []).some((item) => (
+          item.id === next.constructionUnitId
+          && item.enabled !== false
+          && (
+            !Array.isArray(item.projectIds)
+            || item.projectIds.length === 0
+            || item.projectIds.includes(next.projectId)
+          )
+        ))
+      ) {
+        next.constructionUnitId = '';
+        next.constructionUnitName = '';
+        next.constructionUnitConfirmed = false;
+        next.constructionUnitSource = '';
       }
       if (!options.preserveKeywords && (patch.watermarkCategory || patch.workContent || patch.location)) {
         next.keywords = getSuggestedKeywords(toArchiveForm(next), configs);
       }
       if (currentPanelPhoto) {
         const sanitized = sanitizeDraftFields(next, configs);
+        setPhotoDraftByPhotoId((currentDrafts) => {
+          const nextDrafts = {
+            ...currentDrafts,
+            [currentPanelPhoto.id]: sanitized
+          };
+          if (smartSortResult && ['date', 'project', 'watermarkCategory', 'workContent', 'watermarkTemplateType'].some((key) => Object.hasOwn(normalizedPatch, key))) {
+            const nextEffectiveMap = Object.fromEntries(photos.map((photo) => [
+              photo.id,
+              resolveEffectivePhotoArchiveInfo({
+                photo,
+                sourceCanonical: sourceCanonicalByPhotoId[photo.id],
+                sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
+                photoDraft: nextDrafts[photo.id]
+              })
+            ]));
+            const rebuilt = rebuildSmartSortResult({
+              photos,
+              sourceCanonicalByPhotoId,
+              effectiveArchiveInfoByPhotoId: nextEffectiveMap,
+              previousSmartSortResult: smartSortResult
+            });
+            setSmartSortResult(rebuilt);
+            const nextGroupId = buildSmartSortGroupMembershipByPhotoId(rebuilt).get(currentPanelPhoto.id) || '';
+            setActiveSmartSortGroupId(nextGroupId);
+          }
+          return nextDrafts;
+        });
+        if (options.scope === 'group' && currentPanelSmartGroup) {
+          setGroupDraftByGroupId((currentDrafts) => ({
+            ...currentDrafts,
+            [currentPanelSmartGroup.id]: {
+              ...(currentDrafts[currentPanelSmartGroup.id] || {}),
+              ...normalizedPatch
+            }
+          }));
+        }
         setArchiveSuggestionsByPhoto((currentSuggestions) => {
           const nextSuggestion = updateArchiveSuggestion(currentSuggestions[currentPanelPhoto.id], sanitized, {
             configs,
@@ -1422,28 +1716,31 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录后会把新目录中的照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return false;
     }
-    rememberSessionPhotoFolder(selected);
-    const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
-    setSettings(nextSettings);
+    const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('photoSource', selected);
+    archiveState?.applySavedSettings?.(runtimeConfiguration);
+    setSettings(runtimeConfiguration.settings || {});
+    window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
+    setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
     if (scanAfterSelect) {
-      await scanPhotos(true, selected);
+      await scanPhotos(true);
     } else {
       setStatus({ type: 'idle', text: '照片来源目录已选择，请点击扫描。' });
     }
     return true;
   }
 
-  async function scanPhotos(force = false, folder = photoFolder) {
-    if (!folder) {
-      setStatus({ type: 'error', text: '请先选择照片文件夹。' });
-      return;
-    }
+  async function scanPhotos(force = false) {
     if (!force && photos.length > 0 && !window.confirm('重新扫描会把尚未存在的新照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return;
     }
     setIsBusy(true);
     try {
-      const scanned = await window.archiveAssistant.scanImages(folder);
+      const scanResult = await window.archiveAssistant.scanConfiguredImages();
+      if (scanResult?.success !== true) {
+        setStatus({ type: 'error', text: scanResult?.message || scanResult?.error?.message || '照片来源目录当前不可用。' });
+        return;
+      }
+      const scanned = scanResult.photos || [];
       let archivedMatches = {};
       let archiveMatchWarning = '';
       if (archiveRoot) {
@@ -1482,7 +1779,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       )).length;
       const scannedWorkspace = buildSortWorkspaceSnapshotWorkspace({
         ...markiWorkbenchStateRef.current,
-        photoFolder: folder,
         photos: mergedPool.photos,
         selectedIds: mergedPool.selectedIds,
         activePhotoId: mergedPool.activePhotoId,
@@ -1492,6 +1788,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         smartSortResult: nextSmartSortResult,
         smartSortViewMode: nextSmartSortViewMode,
         activeSmartSortGroupId: nextActiveSmartSortGroupId,
+        archivePreviewPlan: mergedPool.localPoolChanged ? null : archivePreviewPlan,
         filter: 'all',
         page: 1
       });
@@ -1502,6 +1799,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       }
       invalidateBatchPreparationUndo();
       if (mergedPool.localPoolChanged) {
+        setArchivePreviewPlan(null);
         resetSmartSortState({
           type: 'warning',
           text: '本地照片子池已更新，原智能分组已失效；马克平台数据和未变化照片的识别结果已保留。'
@@ -1538,10 +1836,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         rejectedCount
       } = mergedPool.stats;
       setStatus({
-        type: archiveMatchWarning || rejectedCount ? 'warning' : 'success',
+        type: archiveMatchWarning || rejectedCount || scanResult.failures?.length ? 'warning' : 'success',
         text: archiveMatchWarning
           ? `本地照片扫描完成；已保留 ${retainedMarkiCount} 张马克照片。内容指纹核对失败，“未归档”状态可能不完整。`
-          : `本地照片扫描完成：新增 ${addedLocalCount} 张、跳过重复 ${duplicateCount} 张；保留原有 ${retainedLocalCount} 张本地照片和 ${retainedMarkiCount} 张马克照片，其中 ${archivedCount} 张本地照片已有归档记录。${rejectedCount ? `另有 ${rejectedCount} 条缺少有效内容指纹或来源异常的扫描结果未加入照片池。` : ''}`
+          : `本地照片扫描完成：新增 ${addedLocalCount} 张、跳过重复 ${duplicateCount} 张；保留原有 ${retainedLocalCount} 张本地照片和 ${retainedMarkiCount} 张马克照片，其中 ${archivedCount} 张本地照片已有归档记录。${rejectedCount ? `另有 ${rejectedCount} 条缺少有效内容指纹或来源异常的扫描结果未加入照片池。` : ''}${scanResult.failures?.length ? `另有 ${scanResult.failures.length} 个文件未通过健康检查。` : ''}`
       });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
@@ -1553,7 +1851,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   async function importOrScanPhotos() {
     if (effectivePhotoFolder) {
-      await scanPhotos(false, effectivePhotoFolder);
+      await scanPhotos(false);
       return;
     }
     await selectPhotoFolder({ scanAfterSelect: true });
@@ -1583,12 +1881,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setRecognitionResultsByPhoto({});
     setWatermarkRecordsByPhoto({});
     setArchiveSuggestionsByPhoto({});
+    setPhotoDraftByPhotoId({});
+    setGroupDraftByGroupId({});
+    setArchivePreviewPlan(null);
     setRecognitionMessage({ type: 'idle', text: '' });
     setPage(1);
     resetSmartSortState({ type: 'idle', text: '' });
     void clearSmartSortGroups();
     setEditingPhotoId('');
-    clearSessionPhotoFolder();
     invalidateBatchPreparationUndo();
     markChanged();
     void synchronizePhotoFolderFromSettings();
@@ -2716,11 +3016,43 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const restoredActivePhotoId = restoredPhotoIds.has(draftWorkspace.activePhotoId)
         ? draftWorkspace.activePhotoId
         : restoredSelectedIds[0] || loadedPhotos[0]?.id || '';
+      const restoredRecognitionMap = filterPhotoMapByIds(
+        draftWorkspace.recognitionResultsByPhoto,
+        restoredPhotoIds
+      );
+      const restoredWatermarkMap = filterPhotoMapByIds(
+        draftWorkspace.watermarkRecordsByPhoto,
+        restoredPhotoIds
+      );
+      const restoredPhotoDrafts = filterPhotoMapByIds(
+        draftWorkspace.photoDraftByPhotoId,
+        restoredPhotoIds
+      );
+      const restoredSourceCanonicalMap = Object.fromEntries(loadedPhotos.map((photo) => [
+        photo.id,
+        buildSourceCanonical({
+          photo,
+          recognitionResult: restoredRecognitionMap[photo.id],
+          watermarkRecord: restoredWatermarkMap[photo.id],
+          sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+          configs
+        })
+      ]));
+      const restoredEffectiveMap = Object.fromEntries(loadedPhotos.map((photo) => [
+        photo.id,
+        resolveEffectivePhotoArchiveInfo({
+          photo,
+          sourceCanonical: restoredSourceCanonicalMap[photo.id],
+          sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
+          photoDraft: restoredPhotoDrafts[photo.id]
+        })
+      ]));
       const restoredSmartSortResult = draftWorkspace.smartSortResult
-        ? mergeScopedSmartSortResult({
-            previousSmartSortResult: null,
-            nextSmartSortResult: draftWorkspace.smartSortResult,
-            targetPhotoIds: loadedPhotos.map((photo) => photo.id)
+        ? rebuildSmartSortResult({
+            photos: loadedPhotos,
+            sourceCanonicalByPhotoId: restoredSourceCanonicalMap,
+            effectiveArchiveInfoByPhotoId: restoredEffectiveMap,
+            previousSmartSortResult: draftWorkspace.smartSortResult
           })
         : null;
       const restoredGroupIds = new Set(
@@ -2729,23 +3061,24 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const restoredActiveGroupId = restoredGroupIds.has(draftWorkspace.activeSmartSortGroupId)
         ? draftWorkspace.activeSmartSortGroupId
         : '';
+      const restoredGroupDrafts = migrateGroupDraftsByGroupKey(
+        draftWorkspace.smartSortResult,
+        restoredSmartSortResult,
+        draftWorkspace.groupDraftByGroupId || {}
+      );
       const restoredWorkspace = buildSortWorkspaceSnapshotWorkspace({
         ...draftWorkspace,
         photos: loadedPhotos,
         selectedIds: restoredSelectedIds,
         activePhotoId: restoredActivePhotoId,
-        recognitionResultsByPhoto: filterPhotoMapByIds(
-          draftWorkspace.recognitionResultsByPhoto,
-          restoredPhotoIds
-        ),
-        watermarkRecordsByPhoto: filterPhotoMapByIds(
-          draftWorkspace.watermarkRecordsByPhoto,
-          restoredPhotoIds
-        ),
+        recognitionResultsByPhoto: restoredRecognitionMap,
+        watermarkRecordsByPhoto: restoredWatermarkMap,
         archiveSuggestionsByPhoto: filterPhotoMapByIds(
           draftWorkspace.archiveSuggestionsByPhoto,
           restoredPhotoIds
         ),
+        photoDraftByPhotoId: restoredPhotoDrafts,
+        groupDraftByGroupId: restoredGroupDrafts,
         smartSortResult: restoredSmartSortResult,
         smartSortViewMode: restoredActiveGroupId
           ? draftWorkspace.smartSortViewMode
@@ -2817,9 +3150,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         };
       });
       setPhotos(restored);
-      rememberSessionPhotoFolder(selected);
-      const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(selected);
-      setSettings(nextSettings);
+      const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('photoSource', selected);
+      archiveState?.applySavedSettings?.(runtimeConfiguration);
+      setSettings(runtimeConfiguration.settings || {});
+      window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
+      setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
       invalidateBatchPreparationUndo();
       markChanged();
       setStatus({ type: restoredCount === missingPhotos.length ? 'success' : 'warning', text: `已重新匹配 ${restoredCount} 张照片，仍有 ${missingPhotos.length - restoredCount} 张原图缺失。` });
@@ -2858,10 +3193,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     const archiveInfo = normalizeArchiveInfo(serviceForm);
     setIsBusy(true);
     try {
-      const preview = await window.archiveAssistant.buildArchivePreview({
+      const resolutionSync = await resolveRecognitionIssues(
+        targets.map((photo) => photo.id),
+        'manual',
+        'reviewed'
+      );
+      const failedIdSet = new Set(resolutionSync.failedPhotoIds);
+      const appliedTargets = targets.filter((photo) => !failedIdSet.has(photo.id));
+      if (appliedTargets.length === 0) {
+        setStatus({ type: 'error', text: '后台 OCR 记录未能标记为已复核，当前表单和预览均未套用，请稍后重试。' });
+        return;
+      }
+
+      const previewResult = await window.archiveAssistant.buildArchivePreview({
         form: serviceForm,
-        archiveRoot,
-        photos: targets.map((photo) => ({
+        photos: appliedTargets.map((photo) => ({
           ...serviceForm,
           id: photo.id,
           path: photo.originalPath,
@@ -2871,21 +3217,16 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           previewUrl: photo.previewUrl,
           sourceType: photo.sourceType,
           sourceKey: photo.sourceKey,
-          sourceMetadataRef: photo.sourceMetadataRef
+          sourceMetadataRef: photo.sourceMetadataRef,
+          watermarkTemplateType: archiveInfo.watermarkTemplateType,
+          processingMode: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing?.strategy
         }))
       });
-      const previewMap = new Map(preview.map((item) => [item.id, item]));
-      const previewTargets = targets.filter((photo) => previewMap.has(photo.id));
+      const previewItems = previewResult.items || [];
+      const previewMap = new Map(previewItems.map((item) => [item.id, item]));
+      const previewTargets = appliedTargets.filter((photo) => previewMap.has(photo.id));
       if (previewTargets.length === 0) {
         setStatus({ type: 'warning', text: '当前表单未能生成有效预览，照片尚未套用，请检查归档目录和表单内容。' });
-        return;
-      }
-
-      const resolutionSync = await resolveRecognitionIssues(previewTargets.map((photo) => photo.id), 'manual', 'reviewed');
-      const failedIdSet = new Set(resolutionSync.failedPhotoIds);
-      const appliedTargets = previewTargets.filter((photo) => !failedIdSet.has(photo.id));
-      if (appliedTargets.length === 0) {
-        setStatus({ type: 'error', text: '后台 OCR 记录未能标记为已复核，当前表单和预览均未套用，请稍后重试。' });
         return;
       }
 
@@ -2905,6 +3246,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setPhotos((current) => current.map((photo) => targetIds.has(photo.id)
         ? { ...photo, sortStatus: 'previewed', archiveInfo, previewInfo: previewMap.get(photo.id), archiveResult: null }
         : photo));
+      setArchivePreviewPlan(previewResult.previewPlan);
       setHasUnsavedChanges(true);
       switchStatusFilter('previewed');
       setSmartSortViewMode('statusFilter');
@@ -2960,9 +3302,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
     setIsBusy(true);
     try {
-      const preview = await window.archiveAssistant.buildArchivePreview({
+      const previewResult = await window.archiveAssistant.buildArchivePreview({
         form: normalizedAssigned[0].serviceForm,
-        archiveRoot,
         photos: normalizedAssigned.map(({ photo, serviceForm }) => ({
           ...serviceForm,
           id: photo.id,
@@ -2973,27 +3314,31 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           previewUrl: photo.previewUrl,
           sourceType: photo.sourceType,
           sourceKey: photo.sourceKey,
-          sourceMetadataRef: photo.sourceMetadataRef
+          sourceMetadataRef: photo.sourceMetadataRef,
+          watermarkTemplateType: serviceForm.watermarkTemplateType,
+          processingMode: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing?.strategy
         }))
       });
-      const previewMap = new Map(preview.map((item) => [item.id, item]));
-      if (preview.length === 0) {
+      const previewItems = previewResult.items || [];
+      const previewMap = new Map(previewItems.map((item) => [item.id, item]));
+      if (previewItems.length === 0) {
         setStatus({ type: 'warning', text: '当前没有可预览的照片，请先选择照片并应用归档信息。' });
         return;
       }
       setPhotos((current) => current.map((photo) => previewMap.has(photo.id)
         ? { ...photo, sortStatus: 'previewed', previewInfo: previewMap.get(photo.id), archiveResult: null }
         : photo));
+      setArchivePreviewPlan(previewResult.previewPlan);
       setHasUnsavedChanges(true);
       switchStatusFilter('previewed');
       setSmartSortViewMode('statusFilter');
       setActiveSmartSortGroupId('');
       setSearchText('');
       setSelectedIds([]);
-      setActivePhotoId(preview[0]?.id || '');
+      setActivePhotoId(previewItems[0]?.id || '');
       setPage(1);
       window.requestAnimationFrame(() => photoBrowserRef.current?.scrollTo({ top: 0, left: 0 }));
-      setStatus({ type: (pendingCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${preview.length} 张照片的归档预览。另有 ${pendingCount} 张尚未进入预览，${ignoredCount} 张已忽略。` });
+      setStatus({ type: (pendingCount || ignoredCount) ? 'warning' : 'success', text: `已生成 ${previewItems.length} 张照片的归档预览。另有 ${pendingCount} 张尚未进入预览，${ignoredCount} 张已忽略。` });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '生成分拣归档预览', errorType: '生成预览失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成分拣归档预览失败：${error.message}` });
@@ -3021,6 +3366,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       && undoAffectedIds.some((photoId) => previewPhotoIds.has(photoId));
 
     setPhotos(restoredPhotos);
+    setArchivePreviewPlan(null);
     setShowConfirm(false);
     if (canRestorePreviousGroup) {
       const previousGroup = smartSortGroups.find((group) => group.id === batchPreparationUndo.activeSmartSortGroupId);
@@ -3064,7 +3410,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   function requestArchive() {
     if (blockIgnoredSelectionAction()) return;
-    if (previewPhotos.length === 0) {
+    if (previewPhotos.length === 0 || !archivePreviewPlan) {
       setStatus({ type: 'error', text: '请先生成分拣归档预览。' });
       return;
     }
@@ -3080,17 +3426,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     invalidateBatchPreparationUndo();
     setIsBusy(true);
     try {
-      const archiveGroups = groupPreviewPhotosByTransaction(previewPhotos);
-      const groupResults = [];
-      for (const group of archiveGroups) {
-        const result = await window.archiveAssistant.archivePhotos({
-          archiveRoot,
-          transactionId: group.transactionId,
-          items: group.photos.map((photo) => photo.previewInfo)
-        });
-        groupResults.push(result);
+      if (!archivePreviewPlan) {
+        setStatus({ type: 'error', text: '归档预览计划已失效，请重新生成预览。' });
+        return;
       }
-      const result = mergeArchiveTransactionResults(groupResults);
+      const result = await window.archiveAssistant.archivePhotos({
+        previewPlan: archivePreviewPlan
+      });
       const resultMap = new Map(result.items.map((item) => [item.photoId || item.id, item]));
       const archivedAt = new Date().toISOString();
       const archivedPhotos = photos.map((photo) => {
@@ -3116,6 +3458,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         photos: archivedPhotos,
         selectedIds: [],
         activePhotoId: nextActivePhotoId,
+        archivePreviewPlan: result.status === 'committed' ? null : archivePreviewPlan,
         filter: nextFilter,
         smartSortViewMode: 'statusFilter',
         activeSmartSortGroupId: '',
@@ -3123,6 +3466,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       });
       const snapshotResult = await saveAutomaticSnapshotImmediately(archivedWorkspace);
       setPhotos(archivedPhotos);
+      setArchivePreviewPlan(result.status === 'committed' ? null : archivePreviewPlan);
       setSelectedIds([]);
       setShowConfirm(false);
       switchStatusFilter(nextFilter);
@@ -3157,39 +3501,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   async function openPhotoDirectory() {
     try {
-      const resolution = resolvePhotoDirectoryTarget({
-        photos,
-        activePhotoId,
-        selectedIds,
-        photoFolder: effectivePhotoFolder
-      });
-      if (!resolution.success) {
-        setStatus({
-          type: 'error',
-          text: photos.length > 0
-            ? '当前照片没有可打开的本地目录。'
-            : '尚未选择照片来源目录。'
-        });
-        return;
-      }
-      const exists = await window.archiveAssistant.validatePathExists(resolution.targetPath);
-      if (!exists) {
-        setStatus({
-          type: 'error',
-          text: resolution.sourceType === 'marki_api'
-            ? '软件管理的 Marki 照片目录当前不存在。'
-            : '当前照片来源目录不存在，请重新选择目录。'
-        });
-        return;
-      }
-      const result = await window.archiveAssistant.openPath(resolution.targetPath);
+      const result = await window.archiveAssistant.openConfiguredDirectory('photoSource');
       setStatus({
         type: result?.success ? 'success' : 'error',
         text: result?.success
-          ? (resolution.sourceType === 'marki_api'
-              ? '已打开软件管理的 Marki 照片目录。'
-              : '已打开当前照片来源目录。')
-          : '照片目录打开失败，请核对目录权限。'
+          ? '已打开当前照片来源目录。'
+          : result?.message || '照片目录打开失败，请核对目录权限。'
       });
     } catch {
       setStatus({ type: 'error', text: '照片目录打开失败，请核对目录权限。' });
@@ -3198,22 +3515,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   async function openArchiveDirectory() {
     try {
-      const resolution = resolveArchiveDirectoryTarget(archiveRoot);
-      if (!resolution.success) {
-        setStatus({ type: 'error', text: '尚未配置归档根目录。' });
-        return;
-      }
-      const exists = await window.archiveAssistant.validatePathExists(resolution.targetPath);
-      if (!exists) {
-        setStatus({ type: 'error', text: '当前归档根目录不存在，请先在设置中重新配置。' });
-        return;
-      }
-      const result = await window.archiveAssistant.openPath(resolution.targetPath);
+      const result = await window.archiveAssistant.openConfiguredDirectory('archiveRoot');
       setStatus({
         type: result?.success ? 'success' : 'error',
         text: result?.success
           ? '已打开当前归档根目录。'
-          : '归档目录打开失败，请核对目录权限。'
+          : result?.message || '归档目录打开失败，请核对目录权限。'
       });
     } catch {
       setStatus({ type: 'error', text: '归档目录打开失败，请核对目录权限。' });
@@ -3532,9 +3839,95 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                   <div className="sort-field-section sort-required-fields-section">
                     <h4>必填字段</h4>
                     <div className="sort-form-grid sort-core-fields-grid">
+                      {currentTemplateType === WATERMARK_TEMPLATE_TYPES.UNRESOLVED && (
+                        <label className="field wide">
+                          <span>水印模板<b>*</b></span>
+                          <select
+                            value=""
+                            disabled={currentFormLocked}
+                            onChange={(event) => {
+                              const watermarkTemplateType = event.target.value;
+                              const fixedCategory = watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+                                ? '时间地点水印'
+                                : watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION
+                                  ? '机动车违规管理'
+                                  : '';
+                              updateForm({
+                                watermarkTemplateType,
+                                ...(fixedCategory && Object.hasOwn(configs.watermarkCategories, fixedCategory)
+                                  ? {
+                                      watermarkCategory: fixedCategory,
+                                      archiveCategory: fixedCategory,
+                                      workContent: watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+                                        ? NOT_APPLICABLE_WORK_CONTENT
+                                        : ''
+                                    }
+                                  : {})
+                              });
+                            }}
+                          >
+                            <option value="">请选择水印模板</option>
+                            <option value={WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD}>正常工作记录水印</option>
+                            <option value={WATERMARK_TEMPLATE_TYPES.TIME_LOCATION}>时间地点水印</option>
+                            <option value={WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION}>机动车违规管理水印</option>
+                          </select>
+                        </label>
+                      )}
                       <InputField label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} required disabled={currentFormLocked} />
-                      <SelectField label="归档分类" value={form.watermarkCategory} options={Object.keys(configs.watermarkCategories)} onChange={(watermarkCategory) => updateForm({ watermarkCategory, workContent: '' })} required disabled={currentFormLocked} />
-                      <SelectField label="工作内容" value={form.workContent} options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []} onChange={(workContent) => updateForm({ workContent })} required disabled={currentFormLocked || !form.watermarkCategory} wide />
+                      <SelectField label="项目" value={form.projectName || form.project} options={projectOptions.map((item) => item.name)} onChange={(project) => updateForm({ project })} required disabled={currentFormLocked} />
+                      <SelectField
+                        label="归档分类"
+                        value={form.watermarkCategory}
+                        options={Object.keys(configs.watermarkCategories)}
+                        onChange={(watermarkCategory) => updateForm({ watermarkCategory, workContent: '' })}
+                        required
+                        disabled={currentFormLocked || currentIsTimeLocation || currentIsVehicleViolation}
+                      />
+                      {!currentIsTimeLocation && !currentIsVehicleViolation && (
+                        <SelectField
+                          label="工作内容"
+                          value={form.workContent}
+                          options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []}
+                          onChange={(workContent) => updateForm({ workContent })}
+                          required
+                          disabled={currentFormLocked || !form.watermarkCategory}
+                          wide
+                        />
+                      )}
+                      {currentIsTimeLocation && (
+                        <InputField label="工作内容" value="不适用" onChange={() => {}} disabled wide />
+                      )}
+                      {currentIsVehicleViolation && (
+                        <>
+                          <SelectField
+                            label="违停类型"
+                            value={form.violationType}
+                            options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []}
+                            onChange={(violationType) => updateForm({ violationType })}
+                            required
+                            disabled={currentFormLocked}
+                            wide
+                          />
+                          <InputField
+                            label="车牌号码"
+                            value={form.vehiclePlate}
+                            onChange={(vehiclePlate) => updateForm({ vehiclePlate: vehiclePlate.toUpperCase() })}
+                            required
+                            disabled={currentFormLocked}
+                          />
+                        </>
+                      )}
+                      {currentIsEngineering && (
+                        <SelectField
+                          label="施工单位"
+                          value={form.constructionUnitName}
+                          options={currentConstructionUnits.map((item) => item.name)}
+                          onChange={(constructionUnitName) => updateForm({ constructionUnitName })}
+                          required
+                          disabled={currentFormLocked || !form.projectId}
+                          wide
+                        />
+                      )}
                     </div>
                   </div>
                   <div className="sort-field-section sort-suggested-fields-section">
@@ -4051,23 +4444,42 @@ function reconcileForm(current, configs) {
   const categories = Object.keys(configs.watermarkCategories || {});
   const watermarkCategory = categories.includes(current.watermarkCategory) ? current.watermarkCategory : '';
   return {
+    ...defaultForm,
     ...current,
-    project: (configs.projects || []).includes(current.project) ? current.project : '',
+    project: (configs.projects || []).includes(current.projectName || current.project)
+      ? (current.projectName || current.project)
+      : '',
+    projectName: (configs.projects || []).includes(current.projectName || current.project)
+      ? (current.projectName || current.project)
+      : '',
     watermarkCategory,
-    workContent: (configs.watermarkCategories?.[watermarkCategory]?.items || []).includes(current.workContent) ? current.workContent : ''
+    archiveCategory: watermarkCategory,
+    workContent: current.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+      ? NOT_APPLICABLE_WORK_CONTENT
+      : (configs.watermarkCategories?.[watermarkCategory]?.items || []).includes(current.workContent)
+        ? current.workContent
+        : ''
   };
 }
 
 function normalizeArchiveInfo(form) {
   return {
-    project: form.project,
+    ...form,
+    project: form.projectName || form.project,
+    projectName: form.projectName || form.project,
     watermarkCategory: form.watermarkCategory,
     archiveCategory: form.watermarkCategory,
-    workContent: form.workContent,
-    location: form.location,
+    workContent: form.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+      ? NOT_APPLICABLE_WORK_CONTENT
+      : form.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION
+        ? form.violationType
+        : form.workContent,
+    location: form.locationArea || form.location,
+    locationArea: form.locationArea || form.location,
     date: form.date,
     keywords: form.keywords,
-    remark: form.remark
+    remark: form.remarks || form.remark,
+    remarks: form.remarks || form.remark
   };
 }
 
@@ -4139,58 +4551,6 @@ function restoreSnapshotEntries(currentEntries = {}, snapshotEntries = {}, photo
     else delete next[photoId];
   });
   return next;
-}
-
-function groupPreviewPhotosByTransaction(photos = []) {
-  const groups = new Map();
-  photos.forEach((photo) => {
-    const transactionId = String(
-      photo.archiveResult?.transactionId
-      || photo.previewInfo?.transactionId
-      || ''
-    ).trim();
-    const key = transactionId || '__new__';
-    const group = groups.get(key) || { transactionId, photos: [] };
-    group.photos.push(photo);
-    groups.set(key, group);
-  });
-  return Array.from(groups.values());
-}
-
-function mergeArchiveTransactionResults(results = []) {
-  const safeResults = results.filter(Boolean);
-  const items = safeResults.flatMap((result) => (result.items || []).map((item) => ({
-    ...item,
-    transactionId: item.transactionId || result.transactionId || ''
-  })));
-  const committedCount = safeResults.reduce((sum, result) => sum + Number(result.committedCount || 0), 0);
-  const pendingLedgerCount = safeResults.reduce((sum, result) => sum + Number(result.pendingLedgerCount || 0), 0);
-  const failedCount = safeResults.reduce((sum, result) => sum + Number(result.failedCount || 0), 0);
-  const conflictCount = safeResults.reduce((sum, result) => sum + Number(result.conflictCount || 0), 0);
-  const copiedCount = safeResults.reduce((sum, result) => sum + Number(result.copiedCount || 0), 0);
-  const inputCount = safeResults.reduce((sum, result) => sum + Number(result.inputCount || result.total || 0), 0);
-  const status = pendingLedgerCount > 0
-    ? 'ledger_pending'
-    : committedCount === inputCount && inputCount > 0
-      ? 'committed'
-      : committedCount > 0
-        ? 'partial'
-        : 'failed';
-  return {
-    success: status === 'committed',
-    recoverable: pendingLedgerCount > 0,
-    status,
-    inputCount,
-    copiedCount,
-    committedCount,
-    successCount: committedCount,
-    pendingLedgerCount,
-    failedCount,
-    conflictCount,
-    message: safeResults.find((result) => result.message)?.message || '',
-    fingerprintIndexWarning: safeResults.map((result) => result.fingerprintIndexWarning).filter(Boolean).join(' '),
-    items
-  };
 }
 
 function getPhotoWorkflowStatus(

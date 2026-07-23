@@ -16,7 +16,16 @@ const LEDGER_HEADERS = [
   '关键词',
   '备注',
   '归档路径',
-  '归档时间'
+  '归档时间',
+  '来源类型',
+  '来源标识',
+  '照片ID',
+  '来源文件路径',
+  '来源文件SHA-256',
+  '归档文件SHA-256',
+  '归档事务ID',
+  '水印模板',
+  '识别处理方式'
 ];
 
 const LEDGER_HEADER_ALIASES = {
@@ -30,7 +39,16 @@ const LEDGER_HEADER_ALIASES = {
   关键词: ['关键词', '关键字'],
   备注: ['备注'],
   归档路径: ['归档路径', '目标路径', '文件路径', '归档文件路径'],
-  归档时间: ['归档时间', '写入时间']
+  归档时间: ['归档时间', '写入时间'],
+  来源类型: ['来源类型', '照片来源类型'],
+  来源标识: ['来源标识', 'sourceKey'],
+  照片ID: ['照片ID', 'photoId'],
+  来源文件路径: ['来源文件路径', '原始文件路径', '原图路径', '来源路径'],
+  '来源文件SHA-256': ['来源文件SHA-256', 'sourceSha256'],
+  '归档文件SHA-256': ['归档文件SHA-256', 'archiveSha256'],
+  归档事务ID: ['归档事务ID', 'transactionId'],
+  水印模板: ['水印模板', 'watermarkTemplateType'],
+  识别处理方式: ['识别处理方式', 'processingMode']
 };
 const LEDGER_SWAP_PREFIX = '.photo-ledger-swap-';
 const ledgerWriteQueues = new Map();
@@ -110,7 +128,7 @@ function normalizeExistingLedgerRows(rows = []) {
   const sourceHeaders = rows[0].map((header) => String(header || '').trim());
   const normalizedRows = rows.slice(1).map((row) => {
     if (isCurrentRowUnderLegacyHeaders(sourceHeaders, row)) {
-      return LEDGER_HEADERS.map((_, index) => row[index] ?? '');
+      return LEDGER_HEADERS.map((_, index) => (index < 11 ? row[index] ?? '' : ''));
     }
     return LEDGER_HEADERS.map((header) => {
       const aliases = LEDGER_HEADER_ALIASES[header] || [header];
@@ -122,7 +140,7 @@ function normalizeExistingLedgerRows(rows = []) {
 }
 
 function isCurrentRowUnderLegacyHeaders(headers = [], row = []) {
-  if (headers.length <= LEDGER_HEADERS.length || headers.includes('归档分类')) return false;
+  if (headers.includes('归档分类')) return false;
   const legacyPathIndex = headers.indexOf('归档路径');
   const legacyStatusIndex = headers.indexOf('处理状态');
   if (legacyPathIndex < 0 || legacyStatusIndex < 0) return false;
@@ -317,7 +335,16 @@ function toLedgerDataRow(item) {
     item.keywords,
     item.remark,
     item.targetPath,
-    item.archivedAt
+    item.archivedAt,
+    item.sourceType,
+    item.sourceKey,
+    item.photoId,
+    item.sourcePath,
+    item.sourceSha256,
+    item.archiveSha256 || item.targetSha256,
+    item.transactionId,
+    item.watermarkTemplateType,
+    item.processingMode
   ];
 }
 

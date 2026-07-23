@@ -1,5 +1,11 @@
 export const FALLBACK_RUNTIME_CONFIGS = {
   projects: ['潇湘新区二期', '香辰康园', '其他'],
+  projectOptions: [
+    { id: 'project-潇湘新区二期-1', name: '潇湘新区二期' },
+    { id: 'project-香辰康园-2', name: '香辰康园' },
+    { id: 'project-其他-3', name: '其他' }
+  ],
+  constructionUnits: [],
   departments: ['工程', '客服', '秩序', '环境', '综合'],
   watermarkCategories: {
     工程类专用: {
@@ -32,12 +38,45 @@ export const FALLBACK_RUNTIME_CONFIGS = {
 export function withRuntimeConfigFallback(configs) {
   const source = configs || {};
   const watermarkCategories = normalizeWatermarkRuntime(source.watermarkCategories);
+  const projects = nonEmptyList(source.projects, FALLBACK_RUNTIME_CONFIGS.projects);
+  const projectOptions = normalizeProjectOptions(source.projectOptions, projects);
   return {
-    projects: nonEmptyList(source.projects, FALLBACK_RUNTIME_CONFIGS.projects),
+    projects,
+    projectOptions,
+    constructionUnits: normalizeConstructionUnits(source.constructionUnits),
     departments: nonEmptyList(source.departments, FALLBACK_RUNTIME_CONFIGS.departments),
     watermarkCategories: Object.keys(watermarkCategories).length ? watermarkCategories : FALLBACK_RUNTIME_CONFIGS.watermarkCategories,
     keywords: nonEmptyList(source.keywords, FALLBACK_RUNTIME_CONFIGS.keywords)
   };
+}
+
+function normalizeProjectOptions(value, projects) {
+  const items = (Array.isArray(value) ? value : [])
+    .map((item) => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || '').trim()
+    }))
+    .filter((item) => item.id && item.name && projects.includes(item.name));
+  if (items.length === projects.length) return items;
+  return projects.map((name, index) => (
+    items.find((item) => item.name === name)
+    || { id: `project-runtime-${index + 1}`, name }
+  ));
+}
+
+function normalizeConstructionUnits(value) {
+  return (Array.isArray(value) ? value : []).map((item) => ({
+    id: String(item?.id || '').trim(),
+    name: String(item?.name || '').trim(),
+    aliases: uniqueStrings(item?.aliases),
+    enabled: item?.enabled !== false,
+    projectIds: uniqueStrings(item?.projectIds)
+  })).filter((item) => item.id && item.name);
+}
+
+function uniqueStrings(value) {
+  const source = Array.isArray(value) ? value : [];
+  return Array.from(new Set(source.map((item) => String(item || '').trim()).filter(Boolean)));
 }
 
 export function getDefaultArchivePackageSettings(settings) {
@@ -52,15 +91,37 @@ export function getDefaultArchivePackageSettings(settings) {
 }
 
 export function getUsablePhotoFolder(settings) {
+  if (settings?.photoSourceDirectory != null) {
+    return String(settings.photoSourceDirectory || '').trim();
+  }
   if (settings?.pathStatus?.lastPhotoFolderExists) return settings.lastPhotoFolder;
   if (settings?.pathStatus?.defaultPhotoFolderExists) return settings.defaultPhotoFolder;
   return '';
 }
 
 export function getUsableArchiveRoot(settings) {
+  if (settings?.archiveRootDirectory != null) {
+    return String(settings.archiveRootDirectory || '').trim();
+  }
   if (settings?.pathStatus?.defaultArchiveRootExists) return settings.defaultArchiveRoot;
   if (settings?.pathStatus?.lastArchiveRootExists) return settings.lastArchiveRoot;
   return '';
+}
+
+export function normalizeRuntimeConfiguration(runtimeConfiguration) {
+  const source = runtimeConfiguration || {};
+  return {
+    schemaVersion: Number(source.schemaVersion) || 1,
+    revision: String(source.revision || ''),
+    loadedFrom: String(source.loadedFrom || ''),
+    migratedFrom: String(source.migratedFrom || ''),
+    validationWarnings: Array.isArray(source.validationWarnings) ? source.validationWarnings : [],
+    photoSourceDirectory: String(source.photoSourceDirectory || '').trim(),
+    archiveRootDirectory: String(source.archiveRootDirectory || '').trim(),
+    archivePackageDirectory: String(source.archivePackageDirectory || '').trim(),
+    configs: withRuntimeConfigFallback(source.configs),
+    settings: source.settings && typeof source.settings === 'object' ? source.settings : {}
+  };
 }
 
 function nonEmptyList(value, fallback) {

@@ -6,8 +6,10 @@ const {
 } = require('./markiApiService.cjs');
 const {
   buildMarkiSourceKey,
-  checkMarkiSourceKeys
 } = require('./markiSourceManifestService.cjs');
+const {
+  resolveMarkiImportSourceStatuses
+} = require('./markiImportLifecycleService.cjs');
 const {
   parseMarkiContent
 } = require('./markiStructuredImportService.cjs');
@@ -22,13 +24,24 @@ const IMPORT_TASK_STATUSES = Object.freeze({
   FAILED: 'failed',
   COMPLETED: 'completed'
 });
-const SESSION_INPUT_KEYS = new Set(['credentials', 'documentsPath', 'filters']);
+const SESSION_INPUT_KEYS = new Set(['credentials', 'documentsPath', 'userDataPath', 'filters']);
 const FILTER_KEYS = new Set(['teamId', 'uid', 'start', 'end']);
 const SAFE_SOURCE_STATUSES = new Set([
   'discovered',
+  'filtered_unwatermarked',
+  'queued',
   'downloading',
-  'download_failed',
-  'imported'
+  'downloaded',
+  'append_pending',
+  'failed_retryable',
+  'removed_reimportable',
+  'imported_active',
+  'archived_locked'
+]);
+const IMPORTABLE_SOURCE_STATUSES = new Set([
+  'discovered',
+  'failed_retryable',
+  'removed_reimportable'
 ]);
 
 class MarkiPhotoQuerySessionError extends MarkiApiError {
@@ -114,7 +127,7 @@ async function settleMarkiPhotoSelectionImport(sessionId, input, options = {}) {
 }
 
 async function createSession(sessions, input, options) {
-  const normalized = normalizeCreateInput(input);
+  const normalized = normalizeCreateInput(input, options);
   const now = getNow(options);
   cleanupSessionsAt(sessions, now);
   if (sessions.size >= MAX_ACTIVE_SESSIONS) {
@@ -135,6 +148,7 @@ async function createSession(sessions, input, options) {
     sessionId,
     orgId: normalized.orgId,
     documentsPath: normalized.documentsPath,
+    userDataPath: normalized.userDataPath,
     filters: normalized.filters,
     next: '',
     hasMore: false,
@@ -151,6 +165,7 @@ async function createSession(sessions, input, options) {
   };
 
   await appendPageToSession(session, result, dependencies);
+  await refreshSessionSourceStatuses(session, dependencies);
   session.pageCount = 1;
   sessions.set(sessionId, session);
   return buildSafeSessionResult(session);
@@ -182,6 +197,7 @@ async function loadNextPage(sessions, sessionId, options) {
     options.listOptions || {}
   );
   await appendPageToSession(session, result, dependencies);
+  await refreshSessionSourceStatuses(session, dependencies);
   session.pageCount += 1;
   touchSession(session, getNow(options));
   return buildSafeSessionResult(session);
@@ -190,6 +206,7 @@ async function loadNextPage(sessions, sessionId, options) {
 async function getSession(sessions, sessionId, options) {
   const now = getNow(options);
   const session = requireActiveSession(sessions, sessionId, now);
+  await refreshSessionSourceStatuses(session, resolveDependencies(options));
   touchSession(session, now);
   return buildSafeSessionResult(session);
 }
@@ -233,8 +250,7 @@ async function appendPageToSession(session, result, dependencies) {
     );
   }
 
-  const candidates = [];
-  const candidateSourceKeys = new Set();
+  const candidateBySourceKey = new Map();
   let reachedPhotoLimit = false;
   for (const moment of result.moments) {
     const momentId = String(moment?.id || '').trim();
@@ -245,33 +261,57 @@ async function appendPageToSession(session, result, dependencies) {
       );
     }
     const sourceKey = dependencies.buildMarkiSourceKey(session.orgId, momentId);
-    if (session.selectionTokenBySourceKey.has(sourceKey)) continue;
-    if (candidateSourceKeys.has(sourceKey)) continue;
-    if (session.orderedSelectionTokens.length + candidates.length >= MAX_SESSION_PHOTOS) {
+    const watermarkIdentity = resolveWatermarkIdentity(moment);
+    const existingToken = session.selectionTokenBySourceKey.get(sourceKey);
+    if (existingToken) {
+      const existing = session.momentsBySelectionToken.get(existingToken);
+      if (watermarkIdentity.isWatermarked && !existing?.isWatermarked) {
+        existing.moment = cloneMoment(moment);
+        existing.markName = watermarkIdentity.markName;
+        existing.watermarkKey = watermarkIdentity.watermarkKey;
+        existing.isWatermarked = true;
+      }
+      continue;
+    }
+    const pageExisting = candidateBySourceKey.get(sourceKey);
+    if (pageExisting) {
+      if (watermarkIdentity.isWatermarked && !pageExisting.isWatermarked) {
+        candidateBySourceKey.set(sourceKey, {
+          moment: cloneMoment(moment),
+          sourceKey,
+          ...watermarkIdentity
+        });
+      }
+      continue;
+    }
+    if (session.orderedSelectionTokens.length + candidateBySourceKey.size >= MAX_SESSION_PHOTOS) {
       reachedPhotoLimit = true;
       break;
     }
-    candidateSourceKeys.add(sourceKey);
-    candidates.push({ moment: cloneMoment(moment), sourceKey });
+    candidateBySourceKey.set(sourceKey, {
+      moment: cloneMoment(moment),
+      sourceKey,
+      ...watermarkIdentity
+    });
   }
+  const candidates = [...candidateBySourceKey.values()];
 
   const sourceStatusResult = candidates.length
-    ? await dependencies.checkMarkiSourceKeys(
-      session.documentsPath,
-      session.orgId,
-      candidates.map((item) => item.sourceKey)
-    )
+    ? await dependencies.resolveSourceStatuses({
+      documentsPath: session.documentsPath,
+      userDataPath: session.userDataPath,
+      orgId: session.orgId,
+      sourceKeys: candidates.map((item) => item.sourceKey)
+    })
     : { bySourceKey: {} };
   const statusBySourceKey = sourceStatusResult?.bySourceKey || {};
   const preparedEntries = candidates.map((candidate, index) => ({
     ...candidate,
     selectionToken: createOpaqueId(dependencies.randomUUID),
     displayId: String(session.orderedSelectionTokens.length + index + 1),
-    selectedSourceStatus: normalizeSourceStatus(
-      Object.hasOwn(statusBySourceKey, candidate.sourceKey)
-        ? statusBySourceKey[candidate.sourceKey]
-        : null
-    )
+    selectedSourceStatus: candidate.isWatermarked
+      ? normalizeSourceStatus(statusBySourceKey[candidate.sourceKey] || 'discovered')
+      : 'filtered_unwatermarked'
   }));
 
   for (const entry of preparedEntries) {
@@ -279,6 +319,9 @@ async function appendPageToSession(session, result, dependencies) {
       moment: entry.moment,
       sourceKey: entry.sourceKey,
       displayId: entry.displayId,
+      markName: entry.markName,
+      watermarkKey: entry.watermarkKey,
+      isWatermarked: entry.isWatermarked,
       selectedSourceStatus: entry.selectedSourceStatus,
       importStatus: IMPORT_TASK_STATUSES.IDLE,
       importTaskId: ''
@@ -315,6 +358,12 @@ function beginSelectionImport(sessions, sessionId, selectionTokens, options) {
     }
     return entry;
   });
+  if (entries.some((entry) => !entry.isWatermarked)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_unwatermarked_rejected',
+      '无水印照片仅供查看，不能导入。'
+    );
+  }
   const retryTask = [...session.importTasks.values()].find(
     (task) => task.status === IMPORT_TASK_STATUSES.FAILED && task.tokenSetKey === tokenSetKey
   );
@@ -356,6 +405,12 @@ function beginSelectionImport(sessions, sessionId, selectionTokens, options) {
     throw new MarkiPhotoQuerySessionError(
       'marki_photo_import_retry_token_mismatch',
       '失败任务只能使用原照片集合重试。'
+    );
+  }
+  if (entries.some((entry) => !IMPORTABLE_SOURCE_STATUSES.has(entry.selectedSourceStatus))) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_import_source_state_invalid',
+      '所选照片当前状态不允许导入。'
     );
   }
 
@@ -414,7 +469,9 @@ function settleSelectionImport(sessions, sessionId, input, options) {
     if (!entry || entry.importTaskId !== task.taskId) continue;
     entry.importStatus = normalized.status;
     if (normalized.status === IMPORT_TASK_STATUSES.COMPLETED) {
-      entry.selectedSourceStatus = 'imported';
+      entry.selectedSourceStatus = 'append_pending';
+    } else {
+      entry.selectedSourceStatus = 'failed_retryable';
     }
   }
   touchSession(session, now);
@@ -436,6 +493,14 @@ function buildTrustedImportTaskResult(session, task, retry) {
     batchId: task.batchId,
     selectionTokens: [...task.selectionTokens],
     effectiveSelectionTokens: [...task.effectiveSelectionTokens],
+    querySummary: {
+      ...session.filters,
+      loadedCount: session.orderedSelectionTokens.length,
+      selectedCount: task.selectionTokens.length,
+      unwatermarkedCount: session.orderedSelectionTokens.filter((selectionToken) => (
+        session.momentsBySelectionToken.get(selectionToken)?.isWatermarked !== true
+      )).length
+    },
     items: task.selectionTokens.map((selectionToken) => {
       const entry = session.momentsBySelectionToken.get(selectionToken);
       return {
@@ -443,6 +508,9 @@ function buildTrustedImportTaskResult(session, task, retry) {
         displayId: entry.displayId,
         sourceKey: entry.sourceKey,
         selectedSourceStatus: entry.selectedSourceStatus,
+        isWatermarked: entry.isWatermarked,
+        markName: entry.markName,
+        watermarkKey: entry.watermarkKey,
         moment: cloneMoment(entry.moment)
       };
     })
@@ -544,7 +612,9 @@ function buildSafePhotoSummary(selectionToken, entry) {
     teamId: String(moment.teamId || ''),
     uid: String(moment.uid || ''),
     photographerName: '',
-    markName: String(moment.markName || ''),
+    markName: entry.markName,
+    watermarkKey: entry.watermarkKey,
+    isWatermarked: entry.isWatermarked,
     postTime: Number(moment.postTime) || 0,
     displayDate: formatPostTimeUtc8(moment.postTime),
     projectText: getOwnField(fields, '小区名称'),
@@ -554,7 +624,7 @@ function buildSafePhotoSummary(selectionToken, entry) {
   };
 }
 
-function normalizeCreateInput(input) {
+function normalizeCreateInput(input, options = {}) {
   if (!isPlainObject(input)) {
     throw new MarkiPhotoQuerySessionError(
       'marki_photo_query_invalid_request',
@@ -570,6 +640,16 @@ function normalizeCreateInput(input) {
       '马克照片查询数据目录不可用。'
     );
   }
+  const userDataPath = String(
+    input.userDataPath
+    || (typeof options.checkMarkiSourceKeys === 'function' ? documentsPath : '')
+  ).trim();
+  if (!userDataPath || !path.isAbsolute(userDataPath)) {
+    throw new MarkiPhotoQuerySessionError(
+      'marki_photo_query_invalid_request',
+      '马克照片查询状态目录不可用。'
+    );
+  }
   if (!isPlainObject(input.filters)) {
     throw new MarkiPhotoQuerySessionError(
       'marki_photo_query_invalid_request',
@@ -581,6 +661,7 @@ function normalizeCreateInput(input) {
     credentials,
     orgId: credentials.orgId,
     documentsPath,
+    userDataPath,
     filters: {
       ...(input.filters.teamId !== undefined ? { teamId: input.filters.teamId } : {}),
       ...(input.filters.uid !== undefined ? { uid: input.filters.uid } : {}),
@@ -660,15 +741,35 @@ function touchSession(session, now) {
 function resolveDependencies(options) {
   return {
     listMarkiMoments: options.listMarkiMoments || listMarkiMoments,
-    checkMarkiSourceKeys: options.checkMarkiSourceKeys || checkMarkiSourceKeys,
+    resolveSourceStatuses: options.resolveSourceStatuses
+      || (typeof options.checkMarkiSourceKeys === 'function'
+        ? createLegacySourceStatusResolver(options.checkMarkiSourceKeys)
+        : resolveMarkiImportSourceStatuses),
     buildMarkiSourceKey: options.buildMarkiSourceKey || buildMarkiSourceKey,
     randomUUID: options.randomUUID || crypto.randomUUID
   };
 }
 
-function normalizeSourceStatus(sourceInfo) {
-  if (!sourceInfo?.exists) return 'new';
-  const status = String(sourceInfo.importStatus || '');
+function createLegacySourceStatusResolver(checkSourceKeys) {
+  return async ({ documentsPath, orgId, sourceKeys }) => {
+    const result = await checkSourceKeys(documentsPath, orgId, sourceKeys);
+    return {
+      success: true,
+      bySourceKey: Object.fromEntries(sourceKeys.map((sourceKey) => {
+        const item = result?.bySourceKey?.[sourceKey];
+        const status = String(item?.importStatus || '');
+        if (status === 'imported') return [sourceKey, 'removed_reimportable'];
+        if (['download_failed', 'downloading'].includes(status)) {
+          return [sourceKey, status === 'downloading' ? 'downloading' : 'failed_retryable'];
+        }
+        return [sourceKey, 'discovered'];
+      }))
+    };
+  };
+}
+
+function normalizeSourceStatus(value) {
+  const status = String(value || '');
   if (!SAFE_SOURCE_STATUSES.has(status)) {
     throw new MarkiPhotoQuerySessionError(
       'marki_photo_query_source_status_invalid',
@@ -676,6 +777,58 @@ function normalizeSourceStatus(sourceInfo) {
     );
   }
   return status;
+}
+
+async function refreshSessionSourceStatuses(session, dependencies) {
+  const sourceKeys = session.orderedSelectionTokens
+    .map((token) => session.momentsBySelectionToken.get(token)?.sourceKey)
+    .filter(Boolean);
+  if (sourceKeys.length === 0) return;
+  const result = await dependencies.resolveSourceStatuses({
+    documentsPath: session.documentsPath,
+    userDataPath: session.userDataPath,
+    orgId: session.orgId,
+    sourceKeys
+  });
+  for (const selectionToken of session.orderedSelectionTokens) {
+    const entry = session.momentsBySelectionToken.get(selectionToken);
+    if (!entry) continue;
+    if (!entry.isWatermarked) {
+      entry.selectedSourceStatus = 'filtered_unwatermarked';
+    } else if (entry.importStatus === IMPORT_TASK_STATUSES.IN_PROGRESS) {
+      entry.selectedSourceStatus = 'downloading';
+    } else if (entry.importStatus === IMPORT_TASK_STATUSES.FAILED) {
+      entry.selectedSourceStatus = 'failed_retryable';
+    } else if (entry.importStatus === IMPORT_TASK_STATUSES.COMPLETED) {
+      entry.selectedSourceStatus = result.bySourceKey?.[entry.sourceKey] === 'imported_active'
+        ? 'imported_active'
+        : 'append_pending';
+    } else {
+      entry.selectedSourceStatus = normalizeSourceStatus(
+        result.bySourceKey?.[entry.sourceKey] || 'discovered'
+      );
+    }
+  }
+}
+
+function resolveWatermarkIdentity(moment) {
+  const parsed = parseMarkiContent(moment?.content);
+  const fields = parsed.success ? parsed.fields : Object.create(null);
+  const markName = normalizeWatermarkName(
+    moment?.markName
+      || getOwnField(fields, '水印')
+      || getOwnField(fields, '水印名称')
+      || getOwnField(fields, '水印模板')
+  );
+  return {
+    markName,
+    isWatermarked: Boolean(markName),
+    watermarkKey: markName ? `name:${markName}` : 'unwatermarked'
+  };
+}
+
+function normalizeWatermarkName(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 
 function formatPostTimeUtc8(value) {

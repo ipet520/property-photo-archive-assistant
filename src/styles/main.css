@@ -16808,6 +16808,7 @@ table tbody tr.selected td {
 .marki-import-filter-band,
 .marki-import-toolbar,
 .marki-import-results,
+.marki-import-records-section,
 .marki-import-ready-section,
 .marki-import-config-warning {
   border: 1px solid #d5e1ec;
@@ -16855,7 +16856,7 @@ table tbody tr.selected td {
 
 .marki-import-filter-band {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) minmax(190px, 1.2fr) minmax(190px, 1.2fr) auto;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   align-items: end;
   gap: 12px;
   padding: 14px 16px;
@@ -17009,19 +17010,27 @@ table tbody tr.selected td {
   color: #425f75 !important;
 }
 
-.marki-import-source-status.imported {
+.marki-import-source-status.imported,
+.marki-import-source-status.imported_active,
+.marki-import-source-status.archived_locked {
   border-color: #9fd1bd;
   background: #edf9f3;
   color: #176544 !important;
 }
 
-.marki-import-source-status.download_failed {
+.marki-import-source-status.download_failed,
+.marki-import-source-status.failed_retryable,
+.marki-import-source-status.filtered_unwatermarked {
   border-color: #edb2ad;
   background: #fff1f0;
   color: #8c2f28 !important;
 }
 
-.marki-import-source-status.downloading {
+.marki-import-source-status.queued,
+.marki-import-source-status.downloading,
+.marki-import-source-status.downloaded,
+.marki-import-source-status.append_pending,
+.marki-import-source-status.removed_reimportable {
   border-color: #e7c17c;
   background: #fff8e8;
   color: #75551d !important;
@@ -17040,10 +17049,12 @@ table tbody tr.selected td {
   min-height: 88px;
 }
 
+.marki-import-records-section,
 .marki-import-ready-section {
   padding: 14px 16px;
 }
 
+.marki-import-records-section > header,
 .marki-import-ready-section > header {
   display: flex;
   align-items: flex-start;
@@ -17052,12 +17063,14 @@ table tbody tr.selected td {
   margin-bottom: 10px;
 }
 
+.marki-import-records-section h2,
 .marki-import-ready-section h2 {
   margin: 0 0 3px;
   font-size: 17px;
   letter-spacing: 0;
 }
 
+.marki-import-records-section p,
 .marki-import-ready-section p {
   margin: 0;
   color: #60798d;
@@ -17095,6 +17108,42 @@ table tbody tr.selected td {
   font-size: 12px;
 }
 
+.marki-import-record-list {
+  display: grid;
+  gap: 7px;
+}
+
+.marki-import-record-list article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #dce6ee;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.marki-import-record-main {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.marki-import-record-main span,
+.marki-import-record-main small {
+  color: #60798d;
+  font-size: 12px;
+}
+
+.marki-import-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
 @media (max-width: 1450px) {
   .marki-import-filter-band {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
@@ -17112,6 +17161,8 @@ table tbody tr.selected td {
 
   .marki-import-header,
   .marki-import-toolbar,
+  .marki-import-records-section > header,
+  .marki-import-ready-section > header,
   .marki-import-config-warning {
     align-items: stretch;
     flex-direction: column;
@@ -17122,6 +17173,16 @@ table tbody tr.selected td {
   }
 
   .marki-import-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .marki-import-record-list article,
+  .marki-import-ready-list article {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .marki-import-record-actions {
     justify-content: flex-start;
   }
 }

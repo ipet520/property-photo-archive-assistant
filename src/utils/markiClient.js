@@ -12,6 +12,8 @@ export function createDefaultMarkiImportFilters(nowValue = Date.now()) {
   return {
     teamId: '',
     uid: '',
+    watermarkFilter: 'watermarked',
+    importStatusFilter: 'all',
     start: `${date}T00:00`,
     end: `${date}T${padDatePart(beijingNow.getUTCHours())}:${padDatePart(beijingNow.getUTCMinutes())}`
   };
@@ -160,6 +162,26 @@ export async function listReadyMarkiImportBatches() {
   }
 }
 
+export async function listMarkiImportRecords() {
+  return callMarkiLocalMethod('listImportRecords', [], '马克导入记录读取失败。');
+}
+
+export async function recoverMarkiImportLifecycle() {
+  return callMarkiLocalMethod('recoverImportLifecycle', [], '马克导入任务恢复失败。');
+}
+
+export async function undoMarkiImportBatch(batchId) {
+  return callMarkiLocalMethod('undoImportBatch', [batchId], '马克导入撤销失败。');
+}
+
+export async function clearMarkiImportRecord(batchId) {
+  return callMarkiLocalMethod('clearImportRecord', [batchId], '马克导入记录清除失败。');
+}
+
+export async function cleanupMarkiImportCache(batchId) {
+  return callMarkiLocalMethod('cleanupImportCache', [batchId], '马克下载缓存清理失败。');
+}
+
 export function createMarkiReadyBatchRefresh(
   requestReadyBatches = listReadyMarkiImportBatches
 ) {
@@ -228,6 +250,16 @@ function createUnavailableResult(message) {
       message
     }
   };
+}
+
+async function callMarkiLocalMethod(methodName, args, fallbackMessage) {
+  const api = getMarkiApi();
+  if (typeof api?.[methodName] !== 'function') return createUnavailableResult(fallbackMessage);
+  try {
+    return await api[methodName](...args);
+  } catch {
+    return createUnavailableResult(fallbackMessage);
+  }
 }
 
 function createReadyBatchRefreshFailure(message) {

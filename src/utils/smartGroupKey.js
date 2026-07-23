@@ -88,22 +88,21 @@ export function buildSmartGroupDescriptor({
     date,
     project: cleanSmartGroupValue(canonicalFields.project),
     watermarkCategory: cleanSmartGroupValue(canonicalFields.watermarkCategory),
-    workContent: cleanSmartGroupValue(canonicalFields.workContent)
+    workContent: cleanSmartGroupValue(canonicalFields.workContent),
+    watermarkTemplateType: cleanSmartGroupValue(canonicalFields.watermarkTemplateType)
   };
-  const missingDate = !date;
-  const dateKey = missingDate
-    ? `missing_date:${photoId || 'missing_photo_id'}`
-    : date;
-  const groupKey = buildSmartGroupKey({
-    ...fields,
-    date: dateKey
-  });
+  if (fields.watermarkTemplateType === 'time_location') {
+    fields.workContent = 'not_applicable';
+  }
+  const missingFields = getMissingGroupFields(fields);
+  const groupKey = buildPhotoIsolatedSmartGroupKey(fields, photoId);
 
   return {
     groupKey,
     date,
     dateSource,
-    missingDate,
+    missingDate: missingFields.includes('date'),
+    missingFields,
     fields,
     title: buildSmartGroupTitle(fields)
   };
@@ -123,13 +122,25 @@ export function buildSmartGroupKey({
   ]);
 }
 
+export function buildPhotoIsolatedSmartGroupKey(fields = {}, photoId = '') {
+  const safePhotoId = cleanSmartGroupValue(photoId) || 'missing_photo_id';
+  return buildSmartGroupKey({
+    date: cleanSmartGroupValue(fields.date) || `missing_date:${safePhotoId}`,
+    project: cleanSmartGroupValue(fields.project) || `missing_project:${safePhotoId}`,
+    watermarkCategory: cleanSmartGroupValue(fields.watermarkCategory) || `missing_category:${safePhotoId}`,
+    workContent: cleanSmartGroupValue(fields.workContent) || `missing_work_content:${safePhotoId}`
+  });
+}
+
 export function buildSmartGroupTitle(fields = {}) {
   const date = normalizeSmartGroupDate(fields.date);
-  const detail = cleanSmartGroupValue(fields.workContent)
-    || cleanSmartGroupValue(fields.watermarkCategory)
-    || cleanSmartGroupValue(fields.project)
-    || '待人工完善';
-  return `${date || '日期待补充'}｜${detail}`;
+  const project = cleanSmartGroupValue(fields.project) || '项目待补全';
+  const category = cleanSmartGroupValue(fields.watermarkCategory) || '分类待补全';
+  const workContent = cleanSmartGroupValue(fields.workContent);
+  const detail = workContent === 'not_applicable'
+    ? category
+    : `${category}｜${workContent || '工作内容待补全'}`;
+  return `${date || '日期待补充'}｜${project}｜${detail}`;
 }
 
 export function normalizeSmartGroupDescriptor(value = {}, photoId = '') {
@@ -137,21 +148,30 @@ export function normalizeSmartGroupDescriptor(value = {}, photoId = '') {
     date: normalizeSmartGroupDate(value?.fields?.date || value?.date),
     project: cleanSmartGroupValue(value?.fields?.project),
     watermarkCategory: cleanSmartGroupValue(value?.fields?.watermarkCategory),
-    workContent: cleanSmartGroupValue(value?.fields?.workContent)
+    workContent: cleanSmartGroupValue(value?.fields?.workContent),
+    watermarkTemplateType: cleanSmartGroupValue(value?.fields?.watermarkTemplateType)
   };
-  const missingDate = !fields.date;
   const safePhotoId = cleanSmartGroupValue(photoId);
-  const dateKey = missingDate
-    ? `missing_date:${safePhotoId || 'missing_photo_id'}`
-    : fields.date;
+  if (fields.watermarkTemplateType === 'time_location') fields.workContent = 'not_applicable';
+  const missingFields = getMissingGroupFields(fields);
   return {
-    groupKey: buildSmartGroupKey({ ...fields, date: dateKey }),
+    groupKey: buildPhotoIsolatedSmartGroupKey(fields, safePhotoId),
     date: fields.date,
     dateSource: cleanSmartGroupValue(value?.dateSource),
-    missingDate,
+    missingDate: missingFields.includes('date'),
+    missingFields,
     fields,
     title: buildSmartGroupTitle(fields)
   };
+}
+
+function getMissingGroupFields(fields = {}) {
+  return [
+    ['date', fields.date],
+    ['project', fields.project],
+    ['archiveCategory', fields.watermarkCategory],
+    ['workContent', fields.workContent]
+  ].filter(([, value]) => !cleanSmartGroupValue(value)).map(([key]) => key);
 }
 
 export function cleanSmartGroupValue(value) {

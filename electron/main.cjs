@@ -2,7 +2,7 @@ const electron = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { scanImages } = require('./services/fileService.cjs');
+const { scanImages, scanImagesWithHealth } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos, recoverPendingArchiveTransactions } = require('./services/archiveService.cjs');
 const { matchArchivedPhotos } = require('./services/archiveFingerprintService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
@@ -82,26 +82,28 @@ const {
   saveRectificationItem
 } = require('./services/rectificationService.cjs');
 const {
-  loadConfigs,
-  loadUserConfigs,
   saveUserConfig,
   saveAllUserConfigs,
   resetConfigsToDefault,
   exportConfigs,
   importConfigs,
   backupConfigs,
-  getConfigPaths,
   validateConfig
 } = require('./services/configService.cjs');
 const { getLedgerPath } = require('./services/excelService.cjs');
 const {
   loadSettings,
-  saveSettings,
-  updateLastPhotoFolder,
-  updateLastArchiveRoot,
-  setDefaultArchiveRoot,
   validatePathExists
 } = require('./services/settingsService.cjs');
+const {
+  getRuntimeConfigurationPaths,
+  loadRuntimeConfiguration,
+  loadRuntimeEditableConfigs,
+  saveRuntimeDirectory,
+  saveRuntimeSettings
+} = require('./services/runtimeConfigurationService.cjs');
+const { inspectDirectoryHealth } = require('./services/directoryHealthService.cjs');
+const { inspectPhotoSourceFile } = require('./services/photoFileHealthService.cjs');
 const {
   clearMarkiCredentials,
   getMarkiCredentialStatus,
@@ -128,6 +130,15 @@ const {
 const {
   importMarkiPhotoQuerySelection
 } = require('./services/markiTrustedImportService.cjs');
+const {
+  cleanupMarkiImportLifecycleCache,
+  clearMarkiImportLifecycleRecord,
+  completeMarkiImportLifecycleBatch,
+  listMarkiImportLifecycleRecords,
+  markMarkiImportLifecycleAppending,
+  recoverMarkiImportLifecycle,
+  undoMarkiImportLifecycleBatch
+} = require('./services/markiImportLifecycleService.cjs');
 const {
   loadSortWorkspaceSnapshot,
   saveSortWorkspaceSnapshot
@@ -296,6 +307,90 @@ function getWritableDocumentsPath() {
   } catch {
     return app.getPath('userData');
   }
+}
+
+function getRuntimeConfigurationStorageRoots() {
+  return {
+    userDataPath: app.getPath('userData'),
+    documentsPath: app.getPath('documents')
+  };
+}
+
+async function loadCurrentRuntimeConfiguration() {
+  return loadRuntimeConfiguration(getRuntimeConfigurationStorageRoots());
+}
+
+async function publishRuntimeConfiguration() {
+  const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+    }
+  }
+  return runtimeConfiguration;
+}
+
+async function mutateRuntimeConfiguration(action) {
+  await action();
+  return publishRuntimeConfiguration();
+}
+
+function getConfiguredDirectory(runtimeConfiguration, directoryKind) {
+  if (directoryKind === 'photoSource') {
+    return {
+      configuredPath: runtimeConfiguration.photoSourceDirectory,
+      label: '照片来源目录',
+      requirements: { readable: true, writable: false, allowCreate: false, checkOnly: true }
+    };
+  }
+  if (directoryKind === 'archiveRoot') {
+    return {
+      configuredPath: runtimeConfiguration.archiveRootDirectory,
+      label: '归档根目录',
+      requirements: { readable: true, writable: false, allowCreate: false, checkOnly: true }
+    };
+  }
+  if (directoryKind === 'archivePackage') {
+    return {
+      configuredPath: runtimeConfiguration.archivePackageDirectory,
+      label: '归档资料包目录',
+      requirements: { readable: true, writable: false, allowCreate: false, checkOnly: true }
+    };
+  }
+  throw new TypeError('目录类型无效。');
+}
+
+function createDirectoryHealthMessage(directoryKind, health) {
+  const label = directoryKind === 'photoSource' ? '照片来源目录' : '归档根目录';
+  if (health.healthStatus === 'not_configured') return `尚未配置${label}。`;
+  if (health.healthStatus === 'missing') return `${label}不存在：${health.normalizedPath}`;
+  if (health.healthStatus === 'not_directory') return `配置路径不是目录：${health.normalizedPath}`;
+  if (health.healthStatus === 'unreadable') {
+    return `无法读取目录：${health.normalizedPath}，原因：${health.errorMessage}`;
+  }
+  if (health.healthStatus === 'unwritable') {
+    return `${label}不可写：${health.normalizedPath}，原因：${health.errorMessage}`;
+  }
+  return `${label}当前不可用。`;
+}
+
+async function inspectConfiguredDirectory(directoryKind, overrides = {}) {
+  const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+  const configured = getConfiguredDirectory(runtimeConfiguration, directoryKind);
+  const requirements = {
+    ...configured.requirements,
+    ...(overrides.writable === true ? { writable: true } : {})
+  };
+  const health = await inspectDirectoryHealth(configured.configuredPath, requirements);
+  return {
+    success: health.healthStatus === 'healthy',
+    directoryKind,
+    revision: runtimeConfiguration.revision,
+    health,
+    message: health.healthStatus === 'healthy'
+      ? `${configured.label}可用。`
+      : createDirectoryHealthMessage(directoryKind, health)
+  };
 }
 
 async function safeRecognitionCall(action, fallback) {
@@ -470,9 +565,10 @@ function disableNativeMenu() {
   Menu.setApplicationMenu(null);
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setAppUserModelId('com.property.photo.archive.assistant');
   disableNativeMenu();
+  await recoverMarkiImportLifecycle(app.getPath('userData')).catch(() => {});
 
   protocol.handle('local-photo', (request) => {
     const url = new URL(request.url);
@@ -512,6 +608,33 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
+ipcMain.handle('photos:scanConfigured', async () => {
+  try {
+    const inspection = await inspectConfiguredDirectory('photoSource');
+    if (!inspection.success) return { ...inspection, photos: [], failures: [] };
+    const result = await scanImagesWithHealth(inspection.health.normalizedPath);
+    return {
+      success: true,
+      revision: inspection.revision,
+      directory: inspection.health,
+      photos: result.photos,
+      failures: result.failures
+    };
+  } catch (error) {
+    return {
+      success: false,
+      photos: [],
+      failures: [],
+      error: {
+        code: 'configured_photo_scan_failed',
+        message: `无法读取当前运行配置：${String(error?.message || '未知错误')}`
+      }
+    };
+  }
+});
+ipcMain.handle('photos:inspectSourceFile', async (_event, input) => (
+  inspectPhotoSourceFile(input?.path || input?.photo || input, input?.expectedSha256 || '')
+));
 ipcMain.handle('photos:matchArchived', async (_event, archiveRoot, photos) => matchArchivedPhotos(archiveRoot, photos));
 ipcMain.handle('recognition:getStatus', async () => safeRecognitionCall(() => getRecognitionStatus(app.getPath('userData')), createRecognitionErrorStatus));
 ipcMain.handle('recognition:getProviders', async () => safeRecognitionCall(() => getRecognitionProviders(app.getPath('userData')), () => []));
@@ -778,13 +901,69 @@ ipcMain.handle('smartSort:clearGroups', async () => safeRecognitionCall(
   () => clearSmartSortGroups(app.getPath('userData')),
   () => false
 ));
-ipcMain.handle('configs:load', async () => loadConfigs(getWritableDocumentsPath()));
-ipcMain.handle('configs:loadUserConfigs', async () => loadUserConfigs(getWritableDocumentsPath()));
-ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => saveUserConfig(getWritableDocumentsPath(), configName, data));
-ipcMain.handle('configs:saveAllUserConfigs', async (_event, configs) => saveAllUserConfigs(getWritableDocumentsPath(), configs));
-ipcMain.handle('configs:resetToDefault', async () => resetConfigsToDefault(getWritableDocumentsPath()));
-ipcMain.handle('configs:backup', async () => backupConfigs(getWritableDocumentsPath()));
-ipcMain.handle('configs:getPaths', async () => getConfigPaths(getWritableDocumentsPath()));
+ipcMain.handle('runtimeConfiguration:load', async () => loadCurrentRuntimeConfiguration());
+ipcMain.handle('runtimeConfiguration:saveSettings', async (_event, settings) => {
+  const runtimeConfiguration = await saveRuntimeSettings(getRuntimeConfigurationStorageRoots(), settings);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration;
+});
+ipcMain.handle('runtimeConfiguration:saveDirectory', async (_event, directoryKind, directoryPath) => {
+  const runtimeConfiguration = await saveRuntimeDirectory(
+    getRuntimeConfigurationStorageRoots(),
+    directoryKind,
+    directoryPath
+  );
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration;
+});
+ipcMain.handle('runtimeConfiguration:inspectDirectory', async (_event, directoryKind, requirements = {}) => (
+  inspectConfiguredDirectory(directoryKind, requirements)
+));
+ipcMain.handle('runtimeConfiguration:openDirectory', async (_event, directoryKind) => {
+  try {
+    const inspection = await inspectConfiguredDirectory(directoryKind);
+    if (!inspection.success) return inspection;
+    const error = await shell.openPath(inspection.health.normalizedPath);
+    return error
+      ? { ...inspection, success: false, message: `无法打开目录：${error}` }
+      : { ...inspection, success: true, message: '目录已打开。' };
+  } catch (error) {
+    return {
+      success: false,
+      directoryKind,
+      message: `无法读取当前运行配置：${String(error?.message || '未知错误')}`
+    };
+  }
+});
+ipcMain.handle('configs:load', async () => (await loadCurrentRuntimeConfiguration()).configs);
+ipcMain.handle('configs:loadUserConfigs', async () => loadRuntimeEditableConfigs(getRuntimeConfigurationStorageRoots()));
+ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => {
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  const saved = await saveUserConfig(roots.userDataPath, configName, data);
+  return { ...saved, runtimeConfiguration: await publishRuntimeConfiguration() };
+});
+ipcMain.handle('configs:saveAllUserConfigs', async (_event, configs) => {
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  const saved = await saveAllUserConfigs(roots.userDataPath, configs);
+  return { ...saved, runtimeConfiguration: await publishRuntimeConfiguration() };
+});
+ipcMain.handle('configs:resetToDefault', async () => {
+  const roots = getRuntimeConfigurationStorageRoots();
+  const saved = await resetConfigsToDefault(roots.userDataPath);
+  return { ...saved, runtimeConfiguration: await publishRuntimeConfiguration() };
+});
+ipcMain.handle('configs:backup', async () => {
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  return backupConfigs(roots.userDataPath);
+});
+ipcMain.handle('configs:getPaths', async () => getRuntimeConfigurationPaths(getRuntimeConfigurationStorageRoots()));
 ipcMain.handle('configs:validate', async (_event, configName, data) => validateConfig(configName, data));
 ipcMain.handle('configs:export', async () => {
   const now = new Date();
@@ -800,7 +979,9 @@ ipcMain.handle('configs:export', async () => {
     filters: [{ name: 'JSON 配置文件', extensions: ['json'] }]
   });
   if (result.canceled || !result.filePath) return { success: false, canceled: true };
-  return exportConfigs(getWritableDocumentsPath(), result.filePath);
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  return exportConfigs(roots.userDataPath, result.filePath);
 });
 ipcMain.handle('configs:import', async () => {
   const result = await dialog.showOpenDialog({
@@ -809,16 +990,49 @@ ipcMain.handle('configs:import', async () => {
     filters: [{ name: 'JSON 配置文件', extensions: ['json'] }]
   });
   if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true };
-  const imported = await importConfigs(getWritableDocumentsPath(), result.filePaths[0]);
-  return { success: true, sourceFile: result.filePaths[0], ...imported };
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  const imported = await importConfigs(roots.userDataPath, result.filePaths[0]);
+  return {
+    success: true,
+    sourceFile: result.filePaths[0],
+    ...imported,
+    runtimeConfiguration: await publishRuntimeConfiguration()
+  };
 });
-ipcMain.handle('archive:buildPreview', async (_event, payload) => buildArchivePreview(payload));
+ipcMain.handle('archive:buildPreview', async (_event, payload) => {
+  const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+  return buildArchivePreview({
+    ...payload,
+    archiveRoot: runtimeConfiguration.archiveRootDirectory
+  });
+});
 ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchiveCall(
-  () => archivePhotos(archivePlan),
-  (error) => createArchiveIpcErrorResult(error, Array.isArray(archivePlan?.items) ? archivePlan.items.length : 0)
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    return archivePhotos({
+      ...archivePlan,
+      archiveRoot: runtimeConfiguration.archiveRootDirectory,
+      ...(archivePlan?.previewPlan
+        ? {
+            previewPlan: {
+              ...archivePlan.previewPlan,
+              archiveRoot: runtimeConfiguration.archiveRootDirectory
+            }
+          }
+        : {})
+    });
+  },
+  (error) => createArchiveIpcErrorResult(
+    error,
+    Array.isArray(archivePlan?.previewPlan?.items) ? archivePlan.previewPlan.items.length : 0
+  )
 ));
-ipcMain.handle('archive:recoverPendingTransactions', async (_event, archiveRoot) => safeArchiveCall(
-  () => recoverPendingArchiveTransactions(archiveRoot),
+ipcMain.handle('archive:recoverPendingTransactions', async () => safeArchiveCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    return recoverPendingArchiveTransactions(runtimeConfiguration.archiveRootDirectory);
+  },
   createArchiveRecoveryIpcError
 ));
 
@@ -866,11 +1080,51 @@ ipcMain.handle('system:openPath', async (_event, targetPath) => {
   return error ? { success: false, message: error } : { success: true };
 });
 
-ipcMain.handle('settings:load', async () => loadSettings(getWritableDocumentsPath()));
-ipcMain.handle('settings:save', async (_event, settings) => saveSettings(getWritableDocumentsPath(), settings));
-ipcMain.handle('settings:updateLastPhotoFolder', async (_event, folderPath) => updateLastPhotoFolder(getWritableDocumentsPath(), folderPath));
-ipcMain.handle('settings:updateLastArchiveRoot', async (_event, folderPath) => updateLastArchiveRoot(getWritableDocumentsPath(), folderPath));
-ipcMain.handle('settings:setDefaultArchiveRoot', async (_event, folderPath) => setDefaultArchiveRoot(getWritableDocumentsPath(), folderPath));
+ipcMain.handle('settings:load', async () => {
+  const roots = getRuntimeConfigurationStorageRoots();
+  await loadCurrentRuntimeConfiguration();
+  return loadSettings(roots.userDataPath);
+});
+ipcMain.handle('settings:save', async (_event, settings) => {
+  const runtimeConfiguration = await saveRuntimeSettings(getRuntimeConfigurationStorageRoots(), settings);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration.settings;
+});
+ipcMain.handle('settings:updateLastPhotoFolder', async (_event, folderPath) => {
+  const runtimeConfiguration = await saveRuntimeDirectory(
+    getRuntimeConfigurationStorageRoots(),
+    'photoSource',
+    folderPath
+  );
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration.settings;
+});
+ipcMain.handle('settings:updateLastArchiveRoot', async (_event, folderPath) => {
+  const runtimeConfiguration = await saveRuntimeDirectory(
+    getRuntimeConfigurationStorageRoots(),
+    'archiveRoot',
+    folderPath
+  );
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration.settings;
+});
+ipcMain.handle('settings:setDefaultArchiveRoot', async (_event, folderPath) => {
+  const runtimeConfiguration = await saveRuntimeDirectory(
+    getRuntimeConfigurationStorageRoots(),
+    'archiveRoot',
+    folderPath
+  );
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('runtimeConfiguration:changed', runtimeConfiguration);
+  }
+  return runtimeConfiguration.settings;
+});
 ipcMain.handle('system:validatePathExists', async (_event, targetPath) => validatePathExists(targetPath));
 
 ipcMain.handle('marki:getConfigStatus', async () => getMarkiCredentialStatus(app.getPath('userData'), safeStorage));
@@ -897,6 +1151,7 @@ ipcMain.handle('marki:start-photo-query-session', async (_event, input) => safeM
   (credentials) => createMarkiPhotoQuerySession({
     credentials,
     documentsPath: app.getPath('documents'),
+    userDataPath: app.getPath('userData'),
     filters: input
   })
 ));
@@ -937,7 +1192,39 @@ ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiLoc
   () => getMarkiImportBatch(app.getPath('userData'), batchId)
 ));
 ipcMain.handle('marki:consume-import-batch', async (_event, batchId) => safeMarkiLocalCall(
-  () => consumeMarkiImportBatch(app.getPath('userData'), batchId)
+  async () => {
+    let hasLifecycleRecord = true;
+    try {
+      await markMarkiImportLifecycleAppending(app.getPath('userData'), batchId);
+    } catch (error) {
+      if (error?.code !== 'marki_import_record_not_found') throw error;
+      hasLifecycleRecord = false;
+    }
+    const result = await consumeMarkiImportBatch(app.getPath('userData'), batchId);
+    if (hasLifecycleRecord) {
+      await completeMarkiImportLifecycleBatch(app.getPath('userData'), batchId);
+    }
+    return result;
+  }
+));
+ipcMain.handle('marki:list-import-records', async () => safeMarkiLocalCall(
+  () => listMarkiImportLifecycleRecords(app.getPath('userData'))
+));
+ipcMain.handle('marki:recover-import-lifecycle', async () => safeMarkiLocalCall(
+  () => recoverMarkiImportLifecycle(app.getPath('userData'))
+));
+ipcMain.handle('marki:undo-import-batch', async (_event, batchId) => safeMarkiLocalCall(
+  () => undoMarkiImportLifecycleBatch(app.getPath('userData'), batchId)
+));
+ipcMain.handle('marki:clear-import-record', async (_event, batchId) => safeMarkiLocalCall(
+  () => clearMarkiImportLifecycleRecord(app.getPath('userData'), batchId)
+));
+ipcMain.handle('marki:cleanup-import-cache', async (_event, batchId) => safeMarkiLocalCall(
+  () => cleanupMarkiImportLifecycleCache(
+    app.getPath('documents'),
+    app.getPath('userData'),
+    batchId
+  )
 ));
 
 ipcMain.handle('ledger:open', async (_event, archiveRoot) => {

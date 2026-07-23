@@ -17,11 +17,7 @@ const REQUIRED_ARCHIVE_FIELDS = Object.freeze([
   ['工作内容', 'workContent']
 ]);
 const RESERVED_FIELD_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-const DEFAULT_CATEGORY_ALIASES = Object.freeze({
-  '时间地点': '时间地点水印',
-  '时间地点兜底选择': '时间地点水印',
-  '时间地点水印兜底选择': '时间地点水印'
-});
+const DEFAULT_CATEGORY_ALIASES = Object.freeze({});
 const FIELD_LABEL_ALIASES = Object.freeze({
   '拍摄日期': '日期',
   '拍照日期': '日期',
@@ -39,7 +35,8 @@ const FIELD_LABEL_ALIASES = Object.freeze({
   '拍照人': '上传人',
   '拍照人员': '上传人',
   '备注': '工作备注',
-  '说明': '工作备注'
+  '说明': '工作备注',
+  '车牌号': '车牌号码'
 });
 
 class MarkiStructuredImportError extends Error {
@@ -135,10 +132,7 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
   const categoryMatch = matchConfiguredValue(
     normalizedMoment.markName,
     normalizeCategoryOptions(configs.watermarkCategories),
-    {
-      ...DEFAULT_CATEGORY_ALIASES,
-      ...(options.categoryAliases || {})
-    }
+    DEFAULT_CATEGORY_ALIASES
   );
   const locationInfo = resolveLocation(fields['地点'], normalizedMoment.lng, normalizedMoment.lat);
   const workContent = resolveWorkContent(fields, normalizedMoment.markName);
@@ -146,7 +140,7 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     fields['标题'],
     fields['施工单位'],
     fields['违停类型'],
-    fields['车牌号']
+    fields['车牌号码']
   ].filter((value) => value && value !== workContent));
   const warnings = uniqueStrings([
     ...parsedContent.warnings,
@@ -168,7 +162,13 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     area: locationInfo.value,
     location: locationInfo.value,
     keywords: keywords.join('、'),
-    remark: fields['工作备注'] || ''
+    remark: fields['工作备注'] || '',
+    propertyCompany: fields['物业公司'] || '',
+    communityName: fields['小区名称'] || '',
+    projectOriginalText: fields['小区名称'] || '',
+    constructionUnitOriginalText: fields['施工单位'] || '',
+    vehiclePlate: fields['车牌号码'] || '',
+    violationType: fields['违停类型'] || ''
   };
   const fieldSources = compactObject({
     project: projectMatch.value ? projectMatch.source : '',
@@ -178,7 +178,12 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     area: locationInfo.value ? locationInfo.source : '',
     location: locationInfo.value ? locationInfo.source : '',
     keywords: keywords.length ? 'marki.content.keywords' : '',
-    remark: fields['工作备注'] ? 'marki.content.remark' : ''
+    remark: fields['工作备注'] ? 'marki.content.remark' : '',
+    propertyCompany: fields['物业公司'] ? 'marki.content.property_company' : '',
+    communityName: fields['小区名称'] ? 'marki.content.community_name' : '',
+    constructionUnitOriginalText: fields['施工单位'] ? 'marki.content.construction_unit' : '',
+    vehiclePlate: fields['车牌号码'] ? 'marki.content.vehicle_plate' : '',
+    violationType: fields['违停类型'] ? 'marki.content.violation_type' : ''
   });
   const confidenceByField = compactObject({
     project: projectMatch.value ? projectMatch.confidence : null,
@@ -231,7 +236,26 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     categoryHint: suggestedFields.watermarkCategory || null,
     possibleStage: null,
     possibleStatus: null,
-    dateTime: dateInfo.captureDateTime || null
+    dateTime: dateInfo.captureDateTime || null,
+    propertyCompany: fields['物业公司'] || null,
+    communityName: fields['小区名称'] || null,
+    constructionUnit: fields['施工单位'] || null,
+    vehiclePlate: fields['车牌号码'] || null,
+    violationType: fields['违停类型'] || null
+  };
+  const structuredFields = {
+    date: suggestedFields.date,
+    projectOriginalText: fields['小区名称'] || '',
+    communityName: fields['小区名称'] || '',
+    archiveCategory: normalizedMoment.markName,
+    workContent,
+    remarks: fields['工作备注'] || '',
+    locationArea: locationInfo.value,
+    propertyCompany: fields['物业公司'] || '',
+    constructionUnitOriginalText: fields['施工单位'] || '',
+    vehiclePlate: fields['车牌号码'] || '',
+    violationType: fields['违停类型'] || '',
+    fieldSources
   };
 
   return {
@@ -254,6 +278,8 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     confidence,
     warnings,
     parsedFields,
+    structuredFields,
+    watermarkTemplateName: normalizedMoment.markName,
     watermarkRecord: {
       source: SOURCE_TYPE,
       captureDate: dateInfo.date,
@@ -267,6 +293,12 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
       workContentText: workContent,
       remarkText: fields['工作备注'] || '',
       photographerText: fields['上传人'] || '',
+      propertyCompanyText: fields['物业公司'] || '',
+      communityNameText: fields['小区名称'] || '',
+      constructionUnitText: fields['施工单位'] || '',
+      vehiclePlateText: fields['车牌号码'] || '',
+      violationTypeText: fields['违停类型'] || '',
+      watermarkTemplateName: normalizedMoment.markName,
       keywordCandidates: keywords,
       rawText: '',
       confidence,
@@ -394,6 +426,8 @@ function buildRecognitionResult(photoId, normalized, mapped, now) {
     updatedAt: now,
     mode: PROVIDER_TYPE,
     adoptedOcrText: '',
+    watermarkTemplateName: mapped.watermarkTemplateName,
+    structuredFields: cloneJson(mapped.structuredFields),
     parsedWatermark: {
       date: mapped.parsedFields.date,
       time: mapped.parsedFields.time,
@@ -402,7 +436,12 @@ function buildRecognitionResult(photoId, normalized, mapped, now) {
       workContent: mapped.parsedFields.workContent,
       location: mapped.parsedFields.location,
       remark: mapped.parsedFields.remark,
-      keywords: mapped.parsedFields.keywords
+      keywords: mapped.parsedFields.keywords,
+      propertyCompany: mapped.parsedFields.propertyCompany,
+      communityName: mapped.parsedFields.communityName,
+      constructionUnit: mapped.parsedFields.constructionUnit,
+      vehiclePlate: mapped.parsedFields.vehiclePlate,
+      violationType: mapped.parsedFields.violationType
     }
   };
 }
@@ -608,15 +647,15 @@ function resolveLocation(location, lng, lat) {
 
 function resolveWorkContent(fields, markName) {
   const violation = fields['违停类型'] || '';
-  const plate = fields['车牌号'] || '';
+  const plate = fields['车牌号码'] || '';
   if (isMotorVehicleWatermark(markName, fields) && (violation || plate)) {
-    return [violation, plate].filter(Boolean).join('｜');
+    return violation;
   }
   return fields['工作内容'] || fields['标题'] || '';
 }
 
 function resolveWorkContentSource(fields, markName) {
-  if (isMotorVehicleWatermark(markName, fields) && (fields['违停类型'] || fields['车牌号'])) {
+  if (isMotorVehicleWatermark(markName, fields) && (fields['违停类型'] || fields['车牌号码'])) {
     return 'marki.content.vehicle';
   }
   if (fields['工作内容']) return 'marki.content.work_content';
@@ -627,7 +666,7 @@ function resolveWorkContentSource(fields, markName) {
 function isMotorVehicleWatermark(markName, fields) {
   const normalized = normalizeMatchText(markName);
   return normalized.includes('机动车违规')
-    || Boolean(fields['车牌号'])
+    || Boolean(fields['车牌号码'])
     || Boolean(fields['违停类型']);
 }
 

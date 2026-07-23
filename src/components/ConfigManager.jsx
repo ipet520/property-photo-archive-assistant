@@ -12,7 +12,8 @@ const CONFIG_GROUPS = [
   {
     label: '归档默认项',
     tabs: [
-      { key: 'projects', label: '默认项目', type: 'simple', defaultable: true }
+      { key: 'projects', label: '默认项目', type: 'simple', defaultable: true },
+      { key: 'constructionUnits', label: '施工单位', type: 'constructionUnits' }
     ]
   },
   {
@@ -73,7 +74,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       const result = await window.archiveAssistant.saveAllUserConfigs(configs);
       setConfigs(result.editableConfigs);
       setPaths(result.paths);
-      await onSaved(result.runtimeConfigs);
+      await onSaved(result);
       setMessage({ type: 'success', text: '配置已保存，主界面已刷新。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '保存基础数据配置', errorType: '配置保存失败', summary: error.message, error });
@@ -90,7 +91,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       const result = await window.archiveAssistant.resetConfigsToDefault();
       setConfigs(result.editableConfigs);
       setPaths(result.paths);
-      await onSaved(result.runtimeConfigs);
+      await onSaved(result);
       setMessage({ type: 'success', text: '已恢复默认配置，主界面已刷新。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '恢复默认基础数据配置', errorType: '配置保存失败', summary: error.message, error });
@@ -118,7 +119,7 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
       if (result.canceled) return;
       setConfigs(result.editableConfigs);
       setPaths(result.paths);
-      await onSaved(result.runtimeConfigs);
+      await onSaved(result);
       setMessage({ type: 'success', text: '配置已导入，主界面已刷新。' });
     } catch (error) {
       recordRuntimeLog({ page: '系统设置', operation: '导入基础数据配置', errorType: '配置读取失败', summary: error.message, error });
@@ -183,6 +184,12 @@ export default function ConfigManager({ open, embedded = false, onClose, onSaved
                 items={configs[active.key]}
                 defaultable={active.defaultable}
                 onChange={(items) => updateConfig(active.key, items)}
+              />
+            ) : active.type === 'constructionUnits' ? (
+              <ConstructionUnitEditor
+                items={configs.constructionUnits || []}
+                projects={configs.projects || []}
+                onChange={(items) => updateConfig('constructionUnits', items)}
               />
             ) : active.type === 'keywords' ? (
               <KeywordEditor items={configs.keywords} onChange={(items) => updateConfig('keywords', items)} />
@@ -295,6 +302,94 @@ function KeywordEditor({ items, onChange }) {
           </section>
         </div>
       )}
+    </ConfigSection>
+  );
+}
+
+function ConstructionUnitEditor({ items, projects, onChange }) {
+  function addItem() {
+    onChange([
+      {
+        id: `construction-unit-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        name: '新施工单位',
+        aliases: [],
+        enabled: true,
+        projectIds: []
+      },
+      ...items
+    ]);
+  }
+
+  function patchItem(id, patch) {
+    onChange(items.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function deleteItem(item) {
+    if (!window.confirm(`确认删除施工单位“${item.name}”？历史草稿仍会保留原有名称；如只是暂时停用，建议使用“停用”。`)) return;
+    onChange(items.filter((current) => current.id !== item.id));
+  }
+
+  function toggleProject(item, projectId) {
+    const currentIds = new Set(item.projectIds || []);
+    if (currentIds.has(projectId)) currentIds.delete(projectId);
+    else currentIds.add(projectId);
+    patchItem(item.id, { projectIds: Array.from(currentIds) });
+  }
+
+  return (
+    <ConfigSection title="施工单位" onAdd={addItem}>
+      <p className="muted">不选择关联项目时适用于全部项目；停用单位不再进入新的归档选择，但历史草稿仍可显示。</p>
+      <div className="config-table">
+        {items.map((item) => (
+          <section className="category-edit-card" key={item.id}>
+            <div className="config-row-actions">
+              <strong>{item.name || '未命名施工单位'}</strong>
+              <div className="row-actions">
+                <button
+                  type="button"
+                  className="mini-button"
+                  onClick={() => patchItem(item.id, { enabled: item.enabled === false })}
+                >
+                  {item.enabled === false ? '启用' : '停用'}
+                </button>
+                <button type="button" className="mini-button danger" onClick={() => deleteItem(item)}>删除</button>
+              </div>
+            </div>
+            <div className="config-form-grid">
+              <Field label="正式名称" value={item.name} onChange={(name) => patchItem(item.id, { name })} />
+              <Field
+                label="别名"
+                value={(item.aliases || []).join('、')}
+                onChange={(value) => patchItem(item.id, { aliases: splitKeywords(value) })}
+                wide
+              />
+              <div className="field wide">
+                <span>关联项目</span>
+                <div className="row-actions">
+                  {(projects || []).map((project) => (
+                    <label key={project.id}>
+                      <input
+                        type="checkbox"
+                        checked={(item.projectIds || []).includes(project.id)}
+                        onChange={() => toggleProject(item, project.id)}
+                      />
+                      {project.name}
+                    </label>
+                  ))}
+                </div>
+                <small className="field-hint">
+                  {(item.projectIds || []).length ? '仅用于已勾选项目' : '适用于全部项目'}
+                </small>
+              </div>
+              <div className="field">
+                <span>稳定 ID</span>
+                <input value={item.id} readOnly />
+              </div>
+            </div>
+          </section>
+        ))}
+        {items.length === 0 && <p className="muted">尚未配置施工单位。</p>}
+      </div>
     </ConfigSection>
   );
 }

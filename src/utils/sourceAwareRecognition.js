@@ -2,6 +2,10 @@ import {
   buildSmartGroupTitle,
   normalizeSmartGroupDescriptor
 } from './smartGroupKey.js';
+import {
+  resolveWatermarkTemplateType,
+  WATERMARK_TEMPLATE_TYPES
+} from './watermarkTemplateAdapter.js';
 
 const MARKI_SOURCE_TYPE = 'marki_api';
 const LOCAL_SOURCE_TYPE = 'local_file';
@@ -431,7 +435,11 @@ export function getMissingRequiredFields({
     watermarkRecord,
     archiveSuggestion
   });
-  return SOURCE_AWARE_REQUIRED_FIELDS
+  return getApplicableRequiredFields({
+    recognitionResult,
+    watermarkRecord,
+    archiveSuggestion
+  })
     .filter((field) => !isUsableFieldValue(values[field.key]))
     .map((field) => field.key);
 }
@@ -829,9 +837,20 @@ function getMarkiPlatformMissingRequiredFields({
     watermarkRecord,
     archiveSuggestion
   });
-  return SOURCE_AWARE_REQUIRED_FIELDS
+  return getApplicableRequiredFields({
+    recognitionResult,
+    watermarkRecord,
+    archiveSuggestion
+  })
     .filter((field) => !isUsableFieldValue(values[field.key]))
     .map((field) => field.key);
+}
+
+function getApplicableRequiredFields(input = {}) {
+  const templateType = resolveWatermarkTemplateType(input);
+  return templateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+    ? SOURCE_AWARE_REQUIRED_FIELDS.filter((field) => field.key !== 'workContent')
+    : SOURCE_AWARE_REQUIRED_FIELDS;
 }
 
 function getMarkiPlatformRequiredFieldValues({
@@ -1181,15 +1200,17 @@ function expandSmartSortGroupsByKey(groups = [], contextByPhotoId = new Map()) {
         title: descriptor.title || buildSmartGroupTitle(descriptor.fields),
         basis: 'business_fields',
         suggestedFields: { ...descriptor.fields },
+        groupValidity: descriptor.missingFields?.length ? 'needs_completion' : 'valid',
+        missingFields: [...(descriptor.missingFields || [])],
         summary: {
           ...(filtered.summary || {}),
           basisLabel: '按日期、项目、归档分类和工作内容分组',
           confidenceLabel: 'high'
         },
-        warnings: descriptor.missingDate
+        warnings: descriptor.missingFields?.length
           ? uniqueStrings([
               ...(Array.isArray(filtered.warnings) ? filtered.warnings : []),
-              '该照片缺少有效日期，需要人工补充后重新智拣。'
+              '该照片存在待补全业务字段，补全后将重新计算分组。'
             ])
           : (Array.isArray(filtered.warnings) ? filtered.warnings : [])
       };

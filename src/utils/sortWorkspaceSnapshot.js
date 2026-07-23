@@ -5,11 +5,12 @@ const SNAPSHOT_WORKSPACE_DEFAULTS = Object.freeze({
   recognitionResultsByPhoto: {},
   watermarkRecordsByPhoto: {},
   archiveSuggestionsByPhoto: {},
+  photoDraftByPhotoId: {},
+  groupDraftByGroupId: {},
+  archivePreviewPlan: null,
   smartSortResult: null,
   smartSortViewMode: 'statusFilter',
   activeSmartSortGroupId: '',
-  photoFolder: '',
-  archiveRoot: '',
   filter: 'all',
   sortMode: 'timeAsc',
   pageSize: 50,
@@ -54,11 +55,12 @@ export function buildSortWorkspaceSnapshotWorkspace(state = {}) {
     recognitionResultsByPhoto: state.recognitionResultsByPhoto || {},
     watermarkRecordsByPhoto: state.watermarkRecordsByPhoto || {},
     archiveSuggestionsByPhoto: state.archiveSuggestionsByPhoto || {},
+    photoDraftByPhotoId: state.photoDraftByPhotoId || {},
+    groupDraftByGroupId: state.groupDraftByGroupId || {},
+    archivePreviewPlan: state.archivePreviewPlan || null,
     smartSortResult: state.smartSortResult || null,
     smartSortViewMode: state.smartSortViewMode || 'statusFilter',
     activeSmartSortGroupId: state.activeSmartSortGroupId || '',
-    photoFolder: state.photoFolder || '',
-    archiveRoot: state.archiveRoot || '',
     filter: state.filter || 'all',
     sortMode: state.sortMode || 'timeAsc',
     pageSize: Number(state.pageSize) || 50,
@@ -224,7 +226,9 @@ export function readSortWorkspaceManualDraft(draft) {
   for (const fieldName of [
     'recognitionResultsByPhoto',
     'watermarkRecordsByPhoto',
-    'archiveSuggestionsByPhoto'
+    'archiveSuggestionsByPhoto',
+    'photoDraftByPhotoId',
+    'groupDraftByGroupId'
   ]) {
     if (source[fieldName] != null && !isPlainObject(source[fieldName])) {
       throw new TypeError('分拣草稿映射格式无效');

@@ -1,7 +1,7 @@
 [
   {
     "id": "watermark-category-安全管理类-1",
-    "name": "安全管理类",
+    "name": "安全管理工作记录",
     "enabled": true,
     "sort": 10,
     "isDefault": false,
@@ -118,7 +118,7 @@
   },
   {
     "id": "watermark-category-工程类专用-4",
-    "name": "工程类专用",
+    "name": "工程类工作记录",
     "enabled": true,
     "sort": 40,
     "isDefault": false,
@@ -184,7 +184,7 @@
   },
   {
     "id": "watermark-category-巡查检查类-5",
-    "name": "巡查检查类",
+    "name": "巡查检查工作记录",
     "enabled": true,
     "sort": 50,
     "isDefault": false,
@@ -286,7 +286,7 @@
   },
   {
     "id": "watermark-category-客服工作类-6",
-    "name": "客服工作类",
+    "name": "客服工作记录",
     "enabled": true,
     "sort": 60,
     "isDefault": false,
@@ -352,7 +352,7 @@
   },
   {
     "id": "watermark-category-绿化保洁类-7",
-    "name": "绿化保洁类",
+    "name": "绿化保洁工作记录",
     "enabled": true,
     "sort": 70,
     "isDefault": false,

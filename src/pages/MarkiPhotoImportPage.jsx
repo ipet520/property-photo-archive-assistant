@@ -7,18 +7,31 @@ import {
   getMarkiConfigStatus,
   getMarkiPhotoQuerySession,
   importMarkiPhotoQuerySelection,
+  cleanupMarkiImportCache,
+  clearMarkiImportRecord,
   listMarkiMembers,
+  listMarkiImportRecords,
   listMarkiTeams,
   listReadyMarkiImportBatches,
   loadNextMarkiPhotoQueryPage,
   parseMarkiImportBeijingDateTime,
-  startMarkiPhotoQuerySession
+  recoverMarkiImportLifecycle,
+  startMarkiPhotoQuerySession,
+  undoMarkiImportBatch
 } from '../utils/markiClient.js';
+import {
+  MARKI_IMPORT_STATUS_FILTERS,
+  buildMarkiWatermarkFilterOptions,
+  filterMarkiQueryPhotos,
+  formatMarkiImportLifecycleStatus,
+  isMarkiQueryPhotoSelectable,
+  selectMarkiFilteredTokens,
+  summarizeMarkiQueryResults
+} from '../utils/markiImportLifecycle.js';
 
 const SESSION_STORAGE_KEY = 'marki-photo-import-session-v1';
 const MAX_MEMBER_PAGES = 100;
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
-const BUSY_SOURCE_STATUSES = new Set(['downloading', 'imported']);
 
 export default function MarkiPhotoImportPage({ onNavigate }) {
   const initialFilters = useMemo(() => createDefaultMarkiImportFilters(), []);
@@ -29,6 +42,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   const [session, setSession] = useState(null);
   const [selectedTokens, setSelectedTokens] = useState([]);
   const [readyBatches, setReadyBatches] = useState([]);
+  const [importRecords, setImportRecords] = useState([]);
   const [isRefreshingReadyBatches, setIsRefreshingReadyBatches] = useState(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState({ type: 'idle', text: '' });
@@ -79,7 +93,14 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       if (isConfigured && teamResult?.success) {
         setTeams(Array.isArray(teamResult.teams) ? teamResult.teams : []);
       }
-      await loadReadyBatches();
+      const recoveryResult = await recoverMarkiImportLifecycle();
+      if (recoveryResult?.success === false) {
+        setNotice({
+          type: 'error',
+          text: recoveryResult?.error?.message || '马克导入任务恢复失败，请刷新后重试。'
+        });
+      }
+      await Promise.all([loadReadyBatches(), loadImportRecords()]);
       const stored = readStoredSession();
       if (isConfigured && stored?.sessionId) {
         const restored = await getMarkiPhotoQuerySession(stored.sessionId);
@@ -114,6 +135,12 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   }, [filters, retryLocked, selectedTokens, session]);
 
   async function changeFilter(key, value) {
+    if (['watermarkFilter', 'importStatusFilter'].includes(key)) {
+      setSelectedTokens([]);
+      setRetryLocked(false);
+      setFilters((current) => ({ ...current, [key]: value }));
+      return;
+    }
     await abandonCurrentSession();
     setFilters((current) => ({
       ...current,
@@ -216,9 +243,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
 
   function selectAllLoaded() {
     if (retryLocked) return;
-    const selectable = session?.photos
-      ?.filter((photo) => !BUSY_SOURCE_STATUSES.has(photo.selectedSourceStatus))
-      .map((photo) => photo.selectionToken) || [];
+    const selectable = selectMarkiFilteredTokens(filteredQueryResults);
     setSelectedTokens((current) => Array.from(new Set([...current, ...selectable])));
   }
 
@@ -227,12 +252,14 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
     setBusy('import');
     const result = await importMarkiPhotoQuerySelection({
       sessionId: session.sessionId,
-      selectionTokens: selectedTokens
+      selectionTokens: selectedTokens,
+      watermarkFilter: filters.watermarkFilter,
+      importStatusFilter: filters.importStatusFilter
     });
     setBusy('');
     if (result?.status === 'ready' && result.batchId) {
       setRetryLocked(false);
-      await loadReadyBatches();
+      await Promise.all([loadReadyBatches(), loadImportRecords()]);
       onNavigate({
         page: PAGE_KEYS.sortWorkspace,
         action: 'appendMarkiImportBatch',
@@ -247,11 +274,13 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
     }
     if (['download_failed', 'metadata_failed', 'batch_persist_failed'].includes(result?.status)) {
       setRetryLocked(true);
+      const failureSummary = buildSafeFailureSummary(result?.failures);
       setNotice({
         type: 'error',
-        text: `${formatImportFailureStatus(result.status)} 可使用当前照片集合重试。`
+        text: `${formatImportFailureStatus(result.status)}${failureSummary} 可使用当前照片集合重试。`
       });
       await loadReadyBatches();
+      await loadImportRecords();
       return;
     }
     setNotice({ type: 'error', text: result?.error?.message || '马克照片导入失败，请重试。' });
@@ -265,9 +294,86 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
     });
   }
 
+  async function loadImportRecords({ announce = false } = {}) {
+    const result = await listMarkiImportRecords();
+    if (!mountedRef.current) return;
+    if (result?.success) {
+      setImportRecords(Array.isArray(result.items) ? result.items : []);
+      if (announce) {
+        setNotice({
+          type: 'success',
+          text: `已刷新 ${Number(result.totalCount) || 0} 条导入记录。`
+        });
+      }
+    } else if (announce) {
+      setNotice({ type: 'error', text: result?.error?.message || '马克导入记录读取失败。' });
+    }
+  }
+
+  async function runRecordAction(action, batchId, confirmMessage = '') {
+    if (isBusy) return;
+    if (confirmMessage && !window.confirm(confirmMessage)) return;
+    setBusy('record');
+    const result = await action(batchId);
+    setBusy('');
+    if (!result?.success) {
+      setNotice({ type: 'error', text: result?.error?.message || '导入记录操作失败。' });
+      return;
+    }
+    await Promise.all([loadImportRecords(), loadReadyBatches()]);
+    if (session?.sessionId) {
+      const refreshed = await getMarkiPhotoQuerySession(session.sessionId);
+      if (refreshed?.success) setSession(refreshed);
+    }
+    setSelectedTokens([]);
+    setNotice({
+      type: 'success',
+      text: action === undoMarkiImportBatch
+        ? `撤销完成：已从工作池移除 ${Number(result.removedCount) || 0} 张照片。`
+        : action === cleanupMarkiImportCache
+          ? `缓存清理完成：删除 ${Number(result.removedCount) || 0} 个安全缓存，跳过 ${Number(result.skippedCount) || 0} 个。`
+          : '导入记录已清除；已进入工作池的照片保持不变。'
+    });
+  }
+
+  async function retryImportRecord(record) {
+    if (isBusy) return;
+    const nextFilters = buildRecordRetryFilters(record, initialFilters);
+    await abandonCurrentSession();
+    setFilters(nextFilters);
+    setMembers([]);
+    if (nextFilters.teamId) {
+      await loadAllMembers(nextFilters.teamId);
+    }
+    setBusy('query');
+    const result = await startMarkiPhotoQuerySession(buildQueryInput(nextFilters));
+    setBusy('');
+    if (!result?.success) {
+      setNotice({ type: 'error', text: result?.error?.message || '失败照片重新查询失败。' });
+      return;
+    }
+    setSession(result);
+    setNotice({
+      type: 'info',
+      text: '已按原查询条件重新读取照片，并筛选为可重试项。请选择后点击“开始导入”。'
+    });
+  }
+
   const configuredReady = configured === true;
   const isBusy = Boolean(busy);
-  const photos = session?.photos || [];
+  const rawQueryResults = session?.photos || [];
+  const watermarkOptions = useMemo(
+    () => buildMarkiWatermarkFilterOptions(rawQueryResults),
+    [rawQueryResults]
+  );
+  const filteredQueryResults = useMemo(
+    () => filterMarkiQueryPhotos(rawQueryResults, filters),
+    [filters, rawQueryResults]
+  );
+  const querySummary = useMemo(
+    () => summarizeMarkiQueryResults(rawQueryResults, filteredQueryResults, selectedTokens),
+    [filteredQueryResults, rawQueryResults, selectedTokens]
+  );
   const teamNameById = useMemo(
     () => new Map(teams.map((team) => [String(team.teamId || ''), team.teamName || ''])),
     [teams]
@@ -342,6 +448,30 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
           </select>
         </label>
         <label>
+          <span>水印分类</span>
+          <select
+            value={filters.watermarkFilter}
+            onChange={(event) => void changeFilter('watermarkFilter', event.target.value)}
+            disabled={!configuredReady || isBusy}
+          >
+            {watermarkOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>导入状态</span>
+          <select
+            value={filters.importStatusFilter}
+            onChange={(event) => void changeFilter('importStatusFilter', event.target.value)}
+            disabled={!configuredReady || isBusy}
+          >
+            {MARKI_IMPORT_STATUS_FILTERS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
           <span>开始时间</span>
           <input
             type="datetime-local"
@@ -369,10 +499,13 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       <section className="marki-import-toolbar">
         <div>
           <strong>查询结果</strong>
-          <span>已加载 {photos.length} 张，已选择 {selectedTokens.length} 张</span>
+          <span>
+            已加载 {querySummary.loadedCount} 张，当前筛选 {querySummary.filteredCount} 张，
+            已选择 {querySummary.selectedCount} 张
+          </span>
         </div>
         <div className="marki-import-toolbar-actions">
-          <button type="button" onClick={selectAllLoaded} disabled={!photos.length || isBusy || retryLocked}>全选当前已加载照片</button>
+          <button type="button" onClick={selectAllLoaded} disabled={!querySummary.selectableCount || isBusy || retryLocked}>全选当前筛选结果</button>
           <button type="button" onClick={() => setSelectedTokens([])} disabled={!selectedTokens.length || isBusy || retryLocked}>清空选择</button>
           <button
             type="button"
@@ -393,7 +526,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       </section>
 
       <section className="marki-import-results">
-        {photos.length > 0 ? (
+        {filteredQueryResults.length > 0 ? (
           <div className="marki-import-table-wrap">
             <table className="marki-import-table">
               <thead>
@@ -410,8 +543,8 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                 </tr>
               </thead>
               <tbody>
-                {photos.map((photo) => {
-                  const disabled = BUSY_SOURCE_STATUSES.has(photo.selectedSourceStatus);
+                {filteredQueryResults.map((photo) => {
+                  const disabled = !isMarkiQueryPhotoSelectable(photo);
                   return (
                     <tr key={photo.selectionToken} className={selectedTokens.includes(photo.selectionToken) ? 'selected' : ''}>
                       <td>
@@ -429,11 +562,11 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                         <strong>{teamNameById.get(String(photo.teamId)) || `团队 ${photo.teamId || '-'}`}</strong>
                         <span>{memberNameById.get(String(photo.uid)) || photo.photographerName || `UID ${photo.uid || '-'}`}</span>
                       </td>
-                      <td>{photo.markName || '-'}</td>
+                      <td>{photo.isWatermarked ? (photo.markName || '有水印') : '无水印'}</td>
                       <td>{photo.projectText || '-'}</td>
                       <td>{photo.workContentText || '-'}</td>
                       <td>{photo.locationText || '-'}</td>
-                      <td><span className={`marki-import-source-status ${photo.selectedSourceStatus}`}>{formatSourceStatus(photo.selectedSourceStatus)}</span></td>
+                      <td><span className={`marki-import-source-status ${photo.selectedSourceStatus}`}>{formatMarkiImportLifecycleStatus(photo.selectedSourceStatus)}</span></td>
                     </tr>
                   );
                 })}
@@ -441,7 +574,103 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
             </table>
           </div>
         ) : (
-          <div className="marki-import-empty">设置查询条件后读取照片。本版仅显示结构化摘要，不加载远程缩略图。</div>
+          <div className="marki-import-empty">
+            {session
+              ? '当前筛选条件下没有已加载的照片。可调整筛选条件或继续加载下一页。'
+              : '设置查询条件后读取照片。本版仅显示结构化摘要，不加载远程缩略图。'}
+          </div>
+        )}
+      </section>
+
+      <section className="marki-import-records-section">
+        <header>
+          <div>
+            <h2>导入记录</h2>
+            <p>清除记录不会删除已进入工作池的照片；撤销导入会先保存新的工作台快照。</p>
+          </div>
+          <button type="button" onClick={() => void loadImportRecords({ announce: true })} disabled={isBusy}>
+            刷新导入记录
+          </button>
+        </header>
+        {importRecords.length > 0 ? (
+          <div className="marki-import-record-list">
+            {importRecords.map((record) => (
+              <article key={record.batchId}>
+                <div className="marki-import-record-main">
+                  <strong>{formatDateTime(record.updatedAt)}</strong>
+                  <span>
+                    查询已加载 {record.querySummary?.loadedCount || 0} 张，
+                    选择 {record.querySummary?.selectedCount || record.totalCount} 张，
+                    进入工作池 {record.appendedCount} 张，
+                    过滤 {record.filteredCount} 张，重复 {record.duplicateCount} 张，
+                    失败 {record.failedCount} 张，已撤销 {record.removedCount} 张
+                  </span>
+                  <small>{formatRecordQuerySummary(record.querySummary)}</small>
+                  <small>{formatBatchStatus(record.status)}</small>
+                  {record.items
+                    .filter((item) => item.status === 'failed_retryable')
+                    .slice(0, 3)
+                    .map((item) => (
+                      <small key={`${record.batchId}-${item.displayId}`}>
+                        {item.displayId} 号：{item.message || '导入失败，可重新查询后重试。'}
+                      </small>
+                    ))}
+                </div>
+                <div className="marki-import-record-actions">
+                  {record.hasActivePhotos && (
+                    <button
+                      type="button"
+                      onClick={() => void runRecordAction(
+                        undoMarkiImportBatch,
+                        record.batchId,
+                        '撤销会把本批次中尚未归档的照片从工作池移除，并允许以后重新导入。确定继续吗？'
+                      )}
+                      disabled={isBusy}
+                    >
+                      撤销导入
+                    </button>
+                  )}
+                  {record.retryableCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void retryImportRecord(record)}
+                      disabled={isBusy}
+                    >
+                      重新查询可重试项
+                    </button>
+                  )}
+                  {record.retryableCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void runRecordAction(
+                        cleanupMarkiImportCache,
+                        record.batchId,
+                        '只会清理未被工作池和未完成事务引用的下载缓存。确定继续吗？'
+                      )}
+                      disabled={isBusy}
+                    >
+                      清理安全缓存
+                    </button>
+                  )}
+                  {!record.hasRetryableItems && (
+                    <button
+                      type="button"
+                      onClick={() => void runRecordAction(
+                        clearMarkiImportRecord,
+                        record.batchId,
+                        '清除导入记录不会删除已进入工作池的照片。确定清除吗？'
+                      )}
+                      disabled={isBusy}
+                    >
+                      清除记录
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="marki-import-empty compact">当前没有导入记录。</div>
         )}
       </section>
 
@@ -498,10 +727,35 @@ function normalizeStoredFilters(value, fallback) {
   const candidate = {
     teamId: String(value.teamId || ''),
     uid: String(value.uid || ''),
+    watermarkFilter: String(value.watermarkFilter || fallback.watermarkFilter),
+    importStatusFilter: String(value.importStatusFilter || fallback.importStatusFilter),
     start: String(value.start || ''),
     end: String(value.end || '')
   };
   return validateFilters(candidate) ? fallback : candidate;
+}
+
+function buildRecordRetryFilters(record, fallback) {
+  const querySummary = record?.querySummary;
+  const importStatusFilter = Number(record?.failedCount) > 0
+    ? 'failed_retryable'
+    : 'removed_reimportable';
+  const normalized = normalizeStoredFilters({
+    teamId: querySummary?.teamId,
+    uid: querySummary?.uid,
+    watermarkFilter: querySummary?.watermarkFilter || fallback.watermarkFilter,
+    importStatusFilter,
+    start: normalizeStoredDateTime(querySummary?.start),
+    end: normalizeStoredDateTime(querySummary?.end)
+  }, fallback);
+  return {
+    ...normalized,
+    importStatusFilter
+  };
+}
+
+function normalizeStoredDateTime(value) {
+  return String(value || '').trim().replace(' ', 'T').slice(0, 16);
 }
 
 function readStoredSession() {
@@ -528,22 +782,44 @@ function clearStoredSession() {
   window.sessionStorage.removeItem(SESSION_STORAGE_KEY);
 }
 
-function formatSourceStatus(status) {
-  return {
-    new: '未导入',
-    discovered: '已发现',
-    downloading: '下载中',
-    download_failed: '下载失败',
-    imported: '已导入'
-  }[status] || '未知';
-}
-
 function formatImportFailureStatus(status) {
   return {
     download_failed: '部分照片下载失败。',
     metadata_failed: '部分来源明细保存失败。',
     batch_persist_failed: '导入批次状态保存失败。'
   }[status] || '马克照片导入失败。';
+}
+
+function buildSafeFailureSummary(failures) {
+  if (!Array.isArray(failures) || failures.length === 0) return '';
+  const text = failures
+    .slice(0, 3)
+    .map((failure) => `${String(failure?.displayId || '未知')} 号：${String(failure?.message || '处理失败。')}`)
+    .join('；');
+  return text ? ` ${text}` : '';
+}
+
+function formatBatchStatus(status) {
+  return {
+    created: '已创建',
+    downloading: '正在下载',
+    ready_to_append: '待进入工作池',
+    appending: '正在追加',
+    completed: '已完成',
+    partial_failed: '部分失败',
+    failed: '失败，可重试',
+    cancelled: '已撤销',
+    cleared: '已清除'
+  }[status] || '状态未知';
+}
+
+function formatRecordQuerySummary(summary = {}) {
+  const team = summary.teamId ? `团队 ${summary.teamId}` : '全部团队';
+  const member = summary.uid ? `成员 ${summary.uid}` : '全部成员';
+  const range = summary.start && summary.end
+    ? `${summary.start} 至 ${summary.end}`
+    : '时间范围未知';
+  return `${team}，${member}，${range}`;
 }
 
 function formatDateTime(value) {

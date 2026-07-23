@@ -4,7 +4,7 @@ import { buildArchiveSuggestion, filterEmptyPatch, suggestionToFormPatch } from 
 import { getSuggestedKeywords } from '../utils/formatters.js';
 import { addRecentRecord, clearRecentRecords, loadRecentRecords } from '../utils/recentRecords.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
-import { getUsableArchiveRoot, getUsablePhotoFolder, withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
+import { withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
 import { validateArchiveReady } from '../utils/validators.js';
 
 const defaultForm = {
@@ -33,6 +33,7 @@ export function useArchiveWorkspace() {
   const [configPaths, setConfigPaths] = useState(null);
   const [photos, setPhotos] = useState([]);
   const [previewItems, setPreviewItems] = useState([]);
+  const [previewPlan, setPreviewPlan] = useState(null);
   const [recentRecords, setRecentRecords] = useState([]);
   const [status, setStatus] = useState({ type: 'idle', text: '请选择照片文件夹和归档根目录。' });
   const [isBusy, setIsBusy] = useState(false);
@@ -42,19 +43,25 @@ export function useArchiveWorkspace() {
   useEffect(() => {
     setRecentRecords(loadRecentRecords());
     Promise.all([
-      window.archiveAssistant.loadConfigs(),
-      window.archiveAssistant.loadSettings(),
+      window.archiveAssistant.loadRuntimeConfiguration(),
       window.archiveAssistant.getAppPaths(),
       window.archiveAssistant.getConfigPaths()
     ])
-      .then(([loadedConfigs, loadedSettings, loadedAppPaths, loadedConfigPaths]) => {
-        const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
+      .then(([runtimeConfiguration, loadedAppPaths, loadedConfigPaths]) => {
+        const safeConfigs = withRuntimeConfigFallback(runtimeConfiguration.configs);
         setConfigs(safeConfigs);
         setForm((current) => reconcileFormWithConfigs(current, safeConfigs));
-        setSettings(loadedSettings);
+        setSettings(runtimeConfiguration.settings || {});
         setAppPaths(loadedAppPaths);
         setConfigPaths(loadedConfigPaths);
-        restoreSavedPaths(loadedSettings);
+        setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+        setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
+        setStatus({
+          type: 'success',
+          text: runtimeConfiguration.photoSourceDirectory || runtimeConfiguration.archiveRootDirectory
+            ? '统一运行配置已加载，可以继续归档。'
+            : '请选择照片文件夹和归档根目录。'
+        });
       })
       .catch((error) => {
         recordRuntimeLog({ page: '快速归档', operation: '配置读取', errorType: '配置读取失败', summary: error.message, error });
@@ -85,53 +92,6 @@ export function useArchiveWorkspace() {
     ignoredSuggestionKey
   ]);
 
-  function restoreSavedPaths(loadedSettings) {
-    const notices = [];
-    const restoredPhotoFolder = getUsablePhotoFolder(loadedSettings);
-    const restoredArchiveRoot = getUsableArchiveRoot(loadedSettings);
-
-    if (restoredPhotoFolder) {
-      setPhotoFolder(restoredPhotoFolder);
-      notices.push(restoredPhotoFolder === loadedSettings.lastPhotoFolder ? '已恢复上次照片文件夹' : '已使用默认照片导入目录');
-    } else if (loadedSettings?.defaultPhotoFolder || loadedSettings?.lastPhotoFolder) {
-      notices.push('照片目录不可用，请重新选择');
-    }
-
-    if (restoredArchiveRoot) {
-      setArchiveRoot(restoredArchiveRoot);
-      notices.push(restoredArchiveRoot === loadedSettings.lastArchiveRoot ? '已恢复上次归档根目录' : '已使用默认归档根目录');
-    } else if (loadedSettings?.defaultArchiveRoot || loadedSettings?.lastArchiveRoot) {
-      notices.push('默认归档根目录不可用，请重新选择');
-    }
-
-    setStatus({
-      type: notices.some((item) => item.includes('不可用')) ? 'warning' : 'success',
-      text: notices.length ? `${notices.join('；')}。` : '默认配置已加载，可以开始归档。'
-    });
-    return;
-    if (loadedSettings.pathStatus?.lastPhotoFolderExists) {
-      setPhotoFolder(loadedSettings.lastPhotoFolder);
-      notices.push('已恢复上次照片文件夹');
-    } else if (loadedSettings.lastPhotoFolder) {
-      notices.push('上次照片文件夹不存在，请重新选择');
-    }
-
-    if (loadedSettings.pathStatus?.lastArchiveRootExists) {
-      setArchiveRoot(loadedSettings.lastArchiveRoot);
-      notices.push('已恢复上次归档根目录');
-    } else if (loadedSettings.pathStatus?.defaultArchiveRootExists) {
-      setArchiveRoot(loadedSettings.defaultArchiveRoot);
-      notices.push('已使用默认归档根目录');
-    } else if (loadedSettings.lastArchiveRoot || loadedSettings.defaultArchiveRoot) {
-      notices.push('上次归档目录不存在，请重新选择');
-    }
-
-    setStatus({
-      type: notices.some((item) => item.includes('不存在')) ? 'warning' : 'success',
-      text: notices.length ? `${notices.join('；')}。` : '默认配置已加载，可以开始归档。'
-    });
-  }
-
   function updateForm(nextPatch, options = {}) {
     setForm((current) => {
       const next = { ...current, ...nextPatch };
@@ -147,6 +107,7 @@ export function useArchiveWorkspace() {
       return next;
     });
     setPreviewItems([]);
+    setPreviewPlan(null);
   }
 
   function applyScene(scene) {
@@ -226,18 +187,20 @@ export function useArchiveWorkspace() {
   }
 
   async function setPhotoFolderAndRemember(folderPath) {
-    setPhotoFolder(folderPath);
-    const nextSettings = await window.archiveAssistant.updateLastPhotoFolder(folderPath);
-    setSettings(nextSettings);
+    const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('photoSource', folderPath);
+    setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+    setSettings(runtimeConfiguration.settings || {});
     setPhotos([]);
     setPreviewItems([]);
+    setPreviewPlan(null);
   }
 
   async function setArchiveRootAndRemember(folderPath) {
-    setArchiveRoot(folderPath);
-    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(folderPath);
-    setSettings(nextSettings);
+    const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('archiveRoot', folderPath);
+    setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
+    setSettings(runtimeConfiguration.settings || {});
     setPreviewItems([]);
+    setPreviewPlan(null);
   }
 
   async function useSavedPhotoFolder(folderPath) {
@@ -278,8 +241,8 @@ export function useArchiveWorkspace() {
       setStatus({ type: 'warning', text: '当前归档根目录不存在，请重新选择。' });
       return;
     }
-    const nextSettings = await window.archiveAssistant.setDefaultArchiveRoot(archiveRoot);
-    setSettings(nextSettings);
+    const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('archiveRoot', archiveRoot);
+    setSettings(runtimeConfiguration.settings || {});
     setStatus({ type: 'success', text: '已设为默认归档根目录。' });
   }
 
@@ -291,10 +254,19 @@ export function useArchiveWorkspace() {
 
     setIsBusy(true);
     try {
-      const scanned = await window.archiveAssistant.scanImages(photoFolder);
+      const scanResult = await window.archiveAssistant.scanConfiguredImages();
+      if (scanResult?.success !== true) {
+        setStatus({ type: 'error', text: scanResult?.message || '照片来源目录当前不可用。' });
+        return false;
+      }
+      const scanned = scanResult.photos || [];
       setPhotos(scanned);
       setPreviewItems([]);
-      setStatus({ type: 'success', text: `扫描完成，共找到 ${scanned.length} 张图片。` });
+      setPreviewPlan(null);
+      setStatus({
+        type: scanResult.failures?.length ? 'warning' : 'success',
+        text: `扫描完成，共找到 ${scanned.length} 张健康图片。${scanResult.failures?.length ? `另有 ${scanResult.failures.length} 个文件未通过健康检查。` : ''}`
+      });
       return true;
     } catch (error) {
       recordRuntimeLog({ page: '快速归档', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
@@ -325,12 +297,14 @@ export function useArchiveWorkspace() {
     if (!confirmed) return;
     setPhotos([]);
     setPreviewItems([]);
+    setPreviewPlan(null);
     setStatus({ type: 'success', text: '已清空当前照片列表，原始照片未受影响。' });
   }
 
   function clearArchivePreview() {
     if (previewItems.length === 0) return;
     setPreviewItems([]);
+    setPreviewPlan(null);
     setStatus({ type: 'success', text: '已清除本次归档预览和结果显示，照片列表与归档信息保持不变。' });
   }
 
@@ -344,15 +318,16 @@ export function useArchiveWorkspace() {
     setIsBusy(true);
     try {
       const archiveForm = withArchiveFallbacks(form);
-      const preview = await window.archiveAssistant.buildArchivePreview({ form: archiveForm, photos, archiveRoot });
-      setPreviewItems(preview);
+      const preview = await window.archiveAssistant.buildArchivePreview({ form: archiveForm, photos });
+      setPreviewItems(preview.items);
+      setPreviewPlan(preview.previewPlan);
       const fallbackNotes = [
         !String(form.workItem || '').trim() && '事项名称未填写，已默认使用工作内容',
         !String(form.location || '').trim() && '位置/区域未填写，已默认使用“现场”'
       ].filter(Boolean);
       setStatus({
         type: 'success',
-        text: `预览已生成，共 ${preview.length} 张照片。${fallbackNotes.length ? `${fallbackNotes.join('；')}。` : ''}请核对新文件名和归档摘要后再确认归档。`
+        text: `预览已生成，共 ${preview.items.length} 张照片。${fallbackNotes.length ? `${fallbackNotes.join('；')}。` : ''}请核对新文件名和归档摘要后再确认归档。`
       });
       return true;
     } catch (error) {
@@ -365,15 +340,16 @@ export function useArchiveWorkspace() {
   }
 
   async function archivePhotos() {
-    if (previewItems.length === 0) {
+    if (previewItems.length === 0 || !previewPlan) {
       setStatus({ type: 'error', text: '请先生成归档预览，确认后再归档。' });
       return false;
     }
 
     setIsBusy(true);
     try {
-      const result = await window.archiveAssistant.archivePhotos({ archiveRoot, items: previewItems });
+      const result = await window.archiveAssistant.archivePhotos({ previewPlan });
       setPreviewItems(result.items);
+      if (result.success) setPreviewPlan(null);
       if (result.successCount > 0) {
         setRecentRecords((records) => addRecentRecord(records, withArchiveFallbacks(form)));
       }
@@ -422,16 +398,17 @@ export function useArchiveWorkspace() {
     try {
       const rebuilt = await window.archiveAssistant.buildArchivePreview({
         form,
-        archiveRoot,
         photos: nextItems.map((item) => ({
           ...item,
           path: item.sourcePath,
           name: item.originalName
         }))
       });
-      setPreviewItems(rebuilt);
+      setPreviewItems(rebuilt.items);
+      setPreviewPlan(rebuilt.previewPlan);
     } catch {
       setPreviewItems(nextItems);
+      setPreviewPlan(null);
     }
   }
 
@@ -440,6 +417,7 @@ export function useArchiveWorkspace() {
     setConfigs(safeConfigs);
     setForm((current) => reconcileFormWithConfigs(current, safeConfigs));
     setPreviewItems([]);
+    setPreviewPlan(null);
     setStatus({ type: 'success', text: '配置已更新，归档表单已刷新。' });
   }
 
@@ -465,6 +443,7 @@ export function useArchiveWorkspace() {
     configPaths,
     photos,
     previewItems,
+    previewPlan,
     recentRecords,
     status,
     isBusy,

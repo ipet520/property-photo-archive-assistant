@@ -262,7 +262,8 @@ async function buildRecognitionGroups(userDataDir, photos) {
     confidenceLabel: entry.descriptor ? 'high' : entry.bucket.confidenceLabel,
     groupKey,
     suggestedFields: entry.descriptor?.fields || {},
-    missingDate: entry.descriptor?.missingDate === true
+    missingDate: entry.descriptor?.missingDate === true,
+    missingFields: entry.descriptor?.missingFields || []
   })));
 }
 
@@ -287,7 +288,13 @@ async function buildGroup(userDataDir, photos, meta) {
       hasPatchDraft: recognitionSummary.hasPatchDraft
     },
     suggestedFields: normalizePlainObject(meta.suggestedFields) || {},
-    warnings: meta.missingDate ? ['该照片缺少有效日期，需要人工补充后重新智拣。'] : [],
+    groupValidity: Array.isArray(meta.missingFields) && meta.missingFields.length
+      ? 'needs_completion'
+      : 'valid',
+    missingFields: Array.isArray(meta.missingFields) ? [...meta.missingFields] : [],
+    warnings: Array.isArray(meta.missingFields) && meta.missingFields.length
+      ? ['该照片存在待补全业务字段，补全后将重新计算分组。']
+      : [],
     errors: [],
     createdAt: now,
     updatedAt: now,
@@ -586,6 +593,12 @@ function normalizeGroup(group = {}) {
       hasPatchDraft: Boolean(group.summary?.hasPatchDraft)
     },
     suggestedFields: normalizePlainObject(group.suggestedFields) || {},
+    groupValidity: ['valid', 'needs_completion', 'invalid_group'].includes(group.groupValidity)
+      ? group.groupValidity
+      : 'valid',
+    missingFields: Array.isArray(group.missingFields)
+      ? [...new Set(group.missingFields.map((item) => String(item || '').trim()).filter(Boolean))]
+      : [],
     warnings: Array.isArray(group.warnings) ? group.warnings : [],
     errors: Array.isArray(group.errors) ? group.errors : [],
     createdAt: String(group.createdAt || new Date().toISOString()),
@@ -602,7 +615,8 @@ function normalizeSmartGroupingDescriptor(value, photoId) {
     date,
     project: String(fields.project || '').trim(),
     watermarkCategory: String(fields.watermarkCategory || '').trim(),
-    workContent: String(fields.workContent || '').trim()
+    workContent: String(fields.workContent || '').trim(),
+    watermarkTemplateType: String(fields.watermarkTemplateType || '').trim()
   };
   const groupKey = String(value.groupKey || '').trim();
   if (!groupKey) return null;
@@ -611,6 +625,9 @@ function normalizeSmartGroupingDescriptor(value, photoId) {
     date,
     dateSource: String(value.dateSource || '').trim(),
     missingDate: value.missingDate === true || !date,
+    missingFields: Array.isArray(value.missingFields)
+      ? [...new Set(value.missingFields.map((item) => String(item || '').trim()).filter(Boolean))]
+      : [],
     fields: safeFields,
     title: String(value.title || '').trim()
       || `${date || '日期待补充'}｜${safeFields.workContent || safeFields.watermarkCategory || safeFields.project || photoId || '待人工完善'}`

@@ -1,12 +1,45 @@
+import { validateArchiveFormByTemplate } from './archiveFormValidation.js';
+import {
+  buildTemplateDrivenCanonical,
+  isolateTemplateSpecificFields,
+  NOT_APPLICABLE_WORK_CONTENT,
+  WATERMARK_TEMPLATE_TYPES
+} from './watermarkTemplateAdapter.js';
+import {
+  buildCanonicalArchiveFormSeed,
+  buildSourceCanonical,
+  resolveEffectivePhotoArchiveInfo
+} from './photoCanonical.js';
+
 const defaultArchiveFields = {
+  watermarkTemplateType: WATERMARK_TEMPLATE_TYPES.UNRESOLVED,
   project: '',
+  projectId: '',
+  projectName: '',
+  projectOriginalText: '',
+  projectConfirmed: false,
+  projectSource: '',
+  archiveCategory: '',
   watermarkCategory: '',
   workContent: '',
   date: '',
   area: '',
   location: '',
+  locationArea: '',
   keywords: '',
-  remark: ''
+  remark: '',
+  remarks: '',
+  propertyCompany: '',
+  communityName: '',
+  vehiclePlate: '',
+  violationType: '',
+  constructionUnitId: '',
+  constructionUnitName: '',
+  constructionUnitOriginalText: '',
+  constructionUnitConfirmed: false,
+  constructionUnitSource: '',
+  fieldSources: {},
+  unresolvedFields: []
 };
 
 const requiredFieldLabels = [
@@ -44,12 +77,12 @@ export function parseWatermarkRecord(recognitionResult = {}) {
     ? `${dateMatch.groups.year}-${dateMatch.groups.month.padStart(2, '0')}-${dateMatch.groups.day.padStart(2, '0')}`
     : '';
   const captureTime = timeMatch?.groups ? `${timeMatch.groups.hour.padStart(2, '0')}:${timeMatch.groups.minute}` : '';
-  const projectText = pickLabeledValue(rawText, ['项目文本', '项目名称', '项目', '小区名称']) || findProjectText(rawText);
+  const projectText = pickLabeledValue(rawText, ['项目文本', '项目名称', '项目', '小区名称']);
   const locationText = stripProjectName(
     pickLabeledValue(rawText, ['地点文本', '区域文本', '位置文本', '地点', '地址', '位置']) || inferLocationLine(lines, projectText),
     projectText
   );
-  const workContentText = cleanLabeledValue(pickLabeledValue(rawText, ['工作内容文本', '工作事项', '工作内容', '事项', '问题']) || inferWorkContentLine(lines));
+  const workContentText = cleanLabeledValue(pickLabeledValue(rawText, ['工作内容文本', '工作事项', '工作内容']));
   const remarkText = cleanLabeledValue(pickLabeledValue(rawText, ['备注文本', '说明文本', '备注', '说明']));
   const keywordCandidates = unique([
     ...splitKeywords(workContentText),
@@ -151,13 +184,46 @@ export function buildArchiveSuggestion(watermarkRecord = {}, context = {}, previ
     delete confidenceByField.remark;
   }
 
-  const safeFields = sanitizeArchiveFields(suggestedFields, configs);
+  const templateCanonical = buildTemplateDrivenCanonical({
+    watermarkRecord,
+    archiveSuggestion: {
+      suggestedFields,
+      fieldSources
+    },
+    configs
+  });
+  const hasResolvedTemplate = templateCanonical.watermarkTemplateType
+    !== WATERMARK_TEMPLATE_TYPES.UNRESOLVED;
+  const templateFields = hasResolvedTemplate
+    ? {
+        ...templateCanonical,
+        area: templateCanonical.locationArea,
+        location: templateCanonical.locationArea,
+        remark: templateCanonical.remarks
+      }
+    : {};
+  const mergedFields = {
+    ...suggestedFields,
+    ...templateFields
+  };
+  const mergedFieldSources = {
+    ...fieldSources,
+    ...(hasResolvedTemplate ? templateCanonical.fieldSources : {})
+  };
+  Object.entries(previousSuggestion?.fieldSources || {}).forEach(([key, source]) => {
+    if (!String(source || '').includes('manual') && !String(source || '').includes('mixed')) return;
+    const manualValue = previousSuggestion?.suggestedFields?.[key];
+    if (manualValue == null) return;
+    mergedFields[key] = manualValue;
+    mergedFieldSources[key] = source;
+  });
+  const safeFields = sanitizeArchiveFields(mergedFields, configs);
   const missingRequiredFields = validateSortForm(safeFields, configs);
   const needsHumanReview = missingRequiredFields.length > 0 || Object.keys(candidateFields).length > 0 || conflictFields.size > 0;
   return {
     photoId: watermarkRecord.photoId || '',
     suggestedFields: safeFields,
-    fieldSources,
+    fieldSources: mergedFieldSources,
     confidenceByField,
     missingRequiredFields,
     conflictFields: Array.from(conflictFields),
@@ -233,41 +299,23 @@ export function getPreviewDisabledReason({ isBusy, selectedIds, selectedHasIgnor
 }
 
 export function validateSortForm(form = {}, configs = {}) {
-  const safeConfigs = configs && typeof configs === 'object' ? configs : {};
-  const project = normalizeValue(form.project);
-  const date = normalizeValue(form.date);
-  const watermarkCategory = normalizeValue(form.watermarkCategory);
-  const workContent = normalizeValue(form.workContent);
-  const projects = Array.isArray(safeConfigs.projects) ? safeConfigs.projects : [];
-  const categories = Object.keys(safeConfigs.watermarkCategories || {});
-  const projectValid = Boolean(project) && projects.includes(project);
-  const parsedDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(`${date}T00:00:00Z`) : null;
-  const dateValid = Boolean(parsedDate && !Number.isNaN(parsedDate.getTime()) && parsedDate.toISOString().slice(0, 10) === date);
-  const categoryValid = Boolean(watermarkCategory) && categories.includes(watermarkCategory);
-  const workOptions = categoryValid ? (safeConfigs.watermarkCategories?.[watermarkCategory]?.items || []) : [];
-  const validityByField = {
-    project: projectValid,
-    watermarkCategory: categoryValid,
-    workContent: Boolean(workContent) && workOptions.includes(workContent),
-    date: dateValid
-  };
-  return requiredFieldLabels
-    .filter(([, key]) => !validityByField[key])
-    .map(([label]) => label);
+  return validateArchiveFormByTemplate(form, configs);
 }
 
 export const validateRequiredArchiveFields = validateSortForm;
 
 export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = {}) {
-  return {
-    project: pickIfValid(archiveInfo.project, configs.projects || []),
+  return sanitizeArchiveFields({
+    ...archiveInfo,
+    project: pickIfValid(archiveInfo.projectName || archiveInfo.project, configs.projects || []),
+    projectName: pickIfValid(archiveInfo.projectName || archiveInfo.project, configs.projects || []),
     watermarkCategory: archiveInfo.watermarkCategory || archiveInfo.archiveCategory || '',
-    workContent: archiveInfo.workContent || '',
-    date: archiveInfo.date || '',
-    location: archiveInfo.location ?? '',
-    keywords: archiveInfo.keywords ?? '',
-    remark: archiveInfo.remark ?? ''
-  };
+    archiveCategory: archiveInfo.archiveCategory || archiveInfo.watermarkCategory || '',
+    location: archiveInfo.location ?? archiveInfo.locationArea ?? '',
+    locationArea: archiveInfo.locationArea ?? archiveInfo.location ?? '',
+    remark: archiveInfo.remark ?? archiveInfo.remarks ?? '',
+    remarks: archiveInfo.remarks ?? archiveInfo.remark ?? ''
+  }, configs);
 }
 
 export function sanitizeArchiveFields(fields = {}, configs = {}) {
@@ -275,14 +323,34 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
   const watermarkCategory = categories.includes(fields.watermarkCategory) ? fields.watermarkCategory : normalizeValue(fields.watermarkCategory);
   const workOptions = configs.watermarkCategories?.[watermarkCategory]?.items || [];
   const workContent = workOptions.includes(fields.workContent) ? fields.workContent : normalizeValue(fields.workContent);
-  return {
+  const project = pickIfValid(fields.projectName || fields.project, configs.projects || []);
+  const projectOption = (configs.projectOptions || [])
+    .find((item) => item.name === project);
+  const projectId = projectOption && (!fields.projectId || fields.projectId === projectOption.id)
+    ? projectOption.id
+    : '';
+  return isolateTemplateSpecificFields({
     ...defaultArchiveFields,
     ...fields,
-    project: pickIfValid(fields.project, configs.projects || []),
+    project,
+    projectId,
+    projectName: project,
+    projectConfirmed: Boolean(projectId),
+    projectSource: fields.projectSource || (projectId ? 'config_exact' : ''),
     watermarkCategory,
+    archiveCategory: watermarkCategory,
     workContent,
-    location: normalizeValue(fields.location || fields.area)
-  };
+    location: normalizeValue(fields.location || fields.locationArea || fields.area),
+    locationArea: normalizeValue(fields.locationArea || fields.location || fields.area),
+    remark: normalizeValue(fields.remark || fields.remarks),
+    remarks: normalizeValue(fields.remarks || fields.remark),
+    fieldSources: fields.fieldSources && typeof fields.fieldSources === 'object'
+      ? { ...fields.fieldSources }
+      : {},
+    unresolvedFields: Array.isArray(fields.unresolvedFields)
+      ? [...fields.unresolvedFields]
+      : []
+  });
 }
 
 export function resolveCanonicalPhotoResult({
@@ -292,89 +360,32 @@ export function resolveCanonicalPhotoResult({
   archiveSuggestion = null,
   sourceAwareProcessing = null,
   group = null,
+  sourceCanonical = null,
+  photoDraft = null,
   configs = {}
 } = {}) {
+  void group;
+  const templateCanonical = sourceCanonical || buildSourceCanonical({
+    photo,
+    recognitionResult,
+    watermarkRecord,
+    sourceAwareProcessing,
+    configs
+  });
   const processing = sourceAwareProcessing || recognitionResult?.sourceAwareProcessing || null;
-  const groupFields = getGroupCanonicalFields(group, photo?.id);
-  const suggestionFields = archiveSuggestion?.suggestedFields || {};
-  const watermarkFields = {
-    date: watermarkRecord?.captureDate,
-    project: watermarkRecord?.projectText,
-    watermarkCategory: watermarkRecord?.watermarkCategoryText,
-    workContent: watermarkRecord?.workContentText
-  };
-  const parsed = recognitionResult?.parsedWatermark || recognitionResult?.parsedFields || {};
-  const recognitionFields = {
-    date: parsed.date || parsed.capturedAt || parsed.dateTime,
-    project: parsed.projectName || parsed.project,
-    watermarkCategory: parsed.watermarkCategory || parsed.category,
-    workContent: parsed.workContent
-  };
-  const effectiveFields = processing?.effectiveResult?.requiredFields || {};
-  const platformFields = processing?.platformBaseline?.requiredFields || {};
-  const isMarki = photo?.sourceType === 'marki_api';
-  const sources = isMarki
-    ? [
-        ['effective_result', effectiveFields],
-        ['platform_baseline', platformFields],
-        ['archive_suggestion', suggestionFields],
-        ['watermark_record', watermarkFields],
-        ['recognition_result', recognitionFields],
-        ['smart_sort_group', groupFields]
-      ]
-    : [
-        ['archive_suggestion', suggestionFields],
-        ['watermark_record', watermarkFields],
-        ['recognition_result', recognitionFields],
-        ['smart_sort_group', groupFields]
-      ];
-  const fieldSources = {};
-  const values = {};
-  for (const key of ['date', 'project', 'watermarkCategory', 'workContent']) {
-    const manualValue = getManualSuggestionValue(archiveSuggestion, key);
-    if (manualValue) {
-      values[key] = manualValue;
-      fieldSources[key] = 'manual_draft';
-      continue;
-    }
-    for (const [source, fields] of sources) {
-      const value = normalizeValue(fields?.[key]);
-      if (!value) continue;
-      values[key] = value;
-      fieldSources[key] = source;
-      break;
-    }
-    if (!values[key]) values[key] = '';
-  }
-
-  if (!isMarki) {
-    const normalizedLocal = normalizeLocalCanonicalFields(values, configs, {
-      preserveCategory: fieldSources.watermarkCategory === 'manual_draft',
-      preserveWorkContent: fieldSources.workContent === 'manual_draft'
-    });
-    for (const key of ['watermarkCategory', 'workContent']) {
-      if (normalizedLocal[key] && normalizedLocal[key] !== values[key]) {
-        values[key] = normalizedLocal[key];
-        if (fieldSources[key] !== 'manual_draft') fieldSources[key] = 'local_behavior_adapter';
-      }
-    }
-  }
-
-  const unresolvedFields = requiredFieldLabels
-    .filter(([, key]) => !normalizeValue(values[key]))
-    .map(([, key]) => key);
+  const effective = resolveEffectivePhotoArchiveInfo({
+    photo,
+    sourceCanonical: templateCanonical,
+    sourceAwareProcessing: processing,
+    photoDraft: photoDraft || getManualDraftFields(archiveSuggestion)
+  });
   return {
-    date: normalizeSuggestionDate(values.date) || normalizeValue(values.date),
-    project: normalizeValue(values.project),
-    watermarkCategory: normalizeValue(values.watermarkCategory),
-    workContent: normalizeValue(values.workContent),
-    fieldSources,
+    ...effective,
     conflicts: normalizeCanonicalConflicts(
       processing?.ocrSupplement?.conflicts
       || processing?.conflicts
       || archiveSuggestion?.conflictFields
-    ),
-    unresolvedFields
+    )
   };
 }
 
@@ -385,6 +396,10 @@ export function buildArchiveFormSeed({
   archiveSuggestion = null,
   sourceAwareProcessing = null,
   group = null,
+  groupCanonical = null,
+  sourceCanonical = null,
+  groupDraft = null,
+  photoDraft = null,
   configs = {}
 } = {}) {
   if (photo?.archiveInfo) {
@@ -400,26 +415,36 @@ export function buildArchiveFormSeed({
     archiveSuggestion,
     sourceAwareProcessing,
     group,
+    sourceCanonical,
+    photoDraft,
     configs
   });
-  return sanitizeArchiveFields({
-    ...(archiveSuggestion?.suggestedFields || {}),
-    date: canonical.date,
-    project: canonical.project,
-    watermarkCategory: canonical.watermarkCategory,
-    workContent: canonical.workContent
-  }, configs);
+  return sanitizeArchiveFields(
+    buildCanonicalArchiveFormSeed({
+      groupCanonical,
+      activePhotoEffectiveInfo: canonical,
+      groupDraft,
+      photoDraft: photoDraft || getManualDraftFields(archiveSuggestion)
+    }),
+    configs
+  );
 }
 
 export function normalizeConfirmedArchiveInfo(fields = {}) {
   return {
-    project: fields.project || '',
-    watermarkCategory: fields.watermarkCategory || '',
+    ...defaultArchiveFields,
+    ...fields,
+    project: fields.projectName || fields.project || '',
+    projectName: fields.projectName || fields.project || '',
+    archiveCategory: fields.archiveCategory || fields.watermarkCategory || '',
+    watermarkCategory: fields.watermarkCategory || fields.archiveCategory || '',
     workContent: fields.workContent || '',
-    location: fields.location || fields.area || '',
+    location: fields.location || fields.locationArea || fields.area || '',
+    locationArea: fields.locationArea || fields.location || fields.area || '',
     date: fields.date || '',
     keywords: fields.keywords || '',
-    remark: fields.remark || ''
+    remark: fields.remark || fields.remarks || '',
+    remarks: fields.remarks || fields.remark || ''
   };
 }
 
@@ -521,7 +546,11 @@ function getFieldLabel(key = '') {
     area: '位置/区域',
     location: '位置/区域',
     keywords: '关键词',
-    remark: '备注'
+    remark: '备注',
+    constructionUnitName: '施工单位',
+    constructionUnitId: '施工单位',
+    vehiclePlate: '车牌号码',
+    violationType: '违停类型'
   };
   return labels[key] || key;
 }
@@ -531,13 +560,23 @@ function normalizeValue(value) {
 }
 
 function normalizeMissingFields(fields = []) {
-  const allowed = new Set(['项目', '日期', '工作内容', '归档分类']);
+  const allowed = new Set(['水印模板', '项目', '日期', '工作内容', '归档分类', '施工单位', '车牌号码', '违停类型']);
   return (fields || [])
     .map((field) => {
       if (field === '水印分类') return '归档分类';
       return field;
     })
     .filter((field) => allowed.has(field));
+}
+
+function getManualDraftFields(archiveSuggestion = null) {
+  const result = {};
+  Object.entries(archiveSuggestion?.suggestedFields || {}).forEach(([key, value]) => {
+    const source = String(archiveSuggestion?.fieldSources?.[key] || '');
+    if (!source.includes('manual') && !source.includes('mixed')) return;
+    result[key] = value;
+  });
+  return result;
 }
 
 function normalizeSuggestionDate(value = '') {
@@ -566,16 +605,10 @@ function cleanLabeledValue(value = '') {
     .trim();
 }
 
-function findProjectText(rawText = '') {
-  if (rawText.includes('潇湘') || rawText.includes('新区二期')) return '潇湘新区二期';
-  if (rawText.includes('香辰')) return '香辰康园';
-  return '';
-}
-
 function inferProjectFromText(text = '', projects = []) {
   const normalized = normalizeCompareText(text);
   if (!normalized) return '';
-  return projects.find((project) => normalized.includes(normalizeCompareText(project)) || normalizeCompareText(project).includes(normalized)) || '';
+  return projects.find((project) => normalized === normalizeCompareText(project)) || '';
 }
 
 function inferLocationLine(lines = [], projectText = '') {
@@ -587,27 +620,12 @@ function inferLocationLine(lines = [], projectText = '') {
   }) || '';
 }
 
-function inferWorkContentLine(lines = []) {
-  return lines.find((line) => /维修|违停|清理|治理|巡查|保洁|养护|隐患|飞线|消防|照明|闭门器|repair|parking|violation|clean|patrol|lighting|fire lane|door closer|maintenance/i.test(line)) || '';
-}
-
 function matchCategory(text = '', categories = {}) {
   const normalizedText = normalizeCompareText(text);
   if (!normalizedText) return { category: '', candidates: [], source: '', confidence: 0 };
-  const behaviorCategory = inferBehaviorCategory(normalizedText, categories);
-  if (behaviorCategory) {
-    return {
-      category: behaviorCategory,
-      candidates: [behaviorCategory],
-      source: 'rule.behaviorCategory',
-      confidence: 0.9
-    };
-  }
-  const candidates = Object.keys(categories).filter((category) => {
-    const normalizedCategory = normalizeCompareText(category);
-    return normalizedText.includes(normalizedCategory) || normalizedCategory.includes(normalizedText) || categoryKeywordHit(normalizedText, normalizedCategory);
-  });
-  if (candidates.length === 1) return { category: candidates[0], candidates, source: 'watermark.category', confidence: 0.75 };
+  const candidates = Object.keys(categories)
+    .filter((category) => normalizeCompareText(category) === normalizedText);
+  if (candidates.length === 1) return { category: candidates[0], candidates, source: 'watermark.category.exact', confidence: 1 };
   return { category: '', candidates, source: '', confidence: 0 };
 }
 
@@ -616,13 +634,10 @@ function matchWorkContent(text = '', categories = {}, preferredCategory = '') {
   if (!normalizedText) return { workContent: '', category: '', candidates: [], source: '', confidence: 0 };
   const rows = [];
   Object.entries(categories || {}).forEach(([category, config]) => {
+    if (preferredCategory && category !== preferredCategory) return;
     (config.items || []).forEach((item) => {
       const normalizedItem = normalizeCompareText(item);
-      if (
-        normalizedText.includes(normalizedItem)
-        || normalizedItem.includes(normalizedText)
-        || isEquivalentWorkBehavior(normalizedText, normalizedItem)
-      ) {
+      if (normalizedText === normalizedItem) {
         rows.push({ category, item });
       }
     });
@@ -632,8 +647,8 @@ function matchWorkContent(text = '', categories = {}, preferredCategory = '') {
     workContent: preferred?.item || '',
     category: preferred?.category || '',
     candidates: rows.map((row) => row.item),
-    source: preferred ? 'rule.workContentMap' : '',
-    confidence: preferred ? 0.85 : 0
+    source: preferred ? 'watermark.workContent.exact' : '',
+    confidence: preferred ? 1 : 0
   };
 }
 
@@ -657,104 +672,6 @@ function unique(values = []) {
 
 function normalizeCompareText(value = '') {
   return normalizeValue(value).replace(/\s+/g, '').toLowerCase();
-}
-
-function categoryKeywordHit(normalizedText = '', normalizedCategory = '') {
-  const rules = [
-    ['太阳能|照明|设施|设备|维修', '工程|设施|设备|维修'],
-    ['电动车|飞线|违停|车辆|秩序', '秩序|安全|车辆'],
-    ['楼道|杂物|保洁|清扫|卫生|环境', '环境|保洁|楼道'],
-    ['消防', '消防|安全']
-  ];
-  return rules.some(([textPattern, categoryPattern]) =>
-    new RegExp(textPattern).test(normalizedText) && new RegExp(categoryPattern).test(normalizedCategory)
-  );
-}
-
-function inferBehaviorCategory(normalizedText = '', categories = {}) {
-  const categoryNames = Object.keys(categories || {});
-  const isRepair = /维修|维保|修复|故障处理|抢修/.test(normalizedText);
-  const isInspection = /巡查|巡检|检查|巡视|复查/.test(normalizedText);
-  if (isRepair) {
-    return categoryNames.find((category) => /工程|维修|维保/.test(category)) || '';
-  }
-  if (isInspection) {
-    return categoryNames.find((category) => /巡查|巡检|检查/.test(category)) || '';
-  }
-  return '';
-}
-
-function isEquivalentWorkBehavior(left = '', right = '') {
-  const leftFamily = getWorkBehaviorFamily(left);
-  const rightFamily = getWorkBehaviorFamily(right);
-  if (!leftFamily || leftFamily !== rightFamily) return false;
-  const leftSubject = normalizeWorkSubject(left);
-  const rightSubject = normalizeWorkSubject(right);
-  return Boolean(leftSubject && rightSubject)
-    && (leftSubject.includes(rightSubject) || rightSubject.includes(leftSubject));
-}
-
-function getWorkBehaviorFamily(value = '') {
-  if (/维修|维保|修复|故障处理|抢修/.test(value)) return 'repair';
-  if (/巡查|巡检|检查|巡视|复查/.test(value)) return 'inspection';
-  return '';
-}
-
-function normalizeWorkSubject(value = '') {
-  return normalizeCompareText(value)
-    .replace(/维修|维保|修复|故障|处理|抢修|巡查|巡检|检查|巡视|复查/g, '')
-    .replace(/公共|相关|设施|设备|现场/g, '');
-}
-
-function normalizeLocalCanonicalFields(fields = {}, configs = {}, options = {}) {
-  const workContent = normalizeValue(fields.workContent);
-  let watermarkCategory = normalizeValue(fields.watermarkCategory);
-  if (!options.preserveCategory) {
-    watermarkCategory = inferBehaviorCategory(normalizeCompareText(workContent), configs.watermarkCategories)
-      || watermarkCategory;
-  }
-  if (!options.preserveWorkContent) {
-    const matchedWork = matchWorkContent(
-      workContent,
-      configs.watermarkCategories,
-      watermarkCategory
-    );
-    if (matchedWork.workContent) {
-      return {
-        watermarkCategory: matchedWork.category || watermarkCategory,
-        workContent: matchedWork.workContent
-      };
-    }
-  }
-  return { watermarkCategory, workContent };
-}
-
-function getManualSuggestionValue(archiveSuggestion = null, key = '') {
-  const source = String(archiveSuggestion?.fieldSources?.[key] || '');
-  if (!source.includes('manual') && !source.includes('mixed')) return '';
-  return normalizeValue(archiveSuggestion?.suggestedFields?.[key]);
-}
-
-function getGroupCanonicalFields(group = null, photoId = '') {
-  if (!group || typeof group !== 'object') return {};
-  const members = [
-    ...(Array.isArray(group.photos) ? group.photos : []),
-    ...(Array.isArray(group.items) ? group.items : []),
-    ...(Array.isArray(group.groupPhotos) ? group.groupPhotos : []),
-    ...(Array.isArray(group.photoList) ? group.photoList : [])
-  ];
-  const member = members.find((item) => (
-    normalizeValue(item?.photoId || item?.id) === normalizeValue(photoId)
-  ));
-  const fields = member?.archiveSuggestion?.suggestedFields || group.suggestedFields || {};
-  const workContent = normalizeValue(fields.workContent)
-    || (String(group.basis || '').includes('work_content') ? normalizeValue(group.title) : '');
-  return {
-    date: fields.date || '',
-    project: fields.project || '',
-    watermarkCategory: fields.watermarkCategory || fields.category || '',
-    workContent
-  };
 }
 
 function normalizeCanonicalConflicts(value = []) {

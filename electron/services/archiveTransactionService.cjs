@@ -332,7 +332,7 @@ function normalizeArchiveTransactionItem(input = {}) {
   return {
     itemId,
     photoId: normalizeText(input.photoId),
-    sourceType: normalizeText(input.sourceType) || (input.sourceKey ? 'marki_api' : 'local_folder'),
+    sourceType: normalizeText(input.sourceType) || (input.sourceKey ? 'marki_api' : 'local_file'),
     sourceKey: normalizeText(input.sourceKey),
     sourceIdentity,
     originalPath,
@@ -365,7 +365,16 @@ function normalizeLedgerRow(input = {}) {
     originalName: normalizeText(input.originalName),
     keywords: normalizeText(input.keywords),
     remark: normalizeText(input.remark),
-    archivedAt: normalizeText(input.archivedAt)
+    archivedAt: normalizeText(input.archivedAt),
+    sourceType: normalizeText(input.sourceType),
+    sourceKey: normalizeText(input.sourceKey),
+    photoId: normalizeText(input.photoId),
+    sourcePath: normalizeText(input.sourcePath),
+    sourceSha256: normalizeText(input.sourceSha256),
+    archiveSha256: normalizeText(input.archiveSha256),
+    transactionId: normalizeText(input.transactionId),
+    watermarkTemplateType: normalizeText(input.watermarkTemplateType),
+    processingMode: normalizeText(input.processingMode)
   };
 }
 

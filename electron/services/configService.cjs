@@ -1,10 +1,13 @@
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const APP_FOLDER_NAME = '物业工作照片归档助手';
 const DEV_CONFIG_DIR = path.join(__dirname, '..', '..', 'config');
 const MAX_BACKUPS = 30;
+const CONFIG_TRANSACTION_MARKER = '.runtime-config-transaction.json';
+const configWriteQueues = new Map();
 
 const CONFIG_FILES = {
   projects: 'projects.json',
@@ -43,10 +46,11 @@ async function ensureUserConfigs(documentsPath) {
   const paths = getConfigPaths(documentsPath);
   await fs.mkdir(paths.userConfigDir, { recursive: true });
 
+  await recoverConfigTransaction(paths);
   await Promise.all(Object.values(CONFIG_FILES).map(async (fileName) => {
     const userFile = path.join(paths.userConfigDir, fileName);
     if (fsSync.existsSync(userFile)) return;
-    await fs.copyFile(path.join(paths.defaultConfigDir, fileName), userFile);
+    await copyFileAtomically(path.join(paths.defaultConfigDir, fileName), userFile);
   }));
 
   return paths;
@@ -59,6 +63,9 @@ async function loadUserConfigs(documentsPath) {
     const filePath = path.join(paths.userConfigDir, fileName);
     configs[key] = await readJsonFile(filePath);
   }
+  const projectConfig = unpackProjectConfig(configs.projects);
+  configs.projects = projectConfig.projects;
+  configs.constructionUnits = projectConfig.constructionUnits;
   await migrateLegacyWorkContentsIfNeeded(paths, configs);
   return {
     configs,
@@ -73,38 +80,73 @@ async function loadConfigs(documentsPath) {
   return result.runtimeConfigs;
 }
 
-async function saveUserConfig(documentsPath, configName, data) {
-  if (!CONFIG_FILES[configName]) {
+async function saveUserConfig(documentsPath, configName, data, options = {}) {
+  if (!CONFIG_FILES[configName] && configName !== 'constructionUnits') {
     throw new Error(`未知配置项：${configName}`);
   }
-  validateConfig(configName, data);
   const paths = await ensureUserConfigs(documentsPath);
+  const current = await loadUserConfigs(documentsPath);
+  const projects = configName === 'projects'
+    ? normalizeSimpleItems(data, 'projects', { defaultName: '潇湘新区二期' })
+    : current.editableConfigs.projects;
+  const constructionUnits = configName === 'constructionUnits'
+    ? normalizeConstructionUnits(data)
+    : current.editableConfigs.constructionUnits;
+  validateConfig(configName, data, { projects });
+  if (configName === 'projects') {
+    validateConfig('constructionUnits', constructionUnits, { projects });
+  }
   await backupConfigs(documentsPath);
-  await writeJsonFile(path.join(paths.userConfigDir, CONFIG_FILES[configName]), normalizeConfigForStorage(configName, data));
+  if (configName === 'projects' || configName === 'constructionUnits') {
+    await writeConfigTransaction(paths, [{
+      fileName: CONFIG_FILES.projects,
+      data: packProjectConfig(projects, constructionUnits)
+    }], options);
+  } else {
+    await writeConfigTransaction(paths, [{
+      fileName: CONFIG_FILES[configName],
+      data: normalizeConfigForStorage(configName, data)
+    }], options);
+  }
   return loadUserConfigs(documentsPath);
 }
 
-async function saveAllUserConfigs(documentsPath, configs) {
+async function saveAllUserConfigs(documentsPath, configs, options = {}) {
   const paths = await ensureUserConfigs(documentsPath);
   const normalized = {};
   for (const key of Object.keys(CONFIG_FILES)) {
     normalized[key] = normalizeConfigForStorage(key, configs[key]);
     validateConfig(key, normalized[key]);
   }
+  normalized.constructionUnits = normalizeConstructionUnits(configs.constructionUnits);
+  validateConfig('constructionUnits', normalized.constructionUnits, {
+    projects: normalized.projects
+  });
 
   await backupConfigs(documentsPath);
-  await Promise.all(Object.entries(CONFIG_FILES).map(([key, fileName]) => (
-    writeJsonFile(path.join(paths.userConfigDir, fileName), normalized[key])
-  )));
+  await writeConfigTransaction(paths, [
+    {
+      fileName: CONFIG_FILES.projects,
+      data: packProjectConfig(normalized.projects, normalized.constructionUnits)
+    },
+    ...Object.entries(CONFIG_FILES)
+      .filter(([key]) => key !== 'projects')
+      .map(([key, fileName]) => ({ fileName, data: normalized[key] }))
+  ], options);
   return loadUserConfigs(documentsPath);
 }
 
-async function resetConfigsToDefault(documentsPath) {
+async function resetConfigsToDefault(documentsPath, options = {}) {
   const paths = await ensureUserConfigs(documentsPath);
   await backupConfigs(documentsPath);
-  await Promise.all(Object.values(CONFIG_FILES).map((fileName) => (
-    fs.copyFile(path.join(paths.defaultConfigDir, fileName), path.join(paths.userConfigDir, fileName))
-  )));
+  const entries = [];
+  for (const fileName of Object.values(CONFIG_FILES)) {
+    entries.push({
+      fileName,
+      data: await readJsonFile(path.join(paths.defaultConfigDir, fileName))
+    });
+  }
+  await writeConfigTransaction(paths, entries, options);
   return loadUserConfigs(documentsPath);
 }
 
@@ -130,6 +172,7 @@ async function importConfigs(documentsPath, sourceFilePath) {
     }
     nextConfigs[key] = normalizeConfigForStorage(key, configs[key]);
   }
+  nextConfigs.constructionUnits = normalizeConstructionUnits(configs.constructionUnits);
   if (configs.workContents) {
     nextConfigs.watermarkCategories = mergeLegacyWorkContents(nextConfigs.watermarkCategories, configs.workContents);
   }
@@ -140,10 +183,7 @@ async function backupConfigs(documentsPath) {
   const paths = await ensureUserConfigs(documentsPath);
   await fs.mkdir(paths.backupDir, { recursive: true });
   const backupFile = path.join(paths.backupDir, `config-backup_${formatTimestamp()}.json`);
-  const configs = {};
-  for (const [key, fileName] of Object.entries(CONFIG_FILES)) {
-    configs[key] = await readJsonFile(path.join(paths.userConfigDir, fileName));
-  }
+  const configs = await readStoredConfigs(paths);
   await writeJsonFile(backupFile, {
     app: APP_FOLDER_NAME,
     version: 1,
@@ -160,17 +200,182 @@ async function readJsonFile(filePath) {
 }
 
 async function writeJsonFile(filePath, data) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+  await writeJsonFileAtomically(filePath, data);
+}
+
+async function writeConfigTransaction(paths, entries, options = {}) {
+  const transactionId = crypto.randomUUID();
+  const markerPath = path.join(paths.userConfigDir, CONFIG_TRANSACTION_MARKER);
+  const revisionPath = path.join(paths.userConfigDir, 'revision.json');
+  return withConfigWriteLock(paths.userConfigDir, async () => {
+    await recoverConfigTransaction(paths, options);
+    const staged = [];
+    const backups = [];
+    try {
+      for (const entry of entries) {
+        const targetPath = path.join(paths.userConfigDir, entry.fileName);
+        const temporaryPath = `${targetPath}.${transactionId}.tmp`;
+        await writeJsonFileAtomically(temporaryPath, entry.data, { ...options, targetIsTemporary: true });
+        staged.push({ fileName: entry.fileName, targetPath, temporaryPath });
+      }
+      const revision = crypto.createHash('sha256')
+        .update(JSON.stringify(entries.map((entry) => [entry.fileName, entry.data])))
+        .digest('hex');
+      await writeJsonFileAtomically(markerPath, {
+        schemaVersion: 1,
+        transactionId,
+        revision,
+        status: 'installing',
+        entries: staged.map(({ fileName, targetPath, temporaryPath }) => ({
+          fileName,
+          targetPath,
+          temporaryPath,
+          backupPath: `${targetPath}.${transactionId}.bak`
+        }))
+      });
+      for (const [index, item] of staged.entries()) {
+        const backupPath = `${item.targetPath}.${transactionId}.bak`;
+        try {
+          await fs.rename(item.targetPath, backupPath);
+          backups.push({ targetPath: item.targetPath, backupPath });
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+        }
+        if (typeof options.beforeInstallEntry === 'function') {
+          await options.beforeInstallEntry({ index, fileName: item.fileName });
+        }
+        await fs.rename(item.temporaryPath, item.targetPath);
+      }
+      await writeJsonFileAtomically(revisionPath, {
+        schemaVersion: 1,
+        revision,
+        completedAt: new Date().toISOString()
+      });
+      for (const backup of backups) await fs.rm(backup.backupPath, { force: true });
+      await fs.rm(markerPath, { force: true });
+      return { revision };
+    } catch (error) {
+      for (const item of staged) await fs.rm(item.temporaryPath, { force: true }).catch(() => {});
+      for (const backup of backups.reverse()) {
+        await fs.rm(backup.targetPath, { force: true }).catch(() => {});
+        await fs.rename(backup.backupPath, backup.targetPath).catch(() => {});
+      }
+      await fs.rm(markerPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  });
+}
+
+async function recoverConfigTransaction(paths, options = {}) {
+  const fileSystem = options.fs || fs;
+  const markerPath = path.join(paths.userConfigDir, CONFIG_TRANSACTION_MARKER);
+  let marker;
+  try {
+    marker = JSON.parse(await fileSystem.readFile(markerPath, 'utf8'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { recovered: false };
+    await fileSystem.rm(markerPath, { force: true }).catch(() => {});
+    return { recovered: false };
+  }
+  for (const entry of Array.isArray(marker.entries) ? [...marker.entries].reverse() : []) {
+    if (
+      !isPathInside(paths.userConfigDir, entry.targetPath)
+      || !isPathInside(paths.userConfigDir, entry.temporaryPath)
+      || !isPathInside(paths.userConfigDir, entry.backupPath)
+    ) {
+      await fileSystem.rm(markerPath, { force: true }).catch(() => {});
+      throw new Error('配置事务恢复记录包含无效路径。');
+    }
+    await fileSystem.rm(entry.temporaryPath, { force: true }).catch(() => {});
+    try {
+      await fileSystem.stat(entry.backupPath);
+      await fileSystem.rm(entry.targetPath, { force: true }).catch(() => {});
+      await fileSystem.rename(entry.backupPath, entry.targetPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  await fileSystem.rm(markerPath, { force: true });
+  return { recovered: true };
+}
+
+function isPathInside(rootPath, targetPath) {
+  const root = path.resolve(rootPath);
+  const target = path.resolve(String(targetPath || ''));
+  const relative = path.relative(root, target);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function writeJsonFileAtomically(filePath, data, options = {}) {
+  const fileSystem = options.fs || fs;
+  await fileSystem.mkdir(path.dirname(filePath), { recursive: true });
+  const temporaryPath = options.targetIsTemporary
+    ? filePath
+    : `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await fileSystem.open(temporaryPath, 'wx');
+    await handle.writeFile(`${JSON.stringify(data, null, 2)}\n`, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    if (!options.targetIsTemporary) await fileSystem.rename(temporaryPath, filePath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await fileSystem.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function copyFileAtomically(sourcePath, targetPath) {
+  const data = await fs.readFile(sourcePath);
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+  let handle;
+  try {
+    handle = await fs.open(temporaryPath, 'wx');
+    await handle.writeFile(data);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.rename(temporaryPath, targetPath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+function withConfigWriteLock(key, action) {
+  const previous = configWriteQueues.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  configWriteQueues.set(key, current);
+  return current.finally(() => {
+    if (configWriteQueues.get(key) === current) configWriteQueues.delete(key);
+  });
 }
 
 function normalizeRuntimeConfigs(configs) {
   const editable = normalizeEditableConfigs(configs);
+  const projectOptions = editable.projects
+    .filter((item) => item.enabled !== false)
+    .sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)) || bySort(a, b));
   return {
-    projects: enabledNames(editable.projects),
+    projects: projectOptions.map((item) => item.name),
+    projectOptions: projectOptions.map((item) => ({
+      id: item.id,
+      name: item.name
+    })),
     departments: enabledNames(editable.departments),
     watermarkCategories: normalizeRuntimeWatermarkCategories(editable.watermarkCategories),
-    keywords: enabledNames(editable.keywords)
+    keywords: enabledNames(editable.keywords),
+    constructionUnits: editable.constructionUnits.map((item) => ({
+      id: item.id,
+      name: item.name,
+      aliases: [...item.aliases],
+      enabled: item.enabled !== false,
+      projectIds: [...item.projectIds]
+    }))
   };
 }
 
@@ -178,6 +383,7 @@ function normalizeEditableConfigs(configs) {
   const watermarkCategories = mergeLegacyWorkContents(configs.watermarkCategories, configs.workContents);
   return {
     projects: normalizeSimpleItems(configs.projects, 'project', { defaultName: '潇湘新区二期' }),
+    constructionUnits: normalizeConstructionUnits(configs.constructionUnits),
     departments: normalizeSimpleItems(configs.departments, 'department', { defaultName: '工程' }),
     watermarkCategories: normalizeWatermarkCategories(watermarkCategories),
     keywords: normalizeSimpleItems(configs.keywords, 'keyword', { withGroup: true })
@@ -191,7 +397,41 @@ function normalizeConfigForStorage(configName, data) {
   if (configName === 'watermarkCategories') {
     return normalizeWatermarkCategories(data);
   }
+  if (configName === 'constructionUnits') {
+    return normalizeConstructionUnits(data);
+  }
   return data;
+}
+
+function unpackProjectConfig(data) {
+  if (Array.isArray(data)) {
+    return { projects: data, constructionUnits: [] };
+  }
+  return {
+    projects: Array.isArray(data?.projects) ? data.projects : [],
+    constructionUnits: Array.isArray(data?.constructionUnits) ? data.constructionUnits : []
+  };
+}
+
+function packProjectConfig(projects, constructionUnits) {
+  return {
+    projects: normalizeSimpleItems(projects, 'projects', { defaultName: '潇湘新区二期' }),
+    constructionUnits: normalizeConstructionUnits(constructionUnits)
+  };
+}
+
+function normalizeConstructionUnits(data) {
+  return (Array.isArray(data) ? data : []).map((item, index) => {
+    const name = String(item?.name || '').trim();
+    return {
+      id: String(item?.id || createId('construction-unit', name, index)),
+      name,
+      aliases: normalizeAliases(item?.aliases),
+      enabled: item?.enabled !== false,
+      sort: Number.isFinite(Number(item?.sort)) ? Number(item.sort) : (index + 1) * 10,
+      projectIds: normalizeAliases(item?.projectIds)
+    };
+  }).filter((item) => item.name);
 }
 
 function normalizeSimpleItems(data, idPrefix, options = {}) {
@@ -390,7 +630,7 @@ function normalizeRuntimeWatermarkCategories(categories) {
   );
 }
 
-function validateConfig(configName, data) {
+function validateConfig(configName, data, context = {}) {
   if (SIMPLE_CONFIG_KEYS.has(configName)) {
     validateNames(normalizeSimpleItems(data, configName), '名称');
   }
@@ -399,7 +639,32 @@ function validateConfig(configName, data) {
     validateNames(categories, '归档分类名称');
     categories.forEach((category) => validateNames(category.items, `${category.name} 的工作内容名称`));
   }
+  if (configName === 'constructionUnits') {
+    const units = normalizeConstructionUnits(data);
+    validateNames(units, '施工单位名称');
+    validateUniqueIds(units, '施工单位 ID');
+    const projectIds = new Set(
+      normalizeSimpleItems(context.projects, 'projects').map((item) => item.id)
+    );
+    units.forEach((item) => {
+      item.projectIds.forEach((projectId) => {
+        if (!projectIds.has(projectId)) {
+          throw new Error(`${item.name} 关联了不存在的项目`);
+        }
+      });
+    });
+  }
   return { success: true };
+}
+
+function validateUniqueIds(items, label) {
+  const ids = new Set();
+  items.forEach((item) => {
+    const id = String(item.id || '').trim();
+    if (!id) throw new Error(`${label}不能为空`);
+    if (ids.has(id)) throw new Error(`${label}不能重复：${id}`);
+    ids.add(id);
+  });
 }
 
 function validateNames(items, label) {
@@ -427,6 +692,11 @@ function bySort(a, b) {
 function normalizeKeywords(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
   return String(value || '').split(/[、,，;；\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizeAliases(value) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/);
+  return Array.from(new Set(source.map((item) => String(item || '').trim()).filter(Boolean)));
 }
 
 function createId(prefix, value, index) {
@@ -470,10 +740,7 @@ async function cleanupOldBackups(backupDir) {
 async function backupConfigsFromPaths(paths) {
   await fs.mkdir(paths.backupDir, { recursive: true });
   const backupFile = path.join(paths.backupDir, `config-backup_${formatTimestamp()}.json`);
-  const configs = {};
-  for (const [key, fileName] of Object.entries(CONFIG_FILES)) {
-    configs[key] = await readJsonFile(path.join(paths.userConfigDir, fileName));
-  }
+  const configs = await readStoredConfigs(paths);
   await writeJsonFile(backupFile, {
     app: APP_FOLDER_NAME,
     version: 1,
@@ -483,6 +750,17 @@ async function backupConfigsFromPaths(paths) {
   });
   await cleanupOldBackups(paths.backupDir);
   return { success: true, backupFile, backupDir: paths.backupDir };
+}
+
+async function readStoredConfigs(paths) {
+  const configs = {};
+  for (const [key, fileName] of Object.entries(CONFIG_FILES)) {
+    configs[key] = await readJsonFile(path.join(paths.userConfigDir, fileName));
+  }
+  const projectConfig = unpackProjectConfig(configs.projects);
+  configs.projects = projectConfig.projects;
+  configs.constructionUnits = projectConfig.constructionUnits;
+  return configs;
 }
 
 module.exports = {
@@ -498,5 +776,10 @@ module.exports = {
   getConfigPaths,
   validateConfig,
   normalizeRuntimeConfigs,
-  normalizeEditableConfigs
+  normalizeEditableConfigs,
+  normalizeConstructionUnits,
+  unpackProjectConfig,
+  packProjectConfig,
+  recoverConfigTransaction,
+  writeConfigTransaction
 };

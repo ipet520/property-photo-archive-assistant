@@ -15,7 +15,16 @@ const FIELD_ALIASES = {
   remark: ['备注'],
   archivePath: ['归档路径', '目标路径', '文件路径', '归档文件路径'],
   archivedAt: ['归档时间', '写入时间'],
-  originalPath: ['原始文件路径', '原图路径', '来源路径']
+  sourceType: ['来源类型', '照片来源类型'],
+  sourceKey: ['来源标识', 'sourceKey'],
+  photoId: ['照片ID', 'photoId'],
+  sourcePath: ['来源文件路径', '原始文件路径', '原图路径', '来源路径'],
+  originalPath: ['来源文件路径', '原始文件路径', '原图路径', '来源路径'],
+  sourceSha256: ['来源文件SHA-256', 'sourceSha256'],
+  archiveSha256: ['归档文件SHA-256', 'archiveSha256'],
+  transactionId: ['归档事务ID', 'transactionId'],
+  watermarkTemplateType: ['水印模板', 'watermarkTemplateType'],
+  processingMode: ['识别处理方式', 'processingMode']
 };
 
 const EXPORT_HEADERS = [
@@ -29,6 +38,15 @@ const EXPORT_HEADERS = [
   ['originalName', '原文件名'],
   ['newFileName', '新文件名'],
   ['archivePath', '归档文件路径'],
+  ['sourceType', '来源类型'],
+  ['sourceKey', '来源标识'],
+  ['photoId', '照片ID'],
+  ['sourcePath', '来源文件路径'],
+  ['sourceSha256', '来源文件SHA-256'],
+  ['archiveSha256', '归档文件SHA-256'],
+  ['transactionId', '归档事务ID'],
+  ['watermarkTemplateType', '水印模板'],
+  ['processingMode', '识别处理方式'],
   ['fileStatus', '文件状态']
 ];
 
