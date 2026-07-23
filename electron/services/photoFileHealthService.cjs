@@ -4,6 +4,7 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 
 const SUPPORTED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
+const DEFAULT_MAX_DECODE_BYTES = 50 * 1024 * 1024;
 
 async function inspectPhotoSourceFile(photoOrPath, expectedFingerprint = '', options = {}) {
   const fileSystem = options.fs || fs;
@@ -20,6 +21,8 @@ async function inspectPhotoSourceFile(photoOrPath, expectedFingerprint = '', opt
     readable: false,
     size: 0,
     sizeValid: false,
+    width: 0,
+    height: 0,
     mimeType: '',
     extensionSupported: false,
     decodable: false,
@@ -52,6 +55,10 @@ async function inspectPhotoSourceFile(photoOrPath, expectedFingerprint = '', opt
   base.size = Number(stat.size) || 0;
   base.sizeValid = base.size > 0;
   if (!base.sizeValid) return fail(base, 'empty', '照片文件为空。');
+  const maxDecodeBytes = normalizeMaxDecodeBytes(options.maxDecodeBytes);
+  if (base.size > maxDecodeBytes) {
+    return fail(base, 'too_large', '照片文件超过允许的解码大小。');
+  }
 
   const extension = path.extname(resolvedPath).toLowerCase();
   base.extensionSupported = SUPPORTED_EXTENSIONS.has(extension);
@@ -65,9 +72,13 @@ async function inspectPhotoSourceFile(photoOrPath, expectedFingerprint = '', opt
   } catch (error) {
     return fail(base, 'unreadable', safeFileError(error));
   }
-  const decoded = inspectImageBuffer(buffer, extension);
-  base.mimeType = decoded.mimeType;
+  const structure = inspectImageStructure(buffer, extension);
+  base.mimeType = structure.mimeType;
+  if (!structure.decodable) return fail(base, 'decode_failed', '照片文件无法解码。');
+  const decoded = await decodeImageBuffer(buffer, extension, options);
   base.decodable = decoded.decodable;
+  base.width = decoded.width;
+  base.height = decoded.height;
   if (!decoded.decodable) return fail(base, 'decode_failed', '照片文件无法解码。');
 
   try {
@@ -89,11 +100,58 @@ async function inspectPhotoSourceFile(photoOrPath, expectedFingerprint = '', opt
   };
 }
 
-function inspectImageBuffer(buffer, extension) {
+function inspectImageStructure(buffer, extension) {
   if (extension === '.jpg' || extension === '.jpeg') return inspectJpeg(buffer);
   if (extension === '.png') return inspectPng(buffer);
   if (extension === '.webp') return inspectWebp(buffer);
   return { mimeType: '', decodable: false };
+}
+
+async function decodeImageBuffer(buffer, extension, options = {}) {
+  const decoder = options.decodeImage || getNativeImageDecoder();
+  if (typeof decoder !== 'function') {
+    return { decodable: false, width: 0, height: 0 };
+  }
+  try {
+    const result = await decoder(buffer, { extension });
+    const width = Number(result?.width);
+    const height = Number(result?.height);
+    return {
+      decodable: result?.decodable !== false && width > 0 && height > 0,
+      width: width > 0 ? width : 0,
+      height: height > 0 ? height : 0
+    };
+  } catch {
+    return { decodable: false, width: 0, height: 0 };
+  }
+}
+
+function getNativeImageDecoder() {
+  try {
+    const { nativeImage } = require('electron');
+    if (!nativeImage || typeof nativeImage.createFromBuffer !== 'function') return null;
+    return (buffer) => {
+      const image = nativeImage.createFromBuffer(buffer);
+      if (!image || image.isEmpty()) return { decodable: false, width: 0, height: 0 };
+      const size = image.getSize();
+      return {
+        decodable: size.width > 0 && size.height > 0,
+        width: size.width,
+        height: size.height
+      };
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMaxDecodeBytes(value) {
+  if (value === undefined || value === null || value === '') return DEFAULT_MAX_DECODE_BYTES;
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number <= 0) {
+    throw new TypeError('照片解码大小上限无效。');
+  }
+  return number;
 }
 
 function inspectJpeg(buffer) {
@@ -177,6 +235,7 @@ function safeFileError(error) {
 }
 
 module.exports = {
+  DEFAULT_MAX_DECODE_BYTES,
   SUPPORTED_EXTENSIONS,
   inspectPhotoSourceFile
 };

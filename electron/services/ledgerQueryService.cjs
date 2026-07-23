@@ -24,7 +24,14 @@ const FIELD_ALIASES = {
   archiveSha256: ['归档文件SHA-256', 'archiveSha256'],
   transactionId: ['归档事务ID', 'transactionId'],
   watermarkTemplateType: ['水印模板', 'watermarkTemplateType'],
-  processingMode: ['识别处理方式', 'processingMode']
+  processingMode: ['识别处理方式', 'processingMode'],
+  vehiclePlate: ['车牌号码', 'vehiclePlate'],
+  violationType: ['违停类型', 'violationType'],
+  constructionUnitId: ['施工单位ID', 'constructionUnitId'],
+  constructionUnitName: ['施工单位', 'constructionUnitName'],
+  constructionUnitOriginalText: ['施工单位原始文本', 'constructionUnitOriginalText'],
+  constructionUnitConfirmed: ['施工单位已确认', 'constructionUnitConfirmed'],
+  constructionUnitSource: ['施工单位来源', 'constructionUnitSource']
 };
 
 const EXPORT_HEADERS = [
@@ -47,6 +54,13 @@ const EXPORT_HEADERS = [
   ['transactionId', '归档事务ID'],
   ['watermarkTemplateType', '水印模板'],
   ['processingMode', '识别处理方式'],
+  ['vehiclePlate', '车牌号码'],
+  ['violationType', '违停类型'],
+  ['constructionUnitId', '施工单位ID'],
+  ['constructionUnitName', '施工单位'],
+  ['constructionUnitOriginalText', '施工单位原始文本'],
+  ['constructionUnitConfirmed', '施工单位已确认'],
+  ['constructionUnitSource', '施工单位来源'],
   ['fileStatus', '文件状态']
 ];
 

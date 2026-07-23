@@ -417,6 +417,10 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       )}
 
       <section className="marki-import-filter-band">
+        <div className="marki-import-filter-heading">
+          <strong>平台查询条件</strong>
+          <span>团队、成员和时间范围会重新创建主进程查询会话。</span>
+        </div>
         <label>
           <span>团队</span>
           <select
@@ -448,30 +452,6 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
           </select>
         </label>
         <label>
-          <span>水印分类</span>
-          <select
-            value={filters.watermarkFilter}
-            onChange={(event) => void changeFilter('watermarkFilter', event.target.value)}
-            disabled={!configuredReady || isBusy}
-          >
-            {watermarkOptions.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>导入状态</span>
-          <select
-            value={filters.importStatusFilter}
-            onChange={(event) => void changeFilter('importStatusFilter', event.target.value)}
-            disabled={!configuredReady || isBusy}
-          >
-            {MARKI_IMPORT_STATUS_FILTERS.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        </label>
-        <label>
           <span>开始时间</span>
           <input
             type="datetime-local"
@@ -495,6 +475,37 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       </section>
 
       {notice.text && <div className={`marki-import-notice ${notice.type}`}>{notice.text}</div>}
+
+      <section className="marki-import-filter-band marki-import-result-filter-band">
+        <div className="marki-import-filter-heading">
+          <strong>已加载结果筛选</strong>
+          <span>这里只筛选当前会话内已加载的安全摘要，不改变平台查询条件。</span>
+        </div>
+        <label>
+          <span>水印状态 / 模板</span>
+          <select
+            value={filters.watermarkFilter}
+            onChange={(event) => void changeFilter('watermarkFilter', event.target.value)}
+            disabled={!session || isBusy}
+          >
+            {watermarkOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>导入状态</span>
+          <select
+            value={filters.importStatusFilter}
+            onChange={(event) => void changeFilter('importStatusFilter', event.target.value)}
+            disabled={!session || isBusy}
+          >
+            {MARKI_IMPORT_STATUS_FILTERS.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </label>
+      </section>
 
       <section className="marki-import-toolbar">
         <div>
@@ -562,7 +573,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                         <strong>{teamNameById.get(String(photo.teamId)) || `团队 ${photo.teamId || '-'}`}</strong>
                         <span>{memberNameById.get(String(photo.uid)) || photo.photographerName || `UID ${photo.uid || '-'}`}</span>
                       </td>
-                      <td>{photo.isWatermarked ? (photo.markName || '有水印') : '无水印'}</td>
+                      <td>{formatWatermarkStatus(photo)}</td>
                       <td>{photo.projectText || '-'}</td>
                       <td>{photo.workContentText || '-'}</td>
                       <td>{photo.locationText || '-'}</td>
@@ -756,6 +767,12 @@ function buildRecordRetryFilters(record, fallback) {
 
 function normalizeStoredDateTime(value) {
   return String(value || '').trim().replace(' ', 'T').slice(0, 16);
+}
+
+function formatWatermarkStatus(photo) {
+  if (photo?.watermarkStatus === 'watermarked') return photo.markName || '有水印';
+  if (photo?.watermarkStatus === 'unwatermarked') return '无水印';
+  return '水印状态待确认';
 }
 
 function readStoredSession() {

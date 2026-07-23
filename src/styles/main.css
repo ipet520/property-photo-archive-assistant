@@ -16862,6 +16862,17 @@ table tbody tr.selected td {
   padding: 14px 16px;
 }
 
+.marki-import-filter-heading {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 3px;
+}
+
+.marki-import-filter-heading span {
+  color: #60798d;
+  font-size: 12px;
+}
+
 .marki-import-filter-band label {
   display: grid;
   gap: 6px;
@@ -17020,7 +17031,9 @@ table tbody tr.selected td {
 
 .marki-import-source-status.download_failed,
 .marki-import-source-status.failed_retryable,
-.marki-import-source-status.filtered_unwatermarked {
+.marki-import-source-status.filtered_unwatermarked,
+.marki-import-source-status.watermark_unknown,
+.marki-import-source-status.workspace_file_repairable {
   border-color: #edb2ad;
   background: #fff1f0;
   color: #8c2f28 !important;

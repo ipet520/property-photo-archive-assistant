@@ -10,7 +10,7 @@ const {
   createArchivePreviewPlan,
   normalizeArchivePreviewPlan,
   toTransactionItems,
-  validateArchivePreviewPlanForExecution
+  validateArchivePreviewPlanItemsForExecution
 } = require('./archivePreviewPlanService.cjs');
 const {
   ArchiveTransactionError,
@@ -97,14 +97,8 @@ async function archivePhotos(archivePlan, options = {}) {
   return withArchiveTransactionLock(`operation:${operationKey}`, async () => {
     let transaction = await findArchiveTransactionByOperationKey(archiveRoot, operationKey);
     if (!transaction) {
-      try {
-        await validateArchivePreviewPlanForExecution(previewPlan, options);
-      } catch (error) {
-        return buildPreflightFailureResult(
-          buildArchivePreviewItems(previewPlan),
-          error
-        );
-      }
+      const preflight = await validateArchivePreviewPlanItemsForExecution(previewPlan, options);
+      const preflightByItemId = new Map(preflight.items.map((item) => [item.itemId, item]));
       transaction = createArchiveTransaction({
         operationKey,
         items: toTransactionItems(previewPlan)
@@ -113,6 +107,13 @@ async function archivePhotos(archivePlan, options = {}) {
         ...transaction,
         items: transaction.items.map((item) => ({
           ...item,
+          ...(preflightByItemId.get(item.itemId)?.valid === false
+            ? {
+                stage: preflightByItemId.get(item.itemId).stage,
+                errorCode: preflightByItemId.get(item.itemId).errorCode,
+                errorMessage: preflightByItemId.get(item.itemId).message
+              }
+            : {}),
           ledgerRow: {
             ...item.ledgerRow,
             transactionId: transaction.transactionId
@@ -173,7 +174,7 @@ async function processArchiveTransaction(archiveRoot, inputTransaction, options 
 
   for (let index = 0; index < transaction.items.length; index += 1) {
     const item = transaction.items[index];
-    if (item.stage === 'committed') continue;
+    if (item.stage === 'committed' || isFrozenPreflightFailure(item)) continue;
     const targetPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
     const stagingPath = buildArchiveStagingPath(targetPath, transaction, item);
     const existing = await inspectFrozenTarget(targetPath, item, options);
@@ -316,6 +317,14 @@ async function processArchiveTransaction(archiveRoot, inputTransaction, options 
   return buildArchiveTransactionResult(archiveRoot, transaction, fingerprintIndexWarning);
 }
 
+function isFrozenPreflightFailure(item = {}) {
+  return item.stage === 'target_conflict'
+    || (
+      item.stage === 'copy_failed'
+      && String(item.errorCode || '').startsWith('archive_preview_')
+    );
+}
+
 async function markItemLedgerPending(archiveRoot, transaction, index, inspected) {
   let next = transaction;
   if (!['copied', 'ledger_pending'].includes(transaction.items[index].stage)) {
@@ -381,7 +390,14 @@ function buildLedgerRow(item) {
     archiveSha256: String(item.archiveSha256 || '').trim(),
     transactionId: String(item.transactionId || '').trim(),
     watermarkTemplateType: String(item.watermarkTemplateType || '').trim(),
-    processingMode: String(item.processingMode || '').trim()
+    processingMode: String(item.processingMode || '').trim(),
+    vehiclePlate: String(item.vehiclePlate || '').trim(),
+    violationType: String(item.violationType || '').trim(),
+    constructionUnitId: String(item.constructionUnitId || '').trim(),
+    constructionUnitName: String(item.constructionUnitName || '').trim(),
+    constructionUnitOriginalText: String(item.constructionUnitOriginalText || '').trim(),
+    constructionUnitConfirmed: item.constructionUnitConfirmed === true ? 'true' : '',
+    constructionUnitSource: String(item.constructionUnitSource || '').trim()
   };
 }
 
@@ -550,7 +566,16 @@ function mergePhotoOverrides(form, photo) {
     location: photo.location ?? form.location,
     date: photo.date || form.date,
     keywords: photo.keywords ?? form.keywords,
-    remark: photo.remark ?? form.remark
+    remark: photo.remark ?? form.remark,
+    vehiclePlate: photo.vehiclePlate ?? form.vehiclePlate,
+    violationType: photo.violationType ?? form.violationType,
+    constructionUnitId: photo.constructionUnitId ?? form.constructionUnitId,
+    constructionUnitName: photo.constructionUnitName ?? form.constructionUnitName,
+    constructionUnitOriginalText: photo.constructionUnitOriginalText
+      ?? form.constructionUnitOriginalText,
+    constructionUnitConfirmed: photo.constructionUnitConfirmed
+      ?? form.constructionUnitConfirmed,
+    constructionUnitSource: photo.constructionUnitSource ?? form.constructionUnitSource
   };
   return normalizeArchiveItem(item);
 }

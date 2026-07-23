@@ -44,6 +44,7 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
 
     const importRoot = getMarkiImportRoot(documentsPath);
     let quarantinedPath = '';
+    let repairImportedFile = false;
     let record = await runManifestOperation(
       () => manifestService.getMarkiSourceRecordByKey(documentsPath, identifiers.orgId, sourceKey),
       'marki_manifest_access_failed',
@@ -70,7 +71,7 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
           'marki_manifest_access_failed',
           '来源清单无法进入重新下载状态，请重试。'
         );
-        quarantinedPath = await quarantineInvalidImportedFile(importRoot, record, options);
+        repairImportedFile = true;
         record = prepared.record;
       }
     }
@@ -94,13 +95,23 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
     try {
       await fs.mkdir(paths.directoryPath, { recursive: true });
       await fs.rm(paths.partPath, { force: true });
-      inspectedFile = await inspectExistingFile(paths.finalPath, options);
+      inspectedFile = repairImportedFile
+        ? null
+        : await inspectExistingFile(paths.finalPath, options);
       if (!inspectedFile) {
         reusedExisting = false;
         const url = normalizeDownloadUrl(input.url);
         await downloadToPartFile(url, paths.partPath, options);
         inspectedFile = await inspectJpegFile(paths.partPath, options);
-        await renamePartFile(paths.partPath, paths.finalPath);
+        if (repairImportedFile) {
+          quarantinedPath = await replaceImportedFileAtomically(
+            paths.partPath,
+            paths.finalPath,
+            options
+          );
+        } else {
+          await renamePartFile(paths.partPath, paths.finalPath);
+        }
       }
     } catch (error) {
       await fs.rm(paths.partPath, { force: true }).catch(() => {});
@@ -123,19 +134,26 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
     }
 
     await fs.rm(paths.partPath, { force: true }).catch(() => {});
-    record = await runManifestOperation(
-      () => markImported(
-        documentsPath,
-        identifiers.orgId,
-        sourceKey,
-        paths,
-        inspectedFile,
-        options,
-        manifestService
-      ),
-      'marki_manifest_commit_failed',
-      '照片文件已下载完成，但来源清单更新失败，请重试以恢复记录。'
-    );
+    try {
+      record = await runManifestOperation(
+        () => markImported(
+          documentsPath,
+          identifiers.orgId,
+          sourceKey,
+          paths,
+          inspectedFile,
+          options,
+          manifestService
+        ),
+        'marki_manifest_commit_failed',
+        '照片文件已下载完成，但来源清单更新失败，请重试以恢复记录。'
+      );
+    } catch (error) {
+      if (repairImportedFile) {
+        await rollbackImportedFileReplacement(paths.finalPath, quarantinedPath);
+      }
+      throw error;
+    }
     await cleanupQuarantinedFiles(paths.finalPath, quarantinedPath);
     return buildImportedResult(importRoot, record, reusedExisting);
   });
@@ -173,16 +191,18 @@ async function verifyImportedFile(importRoot, record, options) {
   return inspected;
 }
 
-async function quarantineInvalidImportedFile(importRoot, record, options = {}) {
-  const localPath = resolveImportedFilePath(importRoot, record?.downloadInfo?.relativePath);
+async function replaceImportedFileAtomically(partPath, finalPath, options = {}) {
   let stat;
   try {
-    stat = await fs.stat(localPath);
+    stat = await fs.stat(finalPath);
   } catch (error) {
-    if (error?.code === 'ENOENT') return '';
+    if (error?.code === 'ENOENT') {
+      await renamePartFile(partPath, finalPath);
+      return '';
+    }
     throw new MarkiPhotoDownloadError(
       'imported_file_quarantine_failed',
-      '旧下载缓存无法安全隔离，请人工核查。'
+      '旧下载缓存无法安全检查，请人工核查。'
     );
   }
   if (!stat.isFile()) {
@@ -194,16 +214,42 @@ async function quarantineInvalidImportedFile(importRoot, record, options = {}) {
   const suffix = typeof options.randomUUID === 'function'
     ? options.randomUUID()
     : crypto.randomUUID();
-  const quarantinePath = `${localPath}.invalid-${suffix}`;
+  const quarantinePath = `${finalPath}.invalid-${suffix}`;
+  let oldFileMoved = false;
   try {
-    await fs.rename(localPath, quarantinePath);
+    await fs.rename(finalPath, quarantinePath);
+    oldFileMoved = true;
+    await fs.rename(partPath, finalPath);
   } catch {
+    if (oldFileMoved) {
+      try {
+        await fs.rename(quarantinePath, finalPath);
+      } catch {
+        throw new MarkiPhotoDownloadError(
+          'imported_file_replace_failed',
+          '新旧下载缓存切换失败，请人工核查。'
+        );
+      }
+    }
     throw new MarkiPhotoDownloadError(
-      'imported_file_quarantine_failed',
-      '旧下载缓存无法安全隔离，请人工核查。'
+      'imported_file_replace_failed',
+      '新下载缓存无法安全替换旧文件，请重试。'
     );
   }
   return quarantinePath;
+}
+
+async function rollbackImportedFileReplacement(finalPath, quarantinedPath = '') {
+  await fs.rm(finalPath, { force: true }).catch(() => {});
+  if (!quarantinedPath) return;
+  try {
+    await fs.rename(quarantinedPath, finalPath);
+  } catch {
+    throw new MarkiPhotoDownloadError(
+      'imported_file_rollback_failed',
+      '来源记录更新失败，旧下载缓存也无法恢复，请人工核查。'
+    );
+  }
 }
 
 function resolveImportedFilePath(importRoot, relativePath) {

@@ -49,7 +49,14 @@ const LEDGER_ROW_KEYS = new Set([
   'archiveSha256',
   'transactionId',
   'watermarkTemplateType',
-  'processingMode'
+  'processingMode',
+  'vehiclePlate',
+  'violationType',
+  'constructionUnitId',
+  'constructionUnitName',
+  'constructionUnitOriginalText',
+  'constructionUnitConfirmed',
+  'constructionUnitSource'
 ]);
 
 class ArchivePreviewPlanError extends Error {
@@ -175,19 +182,71 @@ function normalizeArchivePreviewPlan(input = {}) {
 }
 
 async function validateArchivePreviewPlanForExecution(input = {}, options = {}) {
+  const validation = await validateArchivePreviewPlanItemsForExecution(input, options);
+  const failed = validation.items.find((item) => !item.valid);
+  if (failed) {
+    throw createError(failed.errorCode, failed.message);
+  }
+  return validation.plan;
+}
+
+async function validateArchivePreviewPlanItemsForExecution(input = {}, options = {}) {
   const plan = normalizeArchivePreviewPlan(input);
   const fileSystem = options.fs || fs;
+  const items = [];
   for (const item of plan.items) {
-    const source = await inspectSourceFile(item.sourcePath, options);
-    if (source.size !== item.sourceSize || source.sha256 !== item.sourceSha256) {
-      throw createError('archive_preview_source_changed', '原始照片在预览后发生变化，请重新生成预览。');
-    }
-    const targetPath = resolveArchiveTargetPath(plan.archiveRoot, item.targetRelativePath);
-    if (await pathExists(targetPath, fileSystem)) {
-      throw createError('archive_preview_target_conflict', '归档目标在预览后被占用，请重新生成预览。');
+    try {
+      const source = await inspectSourceFile(item.sourcePath, options);
+      if (source.size !== item.sourceSize || source.sha256 !== item.sourceSha256) {
+        items.push(buildItemValidationFailure(
+          item,
+          'copy_failed',
+          'archive_preview_source_changed',
+          '原始照片在预览后发生变化，请重新生成该照片的预览。'
+        ));
+        continue;
+      }
+      const targetPath = resolveArchiveTargetPath(plan.archiveRoot, item.targetRelativePath);
+      if (await pathExists(targetPath, fileSystem)) {
+        items.push(buildItemValidationFailure(
+          item,
+          'target_conflict',
+          'archive_preview_target_conflict',
+          '归档目标在预览后被占用，请重新生成该照片的预览。'
+        ));
+        continue;
+      }
+      items.push({
+        itemId: item.itemId,
+        photoId: item.photoId,
+        valid: true,
+        stage: 'planned',
+        errorCode: '',
+        message: ''
+      });
+    } catch (error) {
+      items.push(buildItemValidationFailure(
+        item,
+        'copy_failed',
+        error?.code || 'archive_preview_source_unreadable',
+        error instanceof ArchivePreviewPlanError
+          ? error.message
+          : '无法读取原始照片，请重新生成该照片的预览。'
+      ));
     }
   }
-  return plan;
+  return { plan, items };
+}
+
+function buildItemValidationFailure(item, stage, errorCode, message) {
+  return {
+    itemId: item.itemId,
+    photoId: item.photoId,
+    valid: false,
+    stage,
+    errorCode,
+    message
+  };
 }
 
 function buildArchivePreviewItems(plan) {
@@ -217,6 +276,7 @@ function buildArchivePreviewItems(plan) {
 function toTransactionItems(plan) {
   const normalized = normalizeArchivePreviewPlan(plan);
   return normalized.items.map((item) => ({
+    itemId: item.itemId,
     photoId: item.photoId,
     sourceType: item.sourceType,
     sourceKey: item.sourceKey,
@@ -328,7 +388,14 @@ function toPublicLedgerFields(ledgerRow) {
     keywords: ledgerRow.keywords,
     remark: ledgerRow.remark,
     watermarkTemplateType: ledgerRow.watermarkTemplateType,
-    processingMode: ledgerRow.processingMode
+    processingMode: ledgerRow.processingMode,
+    vehiclePlate: ledgerRow.vehiclePlate,
+    violationType: ledgerRow.violationType,
+    constructionUnitId: ledgerRow.constructionUnitId,
+    constructionUnitName: ledgerRow.constructionUnitName,
+    constructionUnitOriginalText: ledgerRow.constructionUnitOriginalText,
+    constructionUnitConfirmed: ledgerRow.constructionUnitConfirmed,
+    constructionUnitSource: ledgerRow.constructionUnitSource
   };
 }
 
@@ -426,5 +493,6 @@ module.exports = {
   normalizeArchivePreviewPlan,
   stableStringify,
   toTransactionItems,
+  validateArchivePreviewPlanItemsForExecution,
   validateArchivePreviewPlanForExecution
 };

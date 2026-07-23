@@ -101,65 +101,77 @@ async function migrateLegacyConfiguration(paths, options = {}) {
   const markerPath = path.join(canonicalAppDir, MIGRATION_MARKER_FILE);
   const warnings = [];
   const marker = await readJsonIfPresent(fileSystem, markerPath);
-  if (marker?.status === 'completed') {
-    return {
-      migratedFrom: marker.migratedFrom === 'documents' ? 'documents' : '',
-      validationWarnings: []
-    };
-  }
-
-  const canonicalFiles = listConfigurationFiles(canonicalAppDir);
-  const legacyFiles = listConfigurationFiles(legacyAppDir);
-  const [canonicalExisting, legacyExisting] = await Promise.all([
-    existingFiles(fileSystem, canonicalFiles),
-    existingFiles(fileSystem, legacyFiles)
-  ]);
-
-  if (legacyExisting.length === 0) {
-    return { migratedFrom: '', validationWarnings: [] };
-  }
-
-  if (canonicalExisting.length > 0) {
-    const differs = await configurationSetsDiffer(fileSystem, canonicalExisting, legacyExisting);
-    if (differs) {
-      warnings.push({
-        code: 'runtime_configuration_migration_conflict',
-        message: '检测到旧位置和正式位置均有配置，已保留正式位置配置。'
-      });
-    }
-    await writeJsonAtomically(fileSystem, markerPath, {
-      schemaVersion: 1,
-      status: 'completed',
-      migratedFrom: '',
-      conflict: differs,
-      completedAt: resolveNow(options).toISOString()
-    });
-    return { migratedFrom: '', validationWarnings: warnings };
-  }
-
   await fileSystem.mkdir(canonicalAppDir, { recursive: true });
-  const copied = [];
-  try {
-    for (const sourcePath of legacyExisting) {
-      const relativePath = path.relative(legacyAppDir, sourcePath);
-      const targetPath = path.join(canonicalAppDir, relativePath);
-      await copyFileAtomically(fileSystem, sourcePath, targetPath);
-      copied.push(targetPath);
-    }
-    await writeJsonAtomically(fileSystem, markerPath, {
-      schemaVersion: 1,
-      status: 'completed',
-      migratedFrom: 'documents',
+  const fileResults = {};
+  let migratedCount = 0;
+  const completedAt = resolveNow(options).toISOString();
+  for (const canonicalPath of listConfigurationFiles(canonicalAppDir)) {
+    const relativePath = path.relative(canonicalAppDir, canonicalPath).replaceAll('\\', '/');
+    const legacyPath = path.join(legacyAppDir, ...relativePath.split('/'));
+    const [canonicalState, legacyState] = await Promise.all([
+      inspectJsonConfigurationFile(fileSystem, canonicalPath),
+      inspectJsonConfigurationFile(fileSystem, legacyPath)
+    ]);
+    const result = {
+      fileName: relativePath,
+      canonicalStatus: canonicalState.status,
+      legacyStatus: legacyState.status,
+      action: 'none',
       conflict: false,
-      completedAt: resolveNow(options).toISOString()
-    });
-  } catch (error) {
-    for (const targetPath of copied) {
-      await fileSystem.rm(targetPath, { force: true }).catch(() => {});
+      sourceSha256: legacyState.hash,
+      targetSha256: canonicalState.hash,
+      completedAt
+    };
+
+    if (canonicalState.status === 'valid') {
+      result.action = 'preserved_canonical';
+      result.conflict = legacyState.status === 'valid'
+        && canonicalState.hash !== legacyState.hash;
+      if (result.conflict) {
+        warnings.push({
+          code: 'runtime_configuration_migration_conflict',
+          message: `${relativePath} 的正式配置与旧配置不同，已保留正式配置。`
+        });
+      }
+    } else if (canonicalState.status === 'missing' && legacyState.status === 'valid') {
+      await copyFileAtomically(fileSystem, legacyPath, canonicalPath);
+      const migratedState = await inspectJsonConfigurationFile(fileSystem, canonicalPath);
+      if (migratedState.status !== 'valid' || migratedState.hash !== legacyState.hash) {
+        throw new Error(`运行配置迁移校验失败：${relativePath}`);
+      }
+      result.canonicalStatus = migratedState.status;
+      result.targetSha256 = migratedState.hash;
+      result.action = 'migrated_from_documents';
+      migratedCount += 1;
+    } else if (canonicalState.status === 'corrupt') {
+      result.action = 'blocked_canonical_corrupt';
+      warnings.push({
+        code: 'runtime_configuration_canonical_corrupt',
+        message: `${relativePath} 的正式配置损坏，已拒绝使用旧配置覆盖。`
+      });
+    } else if (legacyState.status === 'corrupt') {
+      result.action = 'blocked_legacy_corrupt';
+      warnings.push({
+        code: 'runtime_configuration_legacy_corrupt',
+        message: `${relativePath} 的旧配置损坏，未执行迁移。`
+      });
+    } else {
+      result.action = 'not_present';
     }
-    throw error;
+    fileResults[relativePath] = result;
   }
-  return { migratedFrom: 'documents', validationWarnings: [] };
+  const migratedFrom = migratedCount > 0 || marker?.migratedFrom === 'documents'
+    ? 'documents'
+    : '';
+  await writeJsonAtomically(fileSystem, markerPath, {
+    schemaVersion: 2,
+    status: warnings.length > 0 ? 'completed_with_warnings' : 'completed',
+    migratedFrom,
+    upgradedFromSchemaVersion: Number(marker?.schemaVersion) === 1 ? 1 : 0,
+    fileResults,
+    completedAt
+  });
+  return { migratedFrom, validationWarnings: warnings };
 }
 
 function getRuntimeConfigurationPaths(paths) {
@@ -203,6 +215,29 @@ async function existingFiles(fileSystem, filePaths) {
     }
   }
   return result;
+}
+
+async function inspectJsonConfigurationFile(fileSystem, filePath) {
+  let content;
+  try {
+    content = await fileSystem.readFile(filePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { status: 'missing', hash: '' };
+    throw error;
+  }
+  try {
+    const parsed = JSON.parse(content.toString('utf8'));
+    if (!parsed || typeof parsed !== 'object') throw new Error('invalid_json_root');
+    return {
+      status: 'valid',
+      hash: crypto.createHash('sha256').update(content).digest('hex')
+    };
+  } catch {
+    return {
+      status: 'corrupt',
+      hash: crypto.createHash('sha256').update(content).digest('hex')
+    };
+  }
 }
 
 async function configurationSetsDiffer(fileSystem, leftPaths, rightPaths) {

@@ -374,7 +374,14 @@ function normalizeLedgerRow(input = {}) {
     archiveSha256: normalizeText(input.archiveSha256),
     transactionId: normalizeText(input.transactionId),
     watermarkTemplateType: normalizeText(input.watermarkTemplateType),
-    processingMode: normalizeText(input.processingMode)
+    processingMode: normalizeText(input.processingMode),
+    vehiclePlate: normalizeText(input.vehiclePlate),
+    violationType: normalizeText(input.violationType),
+    constructionUnitId: normalizeText(input.constructionUnitId),
+    constructionUnitName: normalizeText(input.constructionUnitName),
+    constructionUnitOriginalText: normalizeText(input.constructionUnitOriginalText),
+    constructionUnitConfirmed: normalizeText(input.constructionUnitConfirmed),
+    constructionUnitSource: normalizeText(input.constructionUnitSource)
   };
 }
 

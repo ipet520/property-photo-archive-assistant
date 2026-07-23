@@ -7,25 +7,28 @@ export function rebuildSmartSortResult({
   photos = [],
   sourceCanonicalByPhotoId = {},
   effectiveArchiveInfoByPhotoId = {},
-  previousSmartSortResult = null
+  previousSmartSortResult = null,
+  includePhotoIds = []
 } = {}) {
   const previousGroups = Array.isArray(previousSmartSortResult?.groups)
     ? previousSmartSortResult.groups
     : [];
-  const previousGroupByPhotoId = new Map();
+  const previousGroupByKey = new Map();
   for (const group of previousGroups) {
-    for (const photoId of getGroupPhotoIds(group)) {
-      if (!previousGroupByPhotoId.has(photoId)) previousGroupByPhotoId.set(photoId, group);
-    }
+    const groupKey = cleanValue(group?.groupKey);
+    if (groupKey && !previousGroupByKey.has(groupKey)) previousGroupByKey.set(groupKey, group);
   }
+  const explicitlyIncluded = new Set(
+    (Array.isArray(includePhotoIds) ? includePhotoIds : []).map(cleanValue).filter(Boolean)
+  );
 
   const buckets = new Map();
   for (const photo of Array.isArray(photos) ? photos : []) {
     const photoId = cleanValue(photo?.id);
-    if (!photoId || !previousGroupByPhotoId.has(photoId)) continue;
     const effectiveInfo = effectiveArchiveInfoByPhotoId[photoId]
       || sourceCanonicalByPhotoId[photoId]
       || {};
+    if (!photoId || !isPhotoEligibleForSmartGroupRebuild(photo, explicitlyIncluded, effectiveInfo)) continue;
     const descriptor = normalizeSmartGroupDescriptor(
       buildSmartGroupDescriptor({
         photo,
@@ -43,7 +46,7 @@ export function rebuildSmartSortResult({
   }
 
   const groups = [...buckets.values()].map(({ descriptor, photoIds }) => {
-    const oldGroup = previousGroupByPhotoId.get(photoIds[0]) || {};
+    const oldGroup = previousGroupByKey.get(descriptor.groupKey) || {};
     return {
       ...oldGroup,
       id: `smart-group-${hashKey(descriptor.groupKey)}`,
@@ -70,6 +73,37 @@ export function rebuildSmartSortResult({
   };
 }
 
+export function isPhotoEligibleForSmartGroupRebuild(
+  photo = {},
+  explicitlyIncluded = new Set(),
+  effectiveInfo = {}
+) {
+  const photoId = cleanValue(photo?.id);
+  if (!photoId) return false;
+  const sortStatus = cleanValue(photo.sortStatus);
+  const smartSortStatus = cleanValue(photo.smartSortStatus);
+  if (
+    ['ignored', 'archived', 'archiving'].includes(sortStatus)
+    || photo?.archiveResult?.status === '归档成功'
+    || photo?.archiveResult?.success === true
+    || ['filtered_unwatermarked', 'watermark_unknown'].includes(cleanValue(photo.selectedSourceStatus))
+    || ['unwatermarked', 'watermark_unknown'].includes(cleanValue(photo.watermarkStatus))
+    || smartSortStatus === 'failed'
+  ) {
+    return false;
+  }
+  const fileHealthStatus = cleanValue(photo?.fileHealth?.healthStatus);
+  const fileIsHealthy = photo.originalMissing !== true && (
+    !fileHealthStatus
+    || ['healthy', 'fingerprint_unknown'].includes(fileHealthStatus)
+  );
+  const completeMarkiPlatformData = cleanValue(photo.sourceType) === 'marki_api'
+    && hasCompleteBusinessGroupingData(effectiveInfo);
+  if (!fileIsHealthy && !completeMarkiPlatformData) return false;
+  if (explicitlyIncluded.has(photoId)) return true;
+  return ['completed', 'needs_completion'].includes(smartSortStatus);
+}
+
 export function migrateGroupDraftsByGroupKey(
   previousSmartSortResult = null,
   nextSmartSortResult = null,
@@ -90,15 +124,17 @@ export function migrateGroupDraftsByGroupKey(
   );
 }
 
-function getGroupPhotoIds(group = {}) {
-  const values = new Set((Array.isArray(group.photoIds) ? group.photoIds : []).map(cleanValue).filter(Boolean));
-  for (const key of ['photos', 'items', 'groupPhotos', 'photoList']) {
-    for (const item of Array.isArray(group[key]) ? group[key] : []) {
-      const photoId = cleanValue(item?.photoId || item?.id);
-      if (photoId) values.add(photoId);
-    }
-  }
-  return [...values];
+function hasCompleteBusinessGroupingData(value = {}) {
+  const template = cleanValue(value.watermarkTemplateType);
+  return Boolean(
+    cleanValue(value.date)
+    && cleanValue(value.projectId || value.projectName || value.project)
+    && cleanValue(value.archiveCategory || value.watermarkCategory)
+    && (
+      template === 'time_location'
+      || cleanValue(value.workContent || value.violationType)
+    )
+  );
 }
 
 function hashKey(value) {

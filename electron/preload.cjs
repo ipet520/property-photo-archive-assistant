@@ -86,14 +86,6 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
     consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)
   },
-  smartSort: {
-    generateGroups: (input) => ipcRenderer.invoke('smartSort:generateGroups', input),
-    getGroupingResult: () => ipcRenderer.invoke('smartSort:getGroupingResult'),
-    listGroups: () => ipcRenderer.invoke('smartSort:listGroups'),
-    getGroup: (id) => ipcRenderer.invoke('smartSort:getGroup', id),
-    updateGroupStatus: (id, status) => ipcRenderer.invoke('smartSort:updateGroupStatus', id, status),
-    clearGroups: () => ipcRenderer.invoke('smartSort:clearGroups')
-  },
   loadConfigs: () => ipcRenderer.invoke('configs:load'),
   loadUserConfigs: () => ipcRenderer.invoke('configs:loadUserConfigs'),
   saveUserConfig: (configName, data) => ipcRenderer.invoke('configs:saveUserConfig', configName, data),

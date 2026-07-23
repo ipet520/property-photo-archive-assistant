@@ -377,7 +377,9 @@ async function markMissingOriginalPhotos(workspace, fileSystem, options = {}) {
     try {
       fileHealth = await inspectFile(photo, photo.sha256, {
         fs: fileSystem,
-        ...(options.createReadStream ? { createReadStream: options.createReadStream } : {})
+        ...(options.createReadStream ? { createReadStream: options.createReadStream } : {}),
+        ...(options.decodeImage ? { decodeImage: options.decodeImage } : {}),
+        ...(options.maxDecodeBytes ? { maxDecodeBytes: options.maxDecodeBytes } : {})
       });
     } catch {
       fileHealth = {

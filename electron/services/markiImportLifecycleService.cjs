@@ -33,6 +33,7 @@ const ITEM_STATUSES = new Set([
   'downloaded',
   'append_pending',
   'imported_active',
+  'workspace_file_repairable',
   'failed_retryable',
   'removed_reimportable',
   'archived_locked'
@@ -50,6 +51,7 @@ const ACTIVE_BATCH_STATUSES = new Set([
   'appending'
 ]);
 const RETRYABLE_ITEM_STATUSES = new Set([
+  'workspace_file_repairable',
   'failed_retryable',
   'removed_reimportable'
 ]);
@@ -220,7 +222,7 @@ async function completeMarkiImportLifecycleBatch(userDataPath, batchId, options 
       }
       return {
         ...item,
-        status: workspaceState.archived ? 'archived_locked' : 'imported_active',
+        status: workspaceState.sourceStatus,
         photoId: workspaceState.photoId,
         code: '',
         message: '',
@@ -531,7 +533,7 @@ async function resolveMarkiImportSourceStatuses({
   for (const sourceKey of sourceKeys) {
     const active = activeBySourceKey.get(sourceKey);
     if (active) {
-      bySourceKey[sourceKey] = active.archived ? 'archived_locked' : 'imported_active';
+      bySourceKey[sourceKey] = active.sourceStatus;
       continue;
     }
     const lifecycleState = lifecycleBySourceKey.get(sourceKey);
@@ -660,7 +662,8 @@ function buildSafeRecord(record) {
 function countRecordItems(items, querySummary = {}) {
   const count = (statuses) => items.filter((item) => statuses.has(item.status)).length;
   return {
-    filteredCount: normalizeCount(querySummary.unwatermarkedCount),
+    filteredCount: normalizeCount(querySummary.unwatermarkedCount)
+      + normalizeCount(querySummary.watermarkUnknownCount),
     duplicateCount: normalizeCount(querySummary.duplicateCount),
     downloadedCount: count(new Set(['downloaded', 'append_pending', 'imported_active', 'archived_locked'])),
     appendedCount: count(new Set(['imported_active', 'archived_locked'])),
@@ -679,7 +682,7 @@ function reconcileRecord(record, activeBySourceKey) {
       if (active) {
         return {
           ...item,
-          status: active.archived ? 'archived_locked' : 'imported_active',
+          status: active.sourceStatus,
           photoId: active.photoId
         };
       }
@@ -864,6 +867,7 @@ function normalizeQuerySummary(input = {}) {
     loadedCount: normalizeCount(input.loadedCount),
     selectedCount: normalizeCount(input.selectedCount),
     unwatermarkedCount: normalizeCount(input.unwatermarkedCount),
+    watermarkUnknownCount: normalizeCount(input.watermarkUnknownCount),
     duplicateCount: normalizeCount(input.duplicateCount)
   };
 }
@@ -879,12 +883,66 @@ function getWorkspaceSourceState(snapshotResult) {
   for (const photo of snapshotResult.snapshot?.workspace?.photos || []) {
     const sourceKey = String(photo.sourceKey || '');
     if (!sourceKey) continue;
-    result.set(sourceKey, {
-      photoId: String(photo.id || ''),
-      archived: isArchivedPhoto(photo)
-    });
+    result.set(sourceKey, resolveWorkspaceSourceOccupancy(photo));
   }
   return result;
+}
+
+function resolveWorkspaceSourceOccupancy(photo = {}) {
+  const photoId = String(photo.id || '');
+  if (!photoId || photo.sourceType !== 'marki_api' || !String(photo.sourceKey || '').trim()) {
+    return {
+      photoId,
+      occupancy: 'absent',
+      sourceStatus: 'unavailable'
+    };
+  }
+  if (isArchivedPhoto(photo)) {
+    return {
+      photoId,
+      occupancy: 'archived_locked',
+      sourceStatus: 'archived_locked'
+    };
+  }
+  if (photo.originalMissing === true || photo.fileHealth?.exists === false) {
+    return {
+      photoId,
+      occupancy: 'repairable_missing',
+      sourceStatus: 'workspace_file_repairable'
+    };
+  }
+  const healthStatus = String(photo.fileHealth?.healthStatus || '').trim();
+  if ([
+    'missing',
+    'not_file',
+    'unreadable',
+    'empty',
+    'too_large',
+    'unsupported_format',
+    'decode_failed',
+    'fingerprint_changed'
+  ].includes(healthStatus)) {
+    return {
+      photoId,
+      occupancy: healthStatus === 'missing' ? 'repairable_missing' : 'repairable_corrupt',
+      sourceStatus: 'workspace_file_repairable'
+    };
+  }
+  if (
+    healthStatus
+    && !['healthy', 'fingerprint_unknown'].includes(healthStatus)
+  ) {
+    return {
+      photoId,
+      occupancy: 'unavailable',
+      sourceStatus: 'unavailable'
+    };
+  }
+  return {
+    photoId,
+    occupancy: 'healthy_active',
+    sourceStatus: 'imported_active'
+  };
 }
 
 function isArchivedPhoto(photo) {
@@ -1034,6 +1092,7 @@ module.exports = {
   recoverMarkiImportLifecycle,
   removeSourcesFromWorkspace,
   resolveMarkiImportSourceStatuses,
+  resolveWorkspaceSourceOccupancy,
   settleMarkiImportLifecycleDownloads,
   undoMarkiImportLifecycleBatch
 };

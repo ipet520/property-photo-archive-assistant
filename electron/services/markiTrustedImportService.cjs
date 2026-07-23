@@ -74,6 +74,31 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
     reservedSourceKeys = effectiveItems.map((item) => item.sourceKey);
     reserveSourceKeys(task.taskId, reservedSourceKeys);
 
+    batchId = batchId || `marki-import-${dependencies.randomUUID()}`;
+    await dependencies.beginLifecycleBatch(
+      normalized.userDataPath,
+      {
+        batchId,
+        querySummary: {
+          ...task.querySummary,
+          watermarkFilter: normalized.request.watermarkFilter,
+          importStatusFilter: normalized.request.importStatusFilter,
+          duplicateCount: task.selectionTokens.length - effectiveItems.length
+        },
+        items: effectiveItems.map((item) => ({
+          sourceKey: item.sourceKey,
+          displayId: resolveSafeDisplayId(item, task.items),
+          markName: item.markName
+        }))
+      },
+      options.lifecycleOptions || {}
+    );
+    await dependencies.markLifecycleDownloading(
+      normalized.userDataPath,
+      batchId,
+      options.lifecycleOptions || {}
+    );
+
     const downloadAttempts = await mapWithConcurrency(
       effectiveItems,
       MAX_CONCURRENT_DOWNLOADS,
@@ -88,16 +113,51 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
             },
             {
               ...(options.downloadOptions || {}),
-              allowImportedRedownload: ['removed_reimportable', 'failed_retryable']
+              allowImportedRedownload: [
+                'removed_reimportable',
+                'failed_retryable',
+                'workspace_file_repairable'
+              ]
                 .includes(item.selectedSourceStatus)
             }
           );
+          await dependencies.settleLifecycleDownloads(
+            normalized.userDataPath,
+            {
+              batchId,
+              items: [{
+                sourceKey: item.sourceKey,
+                success: true,
+                code: '',
+                message: ''
+              }]
+            },
+            options.lifecycleOptions || {}
+          );
           return { success: true, item, download };
         } catch (error) {
+          const safeFailure = toSafeFailure(
+            error,
+            'marki_photo_download_failed',
+            '马克照片下载失败，请重试。'
+          );
+          await dependencies.settleLifecycleDownloads(
+            normalized.userDataPath,
+            {
+              batchId,
+              items: [{
+                sourceKey: item.sourceKey,
+                success: false,
+                code: safeFailure.code,
+                message: safeFailure.message
+              }]
+            },
+            options.lifecycleOptions || {}
+          );
           return {
             success: false,
             item,
-            error: toSafeFailure(error, 'marki_photo_download_failed', '马克照片下载失败，请重试。')
+            error: safeFailure
           };
         }
       }
@@ -130,44 +190,6 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
         }))
       });
     }
-
-    batchId = batchId || `marki-import-${dependencies.randomUUID()}`;
-    await dependencies.beginLifecycleBatch(
-      normalized.userDataPath,
-      {
-        batchId,
-        querySummary: {
-          ...task.querySummary,
-          watermarkFilter: normalized.request.watermarkFilter,
-          importStatusFilter: normalized.request.importStatusFilter,
-          duplicateCount: task.selectionTokens.length - effectiveItems.length
-        },
-        items: effectiveItems.map((item) => ({
-          sourceKey: item.sourceKey,
-          displayId: resolveSafeDisplayId(item, task.items),
-          markName: item.markName
-        }))
-      },
-      options.lifecycleOptions || {}
-    );
-    await dependencies.markLifecycleDownloading(
-      normalized.userDataPath,
-      batchId,
-      options.lifecycleOptions || {}
-    );
-    await dependencies.settleLifecycleDownloads(
-      normalized.userDataPath,
-      {
-        batchId,
-        items: downloadAttempts.map((attempt) => ({
-          sourceKey: attempt.item.sourceKey,
-          success: true,
-          code: '',
-          message: ''
-        }))
-      },
-      options.lifecycleOptions || {}
-    );
 
     const importItems = downloadAttempts.map(({ item, download }) => ({
       moment: item.moment,
@@ -445,7 +467,7 @@ async function resolveEffectiveItems(task, input, dependencies) {
     const selectedSourceStatus = statusBySourceKey[item.sourceKey] || 'discovered';
     const currentItem = { ...item, selectedSourceStatus };
     if (!matchesTrustedImportFilters(currentItem, input.request)) return [];
-    return ['discovered', 'removed_reimportable', 'failed_retryable']
+    return ['discovered', 'removed_reimportable', 'failed_retryable', 'workspace_file_repairable']
       .includes(selectedSourceStatus)
       ? [currentItem]
       : [];
@@ -453,10 +475,10 @@ async function resolveEffectiveItems(task, input, dependencies) {
 }
 
 function matchesTrustedImportFilters(item, request) {
-  if (item.isWatermarked !== true) {
+  if (item.watermarkStatus !== 'watermarked') {
     throw new MarkiTrustedImportError(
-      'marki_photo_import_unwatermarked_rejected',
-      '无水印照片仅供查看，不能导入。'
+      'marki_photo_import_watermark_unconfirmed',
+      '只有已确认有水印的照片可以导入。'
     );
   }
   const watermarkFilter = request.watermarkFilter;

@@ -25,7 +25,14 @@ const LEDGER_HEADERS = [
   '归档文件SHA-256',
   '归档事务ID',
   '水印模板',
-  '识别处理方式'
+  '识别处理方式',
+  '车牌号码',
+  '违停类型',
+  '施工单位ID',
+  '施工单位',
+  '施工单位原始文本',
+  '施工单位已确认',
+  '施工单位来源'
 ];
 
 const LEDGER_HEADER_ALIASES = {
@@ -48,7 +55,14 @@ const LEDGER_HEADER_ALIASES = {
   '归档文件SHA-256': ['归档文件SHA-256', 'archiveSha256'],
   归档事务ID: ['归档事务ID', 'transactionId'],
   水印模板: ['水印模板', 'watermarkTemplateType'],
-  识别处理方式: ['识别处理方式', 'processingMode']
+  识别处理方式: ['识别处理方式', 'processingMode'],
+  车牌号码: ['车牌号码', 'vehiclePlate'],
+  违停类型: ['违停类型', 'violationType'],
+  施工单位ID: ['施工单位ID', 'constructionUnitId'],
+  施工单位: ['施工单位', 'constructionUnitName'],
+  施工单位原始文本: ['施工单位原始文本', 'constructionUnitOriginalText'],
+  施工单位已确认: ['施工单位已确认', 'constructionUnitConfirmed'],
+  施工单位来源: ['施工单位来源', 'constructionUnitSource']
 };
 const LEDGER_SWAP_PREFIX = '.photo-ledger-swap-';
 const ledgerWriteQueues = new Map();
@@ -344,7 +358,14 @@ function toLedgerDataRow(item) {
     item.archiveSha256 || item.targetSha256,
     item.transactionId,
     item.watermarkTemplateType,
-    item.processingMode
+    item.processingMode,
+    item.vehiclePlate,
+    item.violationType,
+    item.constructionUnitId,
+    item.constructionUnitName,
+    item.constructionUnitOriginalText,
+    item.constructionUnitConfirmed,
+    item.constructionUnitSource
   ];
 }
 
