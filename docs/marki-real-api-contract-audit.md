@@ -422,3 +422,115 @@ Git 仅包含本报告和独立审计脚本。原始响应、照片、凭据、�
 普通 Node 阻塞的真实原因不是“未配置”，而是普通 Node 不提供 Electron `safeStorage`，且独立脚本入口没有完整复现开发版 Electron 的项目身份与 Chromium userData 初始化。最终审计通过一次性 Electron preload 以真实项目身份运行，并精确阻止生产 `electron/main.cjs`、窗口和业务服务启动。
 
 凭据与隐私检查：通过。组织 KEY 和完整签名 URL 从未输出到终端、脱敏摘要、报告或 Git 差异。
+
+## 17. 开放接口 needMark 能力验证
+
+### 背景与范围
+
+用户通过浏览器抓包确认，Marki 管理后台内部接口使用：
+
+- `needMark=0`：所有照片；
+- `needMark=1`：有水印照片；
+- `needMark=2`：无水印照片。
+
+本节不推定内部接口与开放接口共享参数契约，而是直接验证开放接口
+`POST /marki/moment`。
+
+测试从上一轮真实证据中选择一组高置信双文件候选，并固定：
+
+- 同一个 teamId；
+- 同一个 uid；
+- 北京时间 `2026-07-23 13:40:39` 至 `2026-07-23 13:50:39`；
+- `momType=1`；
+- 每组上限 200 条；
+- 每组独立维护自己的 `next`；
+- 不下载新照片。
+
+teamId、uid 和 moment.id 在证据中只保存审计作用域哈希。
+
+### 四组请求
+
+| 组 | 请求差异 | 调用次数 | HTTP/API code | 记录数 | hasMore | 是否截断 |
+| --- | --- | ---: | --- | ---: | --- | --- |
+| A | 不传 `needMark` | 1 | 200 / 0 | 2 | false | 否 |
+| B | `needMark=0` | 1 | 200 / 0 | 2 | false | 否 |
+| C | `needMark=1` | 1 | 200 / 0 | 2 | false | 否 |
+| D | `needMark=2` | 1 | 200 / 0 | 2 | false | 否 |
+
+四组各自只需一页，因此没有后续 cursor，但分页状态和 cursor 容器彼此独立。
+
+### 脱敏 ID 集合
+
+四组返回的完整 ID 集合均为：
+
+```text
+hash:e4a618fe4dea53c6
+hash:aa0d5ee6a840f4e3
+```
+
+集合关系：
+
+- 不传参数 = `needMark=0`：true；
+- 不传参数 = `needMark=1`：true；
+- 不传参数 = `needMark=2`：true；
+- `needMark=0` = `needMark=1`：true；
+- `needMark=0` = `needMark=2`：true；
+- `needMark=1` = `needMark=2`：true。
+
+`needMark=1` 与 `needMark=2`：
+
+- 交集数量：2；
+- 是否互斥：false；
+- 并集是否等于不传参数集合：true；
+- 并集是否等于 `needMark=0` 集合：true。
+
+并集相等不代表筛选成功，因为两个子集合本身都等于全集。
+
+### 已知双文件候选分布
+
+已知候选 A/B 具有：
+
+- postTime 差值 0；
+- uid 相同；
+- teamId 相同；
+- content 相同；
+- markName 相同；
+- 两个不同 moment.id。
+
+分布结果：
+
+| 请求组 | 候选 A | 候选 B |
+| --- | --- | --- |
+| 不传 `needMark` | 返回 | 返回 |
+| `needMark=0` | 返回 | 返回 |
+| `needMark=1` | 返回 | 返回 |
+| `needMark=2` | 返回 | 返回 |
+
+`needMark=1` 没有只返回其中一侧，`needMark=2` 也没有只返回另一侧。
+
+### 结论
+
+固定结论等级：**C. 被静默忽略**。
+
+证据：
+
+- 四组均返回 HTTP 200、API code 0；
+- 四组完整 ID 集合完全相同；
+- 结果未截断；
+- 时间范围真实包含上一轮已验证的双文件候选；
+- `needMark=1/2` 都返回候选两侧。
+
+置信等级：高。样本范围为一个团队、一个人员、一个 10 分钟窗口、2 个已知候选记录。
+
+是否足以进入正式产品实现：
+
+- **不足以将 `needMark` 加入开放接口生产请求**；
+- **足以明确禁止把后台内部接口参数直接复用到开放接口**；
+- 产品仍应把模板、图片版本和导入生命周期拆成三个维度；
+- 图片版本筛选仍需主进程可信数据、受控预览或人工确认，不能依赖开放接口 `needMark`。
+
+补充证据文件：
+
+`C:\Users\ADMINI~1\AppData\Local\Temp\property-photo-marki-contract-audit-2026-07-26T03-06-19-884Z-1ccbcb97\need-mark-sanitized.json`
+
+本次新增真实调用仅为 4 次 `/marki/moment` POST；新增照片下载数为 0。未执行导入、OCR、工作台追加、归档或 Excel 写入。

@@ -700,7 +700,7 @@ function createRawApiClient({
   };
 }
 
-async function queryMomentRange(api, filters, metadataBudget) {
+async function queryMomentRange(api, filters, metadataBudget, options = {}) {
   const records = [];
   const seenCursors = new Set();
   let next = '';
@@ -718,10 +718,26 @@ async function queryMomentRange(api, filters, metadataBudget) {
       start: filters.start,
       end: filters.end,
       ...(next ? { next } : {}),
-      momType: 1
+      momType: 1,
+      ...(options.extraBody || {})
     };
     const result = await api.post(MOMENT_ENDPOINT, body);
-    assertSuccessfulPayload(result, 'moment_query');
+    const apiCode = Number(result?.payload?.code);
+    if (!result?.httpOk || apiCode !== 0) {
+      if (options.captureFailure) {
+        return {
+          records,
+          pageCount,
+          hasMore: false,
+          truncated: false,
+          failed: true,
+          httpStatus: result?.httpStatus ?? 'unknown',
+          apiCode: Number.isFinite(apiCode) ? apiCode : 'unknown',
+          traceId: String(result?.traceId || '')
+        };
+      }
+      assertSuccessfulPayload(result, 'moment_query');
+    }
     if (!firstPageResult) firstPageResult = result;
     const page = extractMoments(result.payload);
     const remaining = metadataBudget - records.length;
@@ -738,7 +754,236 @@ async function queryMomentRange(api, filters, metadataBudget) {
     records,
     pageCount,
     hasMore: hasMore && records.length < metadataBudget,
+    truncated: records.length >= metadataBudget && hasMore,
+    failed: false,
     firstPageResult
+  };
+}
+
+function areSetsEqual(left, right) {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
+function buildIdSet(records) {
+  return new Set(
+    records
+      .map((record) => String(record?.id ?? '').trim())
+      .filter(Boolean)
+  );
+}
+
+function buildNeedMarkRelations(groupResults) {
+  const byLabel = new Map(groupResults.map((entry) => [entry.label, entry]));
+  const sets = Object.fromEntries(
+    [...byLabel.entries()].map(([label, entry]) => [label, buildIdSet(entry.records)])
+  );
+  const markIntersection = new Set(
+    [...sets.need_mark_1].filter((value) => sets.need_mark_2.has(value))
+  );
+  const markUnion = new Set([...sets.need_mark_1, ...sets.need_mark_2]);
+  return {
+    omittedEqualsZero: areSetsEqual(sets.omitted, sets.need_mark_0),
+    omittedEqualsOne: areSetsEqual(sets.omitted, sets.need_mark_1),
+    omittedEqualsTwo: areSetsEqual(sets.omitted, sets.need_mark_2),
+    zeroEqualsOne: areSetsEqual(sets.need_mark_0, sets.need_mark_1),
+    zeroEqualsTwo: areSetsEqual(sets.need_mark_0, sets.need_mark_2),
+    oneEqualsTwo: areSetsEqual(sets.need_mark_1, sets.need_mark_2),
+    oneTwoIntersectionCount: markIntersection.size,
+    oneTwoDisjoint: markIntersection.size === 0,
+    oneTwoUnionEqualsOmitted: areSetsEqual(markUnion, sets.omitted),
+    oneTwoUnionEqualsZero: areSetsEqual(markUnion, sets.need_mark_0)
+  };
+}
+
+function classifyNeedMarkSupport(groupResults, relations, knownPair) {
+  const parameterGroups = groupResults.filter((entry) => entry.needMark !== null);
+  if (parameterGroups.some((entry) => entry.failed)) return 'D';
+  if (groupResults.some((entry) => entry.truncated)) return 'E';
+  if (
+    relations.omittedEqualsZero &&
+    relations.omittedEqualsOne &&
+    relations.omittedEqualsTwo
+  ) {
+    return 'C';
+  }
+  const pairPresentInAll = groupResults.every(
+    (entry) => knownPair.every((id) => entry.idSet.has(id))
+  );
+  const pairSplitAcrossVariants =
+    knownPair.filter((id) => groupResults.find((entry) => entry.label === 'need_mark_1').idSet.has(id))
+      .length === 1 &&
+    knownPair.filter((id) => groupResults.find((entry) => entry.label === 'need_mark_2').idSet.has(id))
+      .length === 1;
+  if (
+    relations.oneTwoDisjoint &&
+    (relations.oneTwoUnionEqualsZero || relations.oneTwoUnionEqualsOmitted) &&
+    pairSplitAcrossVariants
+  ) {
+    return 'A';
+  }
+  const pairPresentInBaseline =
+    knownPair.every((id) =>
+      groupResults.find((entry) => entry.label === 'omitted').idSet.has(id)
+    ) &&
+    knownPair.every((id) =>
+      groupResults.find((entry) => entry.label === 'need_mark_0').idSet.has(id)
+    );
+  if (!pairPresentInBaseline && !pairPresentInAll) return 'E';
+  return 'B';
+}
+
+async function loadKnownPairForNeedMark(evidenceDirectory) {
+  const rawDirectory = path.join(evidenceDirectory, 'raw-responses');
+  const names = (await fs.readdir(rawDirectory))
+    .filter((name) => /^request-\d+\.json$/.test(name))
+    .sort();
+  const records = [];
+  for (const name of names) {
+    const evidence = JSON.parse(
+      await fs.readFile(path.join(rawDirectory, name), 'utf8')
+    );
+    if (evidence?.endpoint !== MOMENT_ENDPOINT) continue;
+    const requestKeys = Object.keys(evidence?.requestBody || {});
+    if (requestKeys.some((key) => !['teamId', 'uid', 'start', 'end', 'next', 'momType'].includes(key))) {
+      continue;
+    }
+    for (const record of extractMoments(evidence?.payload)) {
+      if (records.length >= MAX_METADATA_RECORDS) break;
+      records.push(record);
+    }
+    if (records.length >= MAX_METADATA_RECORDS) break;
+  }
+  const groups = new Map();
+  for (const record of records) {
+    const key = [
+      record?.uid,
+      record?.teamId,
+      record?.postTime,
+      record?.lng,
+      record?.lat
+    ].join('|');
+    const current = groups.get(key) || [];
+    current.push(record);
+    groups.set(key, current);
+  }
+  const candidate = [...groups.values()].find(
+    (group) =>
+      group.length === 2 &&
+      String(group[0]?.id ?? '') !== String(group[1]?.id ?? '') &&
+      String(group[0]?.url ?? '') !== String(group[1]?.url ?? '') &&
+      String(group[0]?.content ?? '') === String(group[1]?.content ?? '') &&
+      String(group[0]?.markName ?? '') === String(group[1]?.markName ?? '')
+  );
+  if (!candidate) {
+    throw new AuditError(
+      'known_pair_unavailable',
+      'Existing evidence has no usable high-confidence pair.'
+    );
+  }
+  const timestamp = parsePostTime(candidate[0].postTime);
+  if (!Number.isFinite(timestamp)) {
+    throw new AuditError('known_pair_time_invalid', 'Known pair time is invalid.');
+  }
+  return {
+    pair: candidate,
+    filters: {
+      teamId: candidate[0].teamId,
+      uid: candidate[0].uid,
+      start: formatUtc8DateTime(new Date(timestamp - 5 * 60 * 1000)),
+      end: formatUtc8DateTime(new Date(timestamp + 5 * 60 * 1000))
+    }
+  };
+}
+
+async function runNeedMarkAudit(api, evidenceDirectory, salt) {
+  const known = await loadKnownPairForNeedMark(evidenceDirectory);
+  const definitions = [
+    { label: 'omitted', needMark: null },
+    { label: 'need_mark_0', needMark: 0 },
+    { label: 'need_mark_1', needMark: 1 },
+    { label: 'need_mark_2', needMark: 2 }
+  ];
+  const groupResults = [];
+  for (const definition of definitions) {
+    activeAuditPhase = `need_mark_${definition.needMark ?? 'omitted'}`;
+    const beforeCount = api.getRequestCounts().total;
+    const query = await queryMomentRange(api, known.filters, MAX_METADATA_RECORDS, {
+      extraBody:
+        definition.needMark === null ? {} : { needMark: definition.needMark },
+      captureFailure: true
+    });
+    const idSet = buildIdSet(query.records);
+    groupResults.push({
+      ...definition,
+      ...query,
+      idSet,
+      callCount: api.getRequestCounts().total - beforeCount
+    });
+  }
+  const relations = buildNeedMarkRelations(groupResults);
+  const knownPairIds = known.pair.map((record) => String(record.id));
+  const classification = classifyNeedMarkSupport(
+    groupResults,
+    relations,
+    knownPairIds
+  );
+  const safeGroups = groupResults.map((entry) => ({
+    label: entry.label,
+    needMark: entry.needMark === null ? 'omitted' : entry.needMark,
+    callCount: entry.callCount,
+    recordCount: entry.records.length,
+    failed: entry.failed,
+    truncated: entry.truncated,
+    hasMoreAfterRead: entry.hasMore,
+    httpStatus: entry.failed ? entry.httpStatus : 200,
+    apiCode: entry.failed ? entry.apiCode : 0,
+    traceIdHash: entry.failed ? redactIdentifier(entry.traceId, salt) : 'not_applicable',
+    idHashes: [...entry.idSet].sort().map((id) => redactIdentifier(id, salt)),
+    knownPairPresence: knownPairIds.map((id, index) => ({
+      side: index === 0 ? 'A' : 'B',
+      present: entry.idSet.has(id)
+    }))
+  }));
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    electronVersion: String(process.versions.electron || ''),
+    query: {
+      teamIdHash: redactIdentifier(known.filters.teamId, salt),
+      uidHash: redactIdentifier(known.filters.uid, salt),
+      start: known.filters.start,
+      end: known.filters.end,
+      momType: 1,
+      maximumRecordsPerGroup: MAX_METADATA_RECORDS
+    },
+    groups: safeGroups,
+    relations,
+    knownPair: {
+      idHashes: knownPairIds.map((id) => redactIdentifier(id, salt)),
+      postTimeDeltaMs: Math.abs(
+        parsePostTime(known.pair[0].postTime) - parsePostTime(known.pair[1].postTime)
+      ),
+      uidSame: String(known.pair[0].uid) === String(known.pair[1].uid),
+      teamIdSame: String(known.pair[0].teamId) === String(known.pair[1].teamId),
+      contentSame: String(known.pair[0].content) === String(known.pair[1].content),
+      markNameSame: String(known.pair[0].markName) === String(known.pair[1].markName)
+    },
+    classification,
+    classificationMeaning: {
+      A: '已确认支持',
+      B: '疑似支持',
+      C: '被静默忽略',
+      D: '明确不支持',
+      E: '证据不足'
+    }[classification],
+    apiCalls: api.getRequestCounts(),
+    downloadsPerformed: 0,
+    privacy: {
+      credentialsPersistedInEvidence: false,
+      requestHeadersPersistedInEvidence: false,
+      fullUrlsInSanitizedSummary: false,
+      contentValuesInSanitizedSummary: false
+    }
   };
 }
 
@@ -987,15 +1232,17 @@ async function runRealAudit() {
   activeAuditPhase = 'create_evidence';
   const repositoryRoot = path.resolve(__dirname, '..');
   const supplementMembers = process.argv.includes('--supplement-members');
+  const auditNeedMark = process.argv.includes('--audit-need-mark');
+  const reuseExistingEvidence = supplementMembers || auditNeedMark;
   const requestedEvidenceDirectory = String(process.env.MARKI_AUDIT_BASE_EVIDENCE || '').trim();
-  const evidenceDirectory = supplementMembers
+  const evidenceDirectory = reuseExistingEvidence
     ? path.resolve(requestedEvidenceDirectory)
     : await createEvidenceDirectory(repositoryRoot);
-  if (supplementMembers) {
+  if (reuseExistingEvidence) {
     if (!requestedEvidenceDirectory) {
       throw new AuditError(
         'missing_evidence_directory',
-        'Member supplement requires an existing evidence directory.'
+        'Audit supplement requires an existing evidence directory.'
       );
     }
     ensureEvidenceOutsideRepository(evidenceDirectory, repositoryRoot);
@@ -1050,8 +1297,35 @@ async function runRealAudit() {
       evidenceDirectory,
       apiBaseUrl: MARKI_API_BASE_URL,
       buildSignature: buildMarkiPostSignature,
-      rawFilePrefix: supplementMembers ? 'member-supplement' : 'request'
+      rawFilePrefix: auditNeedMark
+        ? 'need-mark'
+        : supplementMembers
+          ? 'member-supplement'
+          : 'request'
     });
+
+    if (auditNeedMark) {
+      activeAuditPhase = 'need_mark_audit';
+      const needMarkSummary = await runNeedMarkAudit(api, evidenceDirectory, salt);
+      const summaryPath = path.join(evidenceDirectory, 'need-mark-sanitized.json');
+      await writeJson(summaryPath, needMarkSummary);
+      process.stdout.write(
+        `AUDIT_NEED_MARK_COMPLETE ${JSON.stringify({
+          evidenceDirectory,
+          summaryPath,
+          classification: needMarkSummary.classification,
+          classificationMeaning: needMarkSummary.classificationMeaning,
+          groupCounts: needMarkSummary.groups.map((entry) => ({
+            label: entry.label,
+            callCount: entry.callCount,
+            recordCount: entry.recordCount
+          })),
+          apiCalls: needMarkSummary.apiCalls
+        })}\n`
+      );
+      activeAuditPhase = 'complete';
+      return;
+    }
 
     if (supplementMembers) {
       activeAuditPhase = 'load_team_evidence';
@@ -1278,7 +1552,52 @@ async function runSelfCheck() {
   );
   assert.equal(ab.resultSetChanged, false);
   assert.equal(ab.assessment, '不支持或未证明支持');
-  process.stdout.write('SELF_CHECK_OK scenarios=6 assertions=18\n');
+  const makeNeedMarkGroup = (label, ids, options = {}) => ({
+    label,
+    needMark: label === 'omitted' ? null : Number(label.at(-1)),
+    records: ids.map((id) => ({ id })),
+    idSet: new Set(ids),
+    failed: Boolean(options.failed),
+    truncated: Boolean(options.truncated)
+  });
+  const ignoredGroups = [
+    makeNeedMarkGroup('omitted', ['a', 'b']),
+    makeNeedMarkGroup('need_mark_0', ['a', 'b']),
+    makeNeedMarkGroup('need_mark_1', ['a', 'b']),
+    makeNeedMarkGroup('need_mark_2', ['a', 'b'])
+  ];
+  const ignoredRelations = buildNeedMarkRelations(ignoredGroups);
+  assert.equal(ignoredRelations.omittedEqualsZero, true);
+  assert.equal(classifyNeedMarkSupport(ignoredGroups, ignoredRelations, ['a', 'b']), 'C');
+  const supportedGroups = [
+    makeNeedMarkGroup('omitted', ['a', 'b']),
+    makeNeedMarkGroup('need_mark_0', ['a', 'b']),
+    makeNeedMarkGroup('need_mark_1', ['a']),
+    makeNeedMarkGroup('need_mark_2', ['b'])
+  ];
+  const supportedRelations = buildNeedMarkRelations(supportedGroups);
+  assert.equal(supportedRelations.oneTwoDisjoint, true);
+  assert.equal(supportedRelations.oneTwoUnionEqualsZero, true);
+  assert.equal(classifyNeedMarkSupport(supportedGroups, supportedRelations, ['a', 'b']), 'A');
+  const rejectedGroups = supportedGroups.map((entry) => ({
+    ...entry,
+    failed: entry.label === 'need_mark_2'
+  }));
+  assert.equal(
+    classifyNeedMarkSupport(rejectedGroups, buildNeedMarkRelations(rejectedGroups), ['a', 'b']),
+    'D'
+  );
+  const changedGroups = [
+    makeNeedMarkGroup('omitted', ['a', 'b', 'c']),
+    makeNeedMarkGroup('need_mark_0', ['a', 'b', 'c']),
+    makeNeedMarkGroup('need_mark_1', ['a', 'c']),
+    makeNeedMarkGroup('need_mark_2', ['b', 'c'])
+  ];
+  assert.equal(
+    classifyNeedMarkSupport(changedGroups, buildNeedMarkRelations(changedGroups), ['a', 'b']),
+    'B'
+  );
+  process.stdout.write('SELF_CHECK_OK scenarios=10 assertions=25\n');
 }
 
 async function main() {
