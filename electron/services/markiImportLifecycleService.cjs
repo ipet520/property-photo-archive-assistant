@@ -554,7 +554,13 @@ async function resolveMarkiImportSourceStatuses({
       bySourceKey[sourceKey] = 'discovered';
     } else if (sourceRecord.importStatus === 'imported') {
       bySourceKey[sourceKey] = 'removed_reimportable';
-    } else if (['download_failed', 'downloading'].includes(sourceRecord.importStatus)) {
+    } else if ([
+      'download_failed',
+      'downloading',
+      'repair_required',
+      'repairing',
+      'repair_failed'
+    ].includes(sourceRecord.importStatus)) {
       bySourceKey[sourceKey] = 'failed_retryable';
     } else {
       bySourceKey[sourceKey] = 'discovered';

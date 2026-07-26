@@ -774,7 +774,13 @@ function createLegacySourceStatusResolver(checkSourceKeys) {
         const item = result?.bySourceKey?.[sourceKey];
         const status = String(item?.importStatus || '');
         if (status === 'imported') return [sourceKey, 'removed_reimportable'];
-        if (['download_failed', 'downloading'].includes(status)) {
+        if ([
+          'download_failed',
+          'downloading',
+          'repair_required',
+          'repairing',
+          'repair_failed'
+        ].includes(status)) {
           return [sourceKey, status === 'downloading' ? 'downloading' : 'failed_retryable'];
         }
         return [sourceKey, 'discovered'];

@@ -65,6 +65,7 @@ const {
   hasMarkiSourceKey,
   loadMarkiSourceManifest,
   loadMarkiSourceManifestForRecovery,
+  prepareMarkiSourceForRedownload,
   updateMarkiSourceImportStatus,
   upsertMarkiSourceRecords
 } = require('../electron/services/markiSourceManifestService.cjs');
@@ -153,6 +154,7 @@ async function main() {
     await checkMarkiImportTimeHelpers();
     await checkMarkiReadyBatchRefresh();
     await checkMarkiImportLifecycleClosure(path.join(temporaryRoot, 'marki-import-lifecycle'));
+    await checkSecondReviewBlockers(path.join(temporaryRoot, 'second-review-blockers'));
     await checkMarkiSourceManifest(path.join(temporaryRoot, 'marki-source'));
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
@@ -185,6 +187,729 @@ async function main() {
     (error) => error?.code === 'ENOENT',
     '核心自检结束后应清理系统临时目录'
   );
+}
+
+async function checkSecondReviewBlockers(root) {
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  const scenario = () => {
+    scenarioCount += 1;
+  };
+  const check = (condition, message) => {
+    assert.ok(condition, message);
+    assertionCount += 1;
+  };
+  const equal = (actual, expected, message) => {
+    assert.deepEqual(actual, expected, message);
+    assertionCount += 1;
+  };
+  await fs.mkdir(root, { recursive: true });
+
+  const repairDocuments = path.join(root, 'repair-documents');
+  const repairUserData = path.join(root, 'repair-user-data');
+  const repairInput = {
+    orgId: '12345',
+    momentId: 'repair-retry-001',
+    teamId: '10',
+    uid: '20',
+    postTime: 1784764800,
+    shootDate: '2026-07-23',
+    markName: '巡查检查工作记录',
+    url: 'https://mock.invalid/repair-retry-001.jpg'
+  };
+  const originalJpeg = createTestJpeg(4, 3);
+  const replacementJpeg = Buffer.from(originalJpeg);
+  replacementJpeg[12] ^= 0x01;
+  const decodeFourByThree = async () => ({ decodable: true, width: 4, height: 3 });
+  const initialDownload = await downloadMarkiPhoto(repairDocuments, repairInput, {
+    fetchImpl: async () => new Response(originalJpeg, { status: 200 }),
+    decodeImage: decodeFourByThree
+  });
+  const sourceKey = buildMarkiSourceKey(repairInput.orgId, repairInput.momentId);
+  const importedBeforeRepair = await getMarkiSourceRecordByKey(
+    repairDocuments,
+    repairInput.orgId,
+    sourceKey
+  );
+  const corruptOldFile = Buffer.from(originalJpeg);
+  corruptOldFile[13] ^= 0x01;
+  await fs.writeFile(initialDownload.localPath, corruptOldFile);
+  const repairRequired = await prepareMarkiSourceForRedownload(
+    repairDocuments,
+    repairInput.orgId,
+    sourceKey
+  );
+  scenario();
+  equal(repairRequired.importStatus, 'repair_required', '损坏 imported 文件必须进入 repair_required');
+  equal(
+    repairRequired.record.downloadInfo,
+    importedBeforeRepair.downloadInfo,
+    '进入修复状态必须完整保留旧 downloadInfo'
+  );
+
+  await assert.rejects(
+    () => retryMarkiPhotoDownload(repairDocuments, repairInput, {
+      fetchImpl: async () => new Response('', { status: 503 }),
+      decodeImage: decodeFourByThree
+    }),
+    (error) => error?.code === 'download_http_error',
+    '第一次修复下载失败必须返回受控下载错误'
+  );
+  assertionCount += 1;
+  const firstRepairFailure = await getMarkiSourceRecordByKey(
+    repairDocuments,
+    repairInput.orgId,
+    sourceKey
+  );
+  scenario();
+  equal(firstRepairFailure.importStatus, 'repair_failed', '修复下载失败必须进入 repair_failed');
+  equal(
+    firstRepairFailure.downloadInfo,
+    importedBeforeRepair.downloadInfo,
+    'repair_failed 必须跨重试保留旧下载身份'
+  );
+  equal(
+    await fs.readFile(initialDownload.localPath),
+    corruptOldFile,
+    '修复下载失败前不得移动或删除旧文件'
+  );
+
+  const repairableStatus = await resolveMarkiImportSourceStatuses({
+    documentsPath: repairDocuments,
+    userDataPath: repairUserData,
+    orgId: repairInput.orgId,
+    sourceKeys: [sourceKey]
+  }, {
+    loadSnapshot: async () => ({
+      success: true,
+      found: true,
+      snapshot: {
+        workspace: {
+          photos: [{
+            id: 'stable-repair-photo-id',
+            sourceType: 'marki_api',
+            sourceKey,
+            originalMissing: false,
+            fileHealth: { exists: true, healthStatus: 'fingerprint_changed' }
+          }]
+        }
+      }
+    }),
+    loadManifest: () => loadMarkiSourceManifest(repairDocuments, repairInput.orgId)
+  });
+  scenario();
+  equal(
+    repairableStatus.bySourceKey[sourceKey],
+    'workspace_file_repairable',
+    '进程重启后 repair_failed 工作池照片仍必须可修复'
+  );
+
+  const repairedDownload = await retryMarkiPhotoDownload(repairDocuments, repairInput, {
+    fetchImpl: async () => new Response(replacementJpeg, { status: 200 }),
+    decodeImage: decodeFourByThree
+  });
+  const repairedRecord = await getMarkiSourceRecordByKey(
+    repairDocuments,
+    repairInput.orgId,
+    sourceKey
+  );
+  scenario();
+  equal(repairedRecord.importStatus, 'imported', '修复重试成功必须恢复 imported');
+  check(repairedRecord.downloadInfo.sha256 !== importedBeforeRepair.downloadInfo.sha256, '修复成功必须保存新 SHA');
+  equal(await fs.readFile(repairedDownload.localPath), replacementJpeg, '修复成功必须原位安装新 JPG');
+  const repairedWorkspace = (await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiImportLifecycle.js')).href}?review=${Date.now()}`
+  )).prepareMarkiWorkspaceFileRepairs({
+    photos: [{
+      id: 'stable-repair-photo-id',
+      sourceType: 'marki_api',
+      sourceKey,
+      originalMissing: true,
+      sortStatus: 'assigned',
+      smartSortStatus: 'completed'
+    }],
+    recognitionResultsByPhoto: {
+      'stable-repair-photo-id': { platformBaseline: { project: '潇湘新区二期' } }
+    },
+    watermarkRecordsByPhoto: {
+      'stable-repair-photo-id': { projectText: '潇湘新区二期' }
+    },
+    archiveSuggestionsByPhoto: {
+      'stable-repair-photo-id': { status: 'confirmed' }
+    },
+    photoDraftByPhotoId: {
+      'stable-repair-photo-id': { remarks: '保留人工草稿' }
+    },
+    groupDraftByGroupId: {
+      'group-stable': { date: '2026-07-23' }
+    }
+  }, {
+    photos: [{
+      id: 'generated-repair-id',
+      sourceType: 'marki_api',
+      sourceKey,
+      originalPath: repairedDownload.localPath,
+      originalName: repairedDownload.fileName,
+      extension: '.jpg',
+      size: repairedDownload.size,
+      sha256: repairedDownload.sha256,
+      width: repairedDownload.width,
+      height: repairedDownload.height,
+      modifiedAt: repairedDownload.completedAt,
+      thumbnailPath: 'local-photo://repair',
+      previewUrl: 'local-photo://repair'
+    }]
+  });
+  equal(repairedWorkspace.workspace.photos[0].id, 'stable-repair-photo-id', '工作池修复必须保持 photoId');
+  equal(repairedWorkspace.workspace.photos[0].sortStatus, 'assigned', '工作池修复必须保持 sortStatus');
+  equal(repairedWorkspace.workspace.photos[0].smartSortStatus, 'completed', '工作池修复必须保持 smartSortStatus');
+  equal(
+    repairedWorkspace.workspace.photoDraftByPhotoId['stable-repair-photo-id'].remarks,
+    '保留人工草稿',
+    '工作池修复必须保持照片草稿且 OCR 调用为 0'
+  );
+
+  await fs.writeFile(repairedDownload.localPath, corruptOldFile);
+  await prepareMarkiSourceForRedownload(repairDocuments, repairInput.orgId, sourceKey);
+  await assert.rejects(
+    () => retryMarkiPhotoDownload(repairDocuments, repairInput, {
+      fetchImpl: async () => new Response(Buffer.from('not-jpeg'), { status: 200 }),
+      decodeImage: decodeFourByThree
+    }),
+    (error) => error?.code === 'invalid_jpeg_header',
+    '修复新文件校验失败必须拒绝安装'
+  );
+  assertionCount += 1;
+  equal(await fs.readFile(repairedDownload.localPath), corruptOldFile, '新文件校验失败必须保持旧文件原状');
+  equal(
+    (await getMarkiSourceRecordByKey(repairDocuments, repairInput.orgId, sourceKey)).importStatus,
+    'repair_failed',
+    '校验失败后必须继续保留 repair_failed 重试语义'
+  );
+
+  const {
+    mergeMarkiWorkbenchImportPackage
+  } = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiWorkbenchImport.js')).href}?review=${Date.now()}`
+  );
+  const {
+    mergeScannedLocalPhotoSubpool
+  } = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/unifiedPhotoPool.js')).href}?review=${Date.now()}`
+  );
+  const snapshotTools = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js')).href}?review=${Date.now()}`
+  );
+  const oldPhotos = Array.from({ length: 10 }, (_, index) => ({
+    id: `old-photo-${index + 1}`,
+    sourceType: 'local_file',
+    originalPath: `C:\\mock\\old-${index + 1}.jpg`,
+    originalName: `old-${index + 1}.jpg`,
+    extension: '.jpg',
+    size: 100 + index,
+    sha256: String(index + 1).padStart(64, '0'),
+    sortStatus: index === 0 ? 'previewed' : 'assigned',
+    smartSortStatus: 'completed',
+    previewInfo: index === 0 ? { status: '待归档' } : null
+  }));
+  const oldSmartSortResult = {
+    status: 'created',
+    photoCount: 10,
+    groupCount: 3,
+    groups: [
+      { id: 'group-1', photoIds: oldPhotos.slice(0, 4).map((photo) => photo.id) },
+      { id: 'group-2', photoIds: oldPhotos.slice(4, 7).map((photo) => photo.id) },
+      { id: 'group-3', photoIds: oldPhotos.slice(7).map((photo) => photo.id) }
+    ]
+  };
+  const oldPreviewPlan = {
+    schemaVersion: 1,
+    planId: 'a'.repeat(64),
+    createdAt: '2026-07-23T00:00:00.000Z',
+    archiveRoot: 'C:\\mock\\archive',
+    items: [{ photoId: oldPhotos[0].id }]
+  };
+  const oldWorkspace = {
+    photos: oldPhotos,
+    selectedIds: [oldPhotos[0].id],
+    activePhotoId: oldPhotos[0].id,
+    recognitionResultsByPhoto: Object.fromEntries(oldPhotos.map((photo) => [photo.id, { id: photo.id }])),
+    watermarkRecordsByPhoto: Object.fromEntries(oldPhotos.map((photo) => [photo.id, { id: photo.id }])),
+    archiveSuggestionsByPhoto: Object.fromEntries(oldPhotos.map((photo) => [photo.id, { id: photo.id }])),
+    photoDraftByPhotoId: { [oldPhotos[0].id]: { remarks: '旧照片草稿' } },
+    groupDraftByGroupId: { 'group-1': { date: '2026-07-23' } },
+    smartSortResult: oldSmartSortResult,
+    archivePreviewPlan: oldPreviewPlan,
+    smartSortViewMode: 'smartSortGroup',
+    activeSmartSortGroupId: 'group-1',
+    filter: 'pending_organize',
+    searchText: '旧筛选'
+  };
+  const markiPhoto = {
+    id: 'new-marki-photo',
+    sourceType: 'marki_api',
+    sourceKey: 'marki_api:12345:new-marki-photo',
+    originalPath: 'C:\\mock\\new-marki.jpg',
+    originalName: 'new-marki.jpg',
+    extension: '.jpg',
+    size: 500,
+    sha256: 'b'.repeat(64)
+  };
+  const markiMerged = mergeMarkiWorkbenchImportPackage(oldWorkspace, {
+    batchId: 'marki-import-review-append',
+    photos: [markiPhoto],
+    recognitionResultsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } },
+    watermarkRecordsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } },
+    archiveSuggestionsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } }
+  });
+  const markiWorkspace = snapshotTools.prepareWorkspaceAfterPhotoAppend({
+    workspace: { ...oldWorkspace, ...markiMerged },
+    addedPhotoIds: markiMerged.addedPhotoIds
+  });
+  scenario();
+  equal(markiWorkspace.photos.slice(0, 10), oldPhotos, 'Marki 追加必须完整保留旧照片对象和值');
+  equal(markiWorkspace.smartSortResult, oldSmartSortResult, 'Marki 追加必须保留旧 membership');
+  equal(markiWorkspace.groupDraftByGroupId, oldWorkspace.groupDraftByGroupId, 'Marki 追加必须保留组草稿');
+  equal(markiWorkspace.archivePreviewPlan, oldPreviewPlan, '无关 Marki 追加不得使 PreviewPlan 失效');
+  equal(markiWorkspace.activeSmartSortGroupId, 'group-1', 'Marki 追加必须保留当前分组');
+  equal(markiWorkspace.photos[10].sortStatus, 'unassigned', 'Marki 新照片必须从 unassigned 开始');
+  equal(markiWorkspace.photos[10].smartSortStatus, 'not_run', 'Marki 新照片必须从 not_run 开始');
+
+  const localMerged = mergeScannedLocalPhotoSubpool({
+    currentPhotos: markiWorkspace.photos,
+    scannedPhotos: [{
+      id: 'scan-id',
+      name: 'new-local.jpg',
+      path: 'C:\\mock\\new-local.jpg',
+      extension: '.jpg',
+      size: 600,
+      sha256: 'c'.repeat(64),
+      modifiedAt: '2026-07-23T01:00:00.000Z',
+      previewUrl: 'local-photo://new-local'
+    }],
+    recognitionResultsByPhoto: markiWorkspace.recognitionResultsByPhoto,
+    watermarkRecordsByPhoto: markiWorkspace.watermarkRecordsByPhoto,
+    archiveSuggestionsByPhoto: markiWorkspace.archiveSuggestionsByPhoto,
+    selectedIds: markiWorkspace.selectedIds,
+    activePhotoId: markiWorkspace.activePhotoId
+  });
+  const localWorkspace = snapshotTools.buildSortWorkspaceSnapshotWorkspace({
+    ...markiWorkspace,
+    ...localMerged
+  });
+  scenario();
+  equal(localWorkspace.photos.slice(0, 10), oldPhotos, '本地追加必须继续完整保留旧十张照片');
+  equal(localWorkspace.smartSortResult, oldSmartSortResult, '本地追加不得清空旧分组');
+  equal(localWorkspace.archivePreviewPlan, oldPreviewPlan, '本地追加不得清空旧预览计划');
+  equal(localWorkspace.photos.at(-1).sortStatus, 'unassigned', '本地新照片必须从 unassigned 开始');
+  equal(localWorkspace.photos.at(-1).smartSortStatus, 'not_run', '本地新照片必须从 not_run 开始');
+
+  const formTools = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortRightPanelState.js')).href}?review=${Date.now()}`
+  );
+  const configs = {
+    projects: ['潇湘新区二期'],
+    projectOptions: [{ id: 'project-x', name: '潇湘新区二期' }],
+    watermarkCategories: {
+      机动车违规管理: { items: ['占用消防通道', '随意停放阻碍通行'] },
+      工程类工作记录: { items: ['电梯维修维保'] },
+      时间地点水印: { items: [] },
+      巡查检查工作记录: { items: ['秩序巡查'] }
+    },
+    constructionUnits: [
+      { id: 'unit-a', name: '甲施工单位', enabled: true, projectIds: ['project-x'] },
+      { id: 'unit-b', name: '乙施工单位', enabled: true, projectIds: ['project-x'] }
+    ]
+  };
+  const batchPatch = formTools.buildBatchArchiveFormPatch({
+    date: '2026-07-24',
+    project: '潇湘新区二期',
+    projectName: '潇湘新区二期',
+    projectId: 'project-x',
+    projectOriginalText: '潇湘新区二期',
+    projectConfirmed: true,
+    projectSource: 'manual',
+    watermarkTemplateType: 'vehicle_violation',
+    watermarkCategory: '机动车违规管理',
+    archiveCategory: '机动车违规管理',
+    workContent: '占用消防通道'
+  }, { editedFields: ['date', 'project'] });
+  const formPhotos = [
+    { id: 'vehicle-a' },
+    { id: 'vehicle-b' },
+    { id: 'engineering-a' },
+    { id: 'engineering-b' },
+    { id: 'time-location-a' },
+    { id: 'standard-a' },
+    { id: 'standard-b' }
+  ];
+  const effectiveById = {
+    'vehicle-a': makeEffectiveArchiveInfo('vehicle_violation', '机动车违规管理', '占用消防通道', {
+      vehiclePlate: '云D12345',
+      violationType: '占用消防通道',
+      location: 'A区',
+      remarks: '车辆A'
+    }),
+    'vehicle-b': makeEffectiveArchiveInfo('vehicle_violation', '机动车违规管理', '随意停放阻碍通行', {
+      vehiclePlate: '云D67890',
+      violationType: '随意停放阻碍通行',
+      location: 'B区',
+      remarks: '车辆B'
+    }),
+    'engineering-a': makeEffectiveArchiveInfo('standard_work_record', '工程类工作记录', '电梯维修维保', {
+      constructionUnitId: 'unit-a',
+      constructionUnitName: '甲施工单位',
+      constructionUnitOriginalText: '甲施工单位',
+      constructionUnitConfirmed: true,
+      constructionUnitSource: 'watermark_match'
+    }),
+    'engineering-b': makeEffectiveArchiveInfo('standard_work_record', '工程类工作记录', '电梯维修维保', {
+      constructionUnitId: 'unit-b',
+      constructionUnitName: '乙施工单位',
+      constructionUnitOriginalText: '乙施工单位原文',
+      constructionUnitConfirmed: true,
+      constructionUnitSource: 'manual'
+    }),
+    'time-location-a': makeEffectiveArchiveInfo('time_location', '时间地点水印', 'not_applicable', {
+      location: '地下车库'
+    }),
+    'standard-a': makeEffectiveArchiveInfo('standard_work_record', '巡查检查工作记录', '秩序巡查', {
+      location: '东门',
+      remarks: '夜班巡查'
+    }),
+    'standard-b': makeEffectiveArchiveInfo('standard_work_record', '巡查检查工作记录', '秩序巡查', {
+      location: '西门',
+      remarks: '白班巡查'
+    })
+  };
+  const perPhotoForms = formTools.buildPerPhotoArchivePreviewInputs({
+    photos: formPhotos,
+    effectiveArchiveInfoByPhotoId: effectiveById,
+    batchPatch,
+    configs
+  });
+  const formsById = new Map(perPhotoForms.map((item) => [item.photo.id, item]));
+  scenario();
+  equal(formsById.get('vehicle-a').serviceForm.vehiclePlate, '云D12345', '批量项目日期不得覆盖照片 A 车牌');
+  equal(formsById.get('vehicle-b').serviceForm.vehiclePlate, '云D67890', '批量项目日期不得覆盖照片 B 车牌');
+  equal(formsById.get('vehicle-b').serviceForm.violationType, '随意停放阻碍通行', '不同违停类型必须保持照片级隔离');
+  equal(formsById.get('engineering-a').serviceForm.constructionUnitId, 'unit-a', '工程照片 A 施工单位 ID 必须保留');
+  equal(formsById.get('engineering-b').serviceForm.constructionUnitOriginalText, '乙施工单位原文', '工程照片 B 施工单位原文必须保留');
+  equal(formsById.get('standard-a').serviceForm.location, '东门', '普通照片 A 位置必须保留');
+  equal(formsById.get('standard-b').serviceForm.remark, '白班巡查', '普通照片 B 备注必须保留');
+  equal(formsById.get('time-location-a').serviceForm.workContent, 'not_applicable', '时间地点工作内容必须固定不适用');
+  check(perPhotoForms.every((item) => item.missingFields.length === 0), '混合模板必须逐张通过各自模板校验');
+  check(
+    new Set(perPhotoForms.map((item) => item.archiveInfo)).size === perPhotoForms.length,
+    '每张照片必须生成独立 archiveInfo 对象'
+  );
+
+  const previewRoot = path.join(root, 'per-photo-preview');
+  await fs.mkdir(previewRoot, { recursive: true });
+  const previewPhotos = [];
+  for (const [index, item] of perPhotoForms.entries()) {
+    const sourcePath = path.join(previewRoot, `${item.photo.id}.jpg`);
+    await fs.writeFile(sourcePath, createTestJpeg(4 + index, 3 + index));
+    previewPhotos.push({
+      ...item.serviceForm,
+      id: item.photo.id,
+      path: sourcePath,
+      name: `${item.photo.id}.jpg`,
+      extension: '.jpg',
+      sourceType: 'local_file'
+    });
+  }
+  const preview = await buildArchivePreview({
+    form: perPhotoForms[0].serviceForm,
+    photos: previewPhotos,
+    archiveRoot: path.join(root, 'per-photo-archive')
+  });
+  scenario();
+  const ledgerByPhotoId = new Map(
+    preview.previewPlan.items.map((item) => [item.photoId, item.ledgerRow])
+  );
+  equal(ledgerByPhotoId.get('vehicle-a').vehiclePlate, '云D12345', 'PreviewPlan 必须保存照片 A 自己的车牌');
+  equal(ledgerByPhotoId.get('vehicle-b').vehiclePlate, '云D67890', 'PreviewPlan 必须保存照片 B 自己的车牌');
+  equal(ledgerByPhotoId.get('engineering-a').constructionUnitId, 'unit-a', 'PreviewPlan 必须保存照片 A 自己的施工单位');
+  equal(ledgerByPhotoId.get('engineering-b').constructionUnitId, 'unit-b', 'PreviewPlan 必须保存照片 B 自己的施工单位');
+
+  const relinkTools = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/photoRelink.js')).href}?review=${Date.now()}`
+  );
+  const relinkRoot = path.join(root, 'local-relink');
+  await fs.mkdir(relinkRoot, { recursive: true });
+  const expectedPath = path.join(relinkRoot, 'expected.jpg');
+  const wrongPath = path.join(relinkRoot, 'same-name.jpg');
+  await fs.writeFile(expectedPath, originalJpeg);
+  await fs.writeFile(wrongPath, replacementJpeg);
+  const expectedSha = createHash('sha256').update(originalJpeg).digest('hex');
+  const wrongSha = createHash('sha256').update(replacementJpeg).digest('hex');
+  const missingLocal = {
+    id: 'missing-local',
+    sourceType: 'local_file',
+    originalMissing: true,
+    originalName: 'same-name.jpg',
+    size: replacementJpeg.length,
+    sha256: expectedSha,
+    fileHealth: { expectedSha256: expectedSha, healthStatus: 'missing' }
+  };
+  scenario();
+  equal(
+    relinkTools.selectLocalPhotoRelinkCandidate(missingLocal, [{
+      name: 'same-name.jpg',
+      path: wrongPath,
+      size: replacementJpeg.length,
+      sha256: wrongSha
+    }]).success,
+    false,
+    '同名同大小但 SHA 不同不得自动恢复'
+  );
+  const candidate = {
+    name: 'expected.jpg',
+    path: expectedPath,
+    extension: '.jpg',
+    size: originalJpeg.length,
+    modifiedAt: '2026-07-23T02:00:00.000Z',
+    sha256: expectedSha,
+    previewUrl: 'local-photo://expected'
+  };
+  const selectedCandidate = relinkTools.selectLocalPhotoRelinkCandidate(missingLocal, [candidate]);
+  const healthy = await inspectPhotoSourceFile(expectedPath, expectedSha, {
+    decodeImage: decodeFourByThree
+  });
+  const relinked = relinkTools.buildRelinkedLocalPhoto(missingLocal, candidate, healthy);
+  check(Boolean(relinked), 'SHA 一致且健康检查通过的本地照片必须可恢复');
+  equal(relinked.fileHealth.healthStatus, 'healthy', '恢复后文件健康状态必须为 healthy');
+  equal(relinked.sha256, expectedSha, '恢复不得修改历史 expected SHA');
+  equal(
+    relinkTools.selectLocalPhotoRelinkCandidate({
+      ...missingLocal,
+      sourceType: 'marki_api',
+      sourceKey
+    }, [candidate]).reason,
+    'marki_requires_trusted_repair',
+    'Marki 照片不得进入通用本地重新定位'
+  );
+  equal(
+    relinkTools.selectLocalPhotoRelinkCandidate({
+      ...missingLocal,
+      sha256: '',
+      fileHealth: {}
+    }, [candidate]).reason,
+    'historical_fingerprint_missing',
+    '无历史 SHA 的照片不得自动恢复'
+  );
+  const decodeFailure = await inspectPhotoSourceFile(expectedPath, expectedSha, {
+    decodeImage: async () => ({ decodable: false, width: 0, height: 0 })
+  });
+  equal(
+    relinkTools.buildRelinkedLocalPhoto(missingLocal, candidate, decodeFailure),
+    null,
+    '真实解码失败的候选不得恢复'
+  );
+  let relinkCommitCount = 0;
+  const failedRelinkPersist = await snapshotTools.persistLocalPhotoRelinks({
+    currentWorkspace: { photos: [missingLocal] },
+    nextPhotos: [relinked],
+    saveSnapshot: async () => ({ success: false }),
+    commitWorkspace: () => {
+      relinkCommitCount += 1;
+    }
+  });
+  equal(failedRelinkPersist.success, false, '快照保存失败必须返回失败');
+  equal(relinkCommitCount, 0, '快照保存失败不得提交 renderer 内存状态');
+  check(selectedCandidate.success, '相同 SHA 候选必须可以确定选择');
+
+  const invalidLegacyRoot = path.join(root, 'config-legacy');
+  const invalidCanonicalRoot = path.join(root, 'config-canonical-invalid');
+  await loadUserConfigs(invalidLegacyRoot);
+  await saveSettings(invalidLegacyRoot, { defaultPhotoFolder: 'D:\\模拟照片' });
+  const invalidPaths = getRuntimeConfigurationPaths({
+    userDataPath: invalidCanonicalRoot,
+    documentsPath: invalidLegacyRoot
+  });
+  await fs.mkdir(path.join(invalidPaths.canonicalAppDir, 'config'), { recursive: true });
+  const invalidProjectsPath = path.join(invalidPaths.canonicalAppDir, 'config', 'projects.json');
+  const invalidProjectsText = JSON.stringify({
+    projects: [{ id: '', name: '', enabled: true }],
+    constructionUnits: []
+  });
+  await fs.writeFile(invalidProjectsPath, invalidProjectsText, 'utf8');
+  const invalidMigration = await migrateLegacyConfiguration({
+    userDataPath: invalidCanonicalRoot,
+    documentsPath: invalidLegacyRoot
+  });
+  const invalidMarker = JSON.parse(await fs.readFile(invalidPaths.migrationMarkerPath, 'utf8'));
+  scenario();
+  equal(
+    invalidMarker.fileResults['config/projects.json'].canonicalStatus,
+    'invalid_business_schema',
+    '可解析但业务结构错误的 projects 必须独立识别'
+  );
+  equal(
+    invalidMarker.fileResults['config/projects.json'].action,
+    'blocked_canonical_invalid_business_schema',
+    '无效 canonical projects 不得被 legacy 覆盖'
+  );
+  equal(await fs.readFile(invalidProjectsPath, 'utf8'), invalidProjectsText, '无效 canonical 原文件必须保持');
+  check(
+    invalidMigration.validationWarnings.some(
+      (item) => item.code === 'runtime_configuration_canonical_invalid_business_schema'
+    ),
+    'canonical 业务结构无效必须返回明确 warning'
+  );
+  await assert.rejects(
+    () => loadRuntimeConfiguration({
+      userDataPath: invalidCanonicalRoot,
+      documentsPath: invalidLegacyRoot
+    }),
+    (error) => error?.code === 'invalid_projects_business_schema',
+    '运行时不得静默加载无效 canonical projects'
+  );
+  assertionCount += 1;
+
+  const invalidSettingsLegacyRoot = path.join(root, 'settings-legacy');
+  const invalidSettingsCanonicalRoot = path.join(root, 'settings-canonical-invalid');
+  await loadUserConfigs(invalidSettingsLegacyRoot);
+  await saveSettings(invalidSettingsLegacyRoot, { defaultPhotoFolder: 'D:\\模拟照片' });
+  const invalidSettingsPaths = getRuntimeConfigurationPaths({
+    userDataPath: invalidSettingsCanonicalRoot,
+    documentsPath: invalidSettingsLegacyRoot
+  });
+  await fs.mkdir(invalidSettingsPaths.canonicalAppDir, { recursive: true });
+  const invalidSettingsText = JSON.stringify({ schemaVersion: 1 });
+  await fs.writeFile(
+    path.join(invalidSettingsPaths.canonicalAppDir, 'settings.json'),
+    invalidSettingsText,
+    'utf8'
+  );
+  await migrateLegacyConfiguration({
+    userDataPath: invalidSettingsCanonicalRoot,
+    documentsPath: invalidSettingsLegacyRoot
+  });
+  const invalidSettingsMarker = JSON.parse(
+    await fs.readFile(invalidSettingsPaths.migrationMarkerPath, 'utf8')
+  );
+  scenario();
+  equal(
+    invalidSettingsMarker.fileResults['settings.json'].canonicalStatus,
+    'invalid_business_schema',
+    '仅含版本元数据的 settings 不得冒充有效业务配置'
+  );
+  equal(
+    invalidSettingsMarker.fileResults['settings.json'].action,
+    'blocked_canonical_invalid_business_schema',
+    '无效 canonical settings 不得被 legacy 覆盖'
+  );
+  equal(
+    await fs.readFile(path.join(invalidSettingsPaths.canonicalAppDir, 'settings.json'), 'utf8'),
+    invalidSettingsText,
+    '无效 canonical settings 原文件必须保持'
+  );
+  await assert.rejects(
+    () => loadRuntimeConfiguration({
+      userDataPath: invalidSettingsCanonicalRoot,
+      documentsPath: invalidSettingsLegacyRoot
+    }),
+    (error) => error?.code === 'invalid_settings_business_schema',
+    '运行时不得静默加载无效 canonical settings'
+  );
+  assertionCount += 1;
+
+  const invalidLegacySchemaRoot = path.join(root, 'config-invalid-legacy');
+  const validCanonicalRoot = path.join(root, 'config-valid-migration-target');
+  const invalidLegacyConfigs = await loadUserConfigs(invalidLegacySchemaRoot);
+  await saveSettings(invalidLegacySchemaRoot, { defaultArchiveRoot: 'E:\\模拟归档' });
+  await fs.writeFile(
+    path.join(invalidLegacyConfigs.paths.userConfigDir, 'watermarkCategories.json'),
+    JSON.stringify({ wrong: true }),
+    'utf8'
+  );
+  const mixedMigration = await migrateLegacyConfiguration({
+    userDataPath: validCanonicalRoot,
+    documentsPath: invalidLegacySchemaRoot
+  });
+  const mixedPaths = getRuntimeConfigurationPaths({
+    userDataPath: validCanonicalRoot,
+    documentsPath: invalidLegacySchemaRoot
+  });
+  const mixedMarker = JSON.parse(await fs.readFile(mixedPaths.migrationMarkerPath, 'utf8'));
+  scenario();
+  equal(
+    mixedMarker.fileResults['config/watermarkCategories.json'].legacyStatus,
+    'invalid_business_schema',
+    'legacy watermarkCategories 业务结构错误必须识别'
+  );
+  equal(
+    mixedMarker.fileResults['config/watermarkCategories.json'].action,
+    'blocked_legacy_invalid_business_schema',
+    '无效 legacy watermarkCategories 不得迁移'
+  );
+  equal(
+    mixedMarker.fileResults['config/watermarkCategories.json'].validationCode,
+    'invalid_watermarkCategories_business_schema',
+    '迁移 marker 必须记录真正阻断迁移的 legacy 业务校验码'
+  );
+  equal(
+    mixedMarker.fileResults['config/projects.json'].action,
+    'migrated_from_documents',
+    '单个文件无效不得阻断其他有效配置逐文件迁移'
+  );
+  check(
+    Object.values(mixedMarker.fileResults).every((item) => (
+      item.canonicalStatus
+      && item.legacyStatus
+      && item.action
+      && Object.hasOwn(item, 'conflict')
+      && Object.hasOwn(item, 'sourceSha256')
+      && Object.hasOwn(item, 'targetSha256')
+      && item.completedAt
+      && item.validationCode
+    )),
+    '迁移 marker 每个文件必须保存四态、哈希和 validationCode'
+  );
+  check(
+    mixedMigration.validationWarnings.some(
+      (item) => item.code === 'runtime_configuration_legacy_invalid_business_schema'
+    ),
+    'legacy 业务结构无效必须返回明确 warning'
+  );
+
+  console.log(
+    `二审阻断项自检通过：${scenarioCount} 个真实行为场景，${assertionCount} 个行为断言；`
+    + '覆盖持久修复重试、追加状态保留、逐照片表单、SHA 重连和配置四态迁移。'
+  );
+}
+
+function makeEffectiveArchiveInfo(template, category, workContent, overrides = {}) {
+  return {
+    watermarkTemplateType: template,
+    date: '2026-07-23',
+    project: '潇湘新区二期',
+    projectName: '潇湘新区二期',
+    projectId: 'project-x',
+    projectOriginalText: '潇湘新区二期',
+    projectConfirmed: true,
+    projectSource: 'config_exact',
+    archiveCategory: category,
+    watermarkCategory: category,
+    workContent,
+    location: '',
+    locationArea: '',
+    keywords: '',
+    remarks: '',
+    remark: '',
+    vehiclePlate: '',
+    violationType: '',
+    constructionUnitId: '',
+    constructionUnitName: '',
+    constructionUnitOriginalText: '',
+    constructionUnitConfirmed: false,
+    constructionUnitSource: '',
+    fieldSources: {},
+    unresolvedFields: [],
+    ...overrides
+  };
 }
 
 async function checkRuntimeConfigurationFoundation(root) {
@@ -412,7 +1137,7 @@ async function checkRuntimeConfigurationFoundation(root) {
   );
   check(
     corruptMigration.validationWarnings.some(
-      (item) => item.code === 'runtime_configuration_canonical_corrupt'
+      (item) => item.code === 'runtime_configuration_canonical_corrupt_json'
     ),
     '正式配置损坏必须返回阻断 warning',
     'migration'
@@ -1113,7 +1838,22 @@ async function checkMarkiPhotoDownload(root) {
     true,
     '修复清单提交失败必须原子恢复替换前文件'
   );
+  assert.equal(
+    (await getMarkiSourceRecordByKey(
+      root,
+      orgId,
+      buildMarkiSourceKey(orgId, primaryInput.momentId)
+    )).importStatus,
+    'repair_failed',
+    '修复清单提交失败后必须保留可跨重启重试的 repair_failed 状态'
+  );
   await fs.writeFile(expectedPrimaryPath, validJpeg);
+  await updateMarkiSourceImportStatus(
+    root,
+    orgId,
+    buildMarkiSourceKey(orgId, primaryInput.momentId),
+    'repairing'
+  );
   await updateMarkiSourceImportStatus(
     root,
     orgId,
@@ -5251,7 +5991,16 @@ async function checkMarkiWorkbenchImport() {
   {
     const photos = [makePhoto('marki-1'), makePhoto('marki-2'), makePhoto('marki-3')];
     const result = mergeMarkiWorkbenchImportPackage(makeState(), makePackage(photos));
-    assert.deepEqual(result.photos, photos, '空工作台应按输入顺序追加三张马克照片');
+    assert.deepEqual(
+      result.photos,
+      photos.map((photo) => ({
+        ...photo,
+        sortStatus: 'unassigned',
+        smartSortStatus: 'not_run'
+      })),
+      '空工作台应按输入顺序追加三张待智拣马克照片'
+    );
+    assert.equal(photos[0].sortStatus, 'recognized', '合并不得修改输入照片对象');
     assert.equal(result.stats.addedCount, 3, '空工作台应新增三张照片');
     scenarioCount += 1;
   }
@@ -5271,7 +6020,12 @@ async function checkMarkiWorkbenchImport() {
       makePackage([incoming])
     );
     assert.equal(result.photos[0], localPhoto, '旧照片对象必须原样保留');
-    assert.equal(result.photos[1], incoming, '新照片只能追加到旧数组末尾');
+    assert.deepEqual(
+      result.photos[1],
+      { ...incoming, sortStatus: 'unassigned', smartSortStatus: 'not_run' },
+      '新照片只能以待智拣状态追加到旧数组末尾'
+    );
+    assert.notEqual(result.photos[1], incoming, '新照片状态初始化不得修改输入对象');
     assert.deepEqual(result.photos[0].archiveInfo, { project: '原项目' }, '旧归档信息不得改变');
     scenarioCount += 1;
   }
@@ -5612,14 +6366,21 @@ async function checkMarkiWorkbenchImport() {
     glueSource.indexOf('prepareWorkspace:'),
     glueSource.indexOf('saveSnapshot:')
   );
-  for (const expectedState of [
-    "filter: 'all'",
-    "searchText: ''",
-    "smartSortViewMode: 'statusFilter'",
-    "activeSmartSortGroupId: ''"
-  ]) {
-    assert.equal(addedBranch.includes(expectedState), true, `新增照片后应写入 ${expectedState}`);
-  }
+  assert.equal(
+    addedBranch.includes('prepareWorkspaceAfterPhotoAppend({'),
+    true,
+    '新增照片必须通过统一快照准备函数处理'
+  );
+  assert.equal(
+    [
+      'smartSortResult: null',
+      'archivePreviewPlan: null',
+      "smartSortViewMode: 'statusFilter'",
+      "activeSmartSortGroupId: ''"
+    ].some((token) => addedBranch.includes(token)),
+    false,
+    '新增照片不得在页面粘合层清空已有智拣、分组或预览'
+  );
   scenarioCount += 1;
 
   assert.equal(glueSource.includes('setSortMode('), false, '马克批次合并不得修改当前 sortMode');
@@ -8430,7 +9191,11 @@ async function checkSourceAwareRecognition(root) {
     sourceContractCount += 1;
     assert.match(utilitySource, /export function resetSelectedSmartSortResults\(\{/);
     sourceContractCount += 1;
-    assert.match(source, /photos: invalidateSmartSortExecution\(workspace\.photos\)/);
+    assert.doesNotMatch(
+      source,
+      /photos: invalidateSmartSortExecution\(workspace\.photos\)/,
+      '追加照片不得全量失效已有智拣状态'
+    );
     sourceContractCount += 1;
     assert.match(utilitySource, /marki_existing_supplement/);
     sourceContractCount += 1;
@@ -9010,20 +9775,18 @@ async function checkUnifiedPhotoPool(root) {
   equal(mergedA.photos.length, 4, '两张 Marki 加两张唯一本地照片后统一照片池应有四张');
   equal(mergedA.stats.addedLocalCount, 2, '首次目录应追加两张唯一本地照片');
   equal(mergedA.stats.duplicateCount, 1, '与 Marki 内容相同的本地照片必须按 SHA-256 跳过');
-  equal(mergedA.photos[0].smartSortStatus, 'not_run', '追加本地照片后第一张 Marki 旧智拣状态必须失效');
-  equal(mergedA.photos[1].smartSortStatus, 'not_run', '追加本地照片后第二张 Marki 旧智拣状态必须失效');
-  equal(mergedA.photos[0].sourceKey, markiPhoto1.sourceKey, '失效旧分组不得改写 Marki sourceKey');
-  equal(mergedA.photos[1].sourceMetadataRef, markiPhoto2.sourceMetadataRef, '失效旧分组不得改写 Marki 元数据引用');
-  deepEqual(mergedA.photos[0].archiveInfo, markiPhoto1.archiveInfo, '失效旧分组不得改写 Marki 人工归档信息');
-  deepEqual(mergedA.photos[1].previewInfo, markiPhoto2.previewInfo, '失效旧分组不得改写 Marki 预览信息');
+  equal(mergedA.photos[0].smartSortStatus, 'completed', '追加本地照片后第一张 Marki 旧智拣状态必须保持');
+  equal(mergedA.photos[1].smartSortStatus, 'completed', '追加本地照片后第二张 Marki 旧智拣状态必须保持');
+  equal(mergedA.photos[0].sourceKey, markiPhoto1.sourceKey, '追加不得改写 Marki sourceKey');
+  equal(mergedA.photos[1].sourceMetadataRef, markiPhoto2.sourceMetadataRef, '追加不得改写 Marki 元数据引用');
+  deepEqual(mergedA.photos[0].archiveInfo, markiPhoto1.archiveInfo, '追加不得改写 Marki 人工归档信息');
+  deepEqual(mergedA.photos[1].previewInfo, markiPhoto2.previewInfo, '追加不得改写 Marki 预览信息');
+  equal(mergedA.photos[2].smartSortStatus, 'not_run', '新增本地照片必须单独进入待智拣');
+  equal(mergedA.photos[3].smartSortStatus, 'not_run', '同批新增本地照片必须单独进入待智拣');
   equal(mergedA.recognitionResultsByPhoto, recognitionMap, 'Marki recognition Map 必须保持原引用');
   equal(mergedA.watermarkRecordsByPhoto, watermarkMap, 'Marki watermark Map 必须保持原引用');
   equal(mergedA.archiveSuggestionsByPhoto, suggestionMap, 'Marki suggestion Map 必须保持原引用');
-  deepEqual(
-    mergedA.photos.slice(0, 2).map(({ smartSortStatus, ...photo }) => photo),
-    [markiPhoto1, markiPhoto2].map(({ smartSortStatus, ...photo }) => photo),
-    '除显式智拣状态失效外，Marki 平台身份和人工处理状态不得被扫描改写'
-  );
+  deepEqual(mergedA.photos.slice(0, 2), [markiPhoto1, markiPhoto2], '已有 Marki 照片对象和值必须完整保持');
   check(mergedA.selectedIds.includes(markiPhoto1.id), '原有 Marki 选择必须保留');
   check(mergedA.selectedIds.includes(`local-${digest(localBytesA)}`), '新增本地照片必须自动选中');
   equal(mergedA.activePhotoId, markiPhoto2.id, '仍存在的活动 Marki 照片必须保持');
@@ -9046,7 +9809,7 @@ async function checkUnifiedPhotoPool(root) {
   equal(mergedB.recognitionResultsByPhoto, recognitionMap, '跨目录扫描不得清空 recognition Map');
   equal(mergedB.watermarkRecordsByPhoto, watermarkMap, '跨目录扫描不得清空 watermark Map');
   equal(mergedB.archiveSuggestionsByPhoto, suggestionMap, '跨目录扫描不得清空 suggestion Map');
-  equal(mergedB.localPoolChanged, true, '真正追加本地照片后旧智拣分组必须失效');
+  equal(mergedB.localPoolChanged, true, '真正追加本地照片后必须报告照片池发生变化');
   scenarioCount += 1;
 
   const completeMarki = markiPhoto1;
@@ -9250,7 +10013,11 @@ async function checkUnifiedPhotoPool(root) {
       /sha256: health\.currentSha256 \|\| await hashFile\(file\.path\)/
     );
     sourceContractCount += 1;
-    assert.match(scanHandlerSource, /const nextSmartSortResult = mergedPool\.localPoolChanged \? null : smartSortResult/);
+    assert.match(
+      scanHandlerSource,
+      /const nextSmartSortResult = smartSortResult/,
+      '本地扫描追加必须保留已有智拣结果'
+    );
     sourceContractCount += 1;
     assert.equal(scanHandlerSource.includes('orchestrateSourceAwareRecognition'), false);
     sourceContractCount += 1;

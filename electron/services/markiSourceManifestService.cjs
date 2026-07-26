@@ -11,13 +11,19 @@ const IMPORT_STATUSES = Object.freeze([
   INITIAL_IMPORT_STATUS,
   'downloading',
   'imported',
-  'download_failed'
+  'download_failed',
+  'repair_required',
+  'repairing',
+  'repair_failed'
 ]);
 const IMPORT_STATUS_TRANSITIONS = Object.freeze({
   discovered: Object.freeze(['downloading']),
   downloading: Object.freeze(['downloading', 'imported', 'download_failed']),
-  imported: Object.freeze([]),
-  download_failed: Object.freeze(['downloading'])
+  imported: Object.freeze(['repair_required']),
+  download_failed: Object.freeze(['downloading']),
+  repair_required: Object.freeze(['repairing']),
+  repairing: Object.freeze(['repairing', 'imported', 'repair_failed']),
+  repair_failed: Object.freeze(['repairing'])
 });
 const MAX_BATCH_SIZE = 5000;
 const manifestWriteQueues = new Map();
@@ -213,11 +219,18 @@ async function updateMarkiSourceImportStatus(
       nextRecord.downloadAttemptCount = existing.downloadAttemptCount + 1;
       nextRecord.downloadInfo = null;
       nextRecord.lastDownloadError = null;
+    } else if (normalizedNextStatus === 'repairing') {
+      nextRecord.downloadAttemptCount = existing.downloadAttemptCount + 1;
+      nextRecord.downloadInfo = existing.downloadInfo;
+      nextRecord.lastDownloadError = null;
     } else if (normalizedNextStatus === 'imported') {
       nextRecord.downloadInfo = normalizeDownloadInfo(details.downloadInfo);
       nextRecord.lastDownloadError = null;
     } else if (normalizedNextStatus === 'download_failed') {
       nextRecord.downloadInfo = null;
+      nextRecord.lastDownloadError = normalizeDownloadError(details.error, now);
+    } else if (normalizedNextStatus === 'repair_failed') {
+      nextRecord.downloadInfo = existing.downloadInfo;
       nextRecord.lastDownloadError = normalizeDownloadError(details.error, now);
     }
     validateDownloadState(nextRecord);
@@ -259,8 +272,8 @@ async function prepareMarkiSourceForRedownload(
     const now = resolveNow(options);
     const nextRecord = {
       ...existing,
-      importStatus: 'download_failed',
-      downloadInfo: null,
+      importStatus: 'repair_required',
+      downloadInfo: existing.downloadInfo,
       lastDownloadError: normalizeDownloadError({
         code: 'marki_import_cache_invalid',
         message: '本地下载缓存缺失或校验失败，可重新下载。'
@@ -602,7 +615,10 @@ function validateDownloadState(record) {
     discovered: attemptCount === 0 && !hasDownloadInfo && !hasDownloadError,
     downloading: attemptCount > 0 && !hasDownloadInfo && !hasDownloadError,
     imported: attemptCount > 0 && hasDownloadInfo && !hasDownloadError,
-    download_failed: attemptCount > 0 && !hasDownloadInfo && hasDownloadError
+    download_failed: attemptCount > 0 && !hasDownloadInfo && hasDownloadError,
+    repair_required: attemptCount > 0 && hasDownloadInfo && hasDownloadError,
+    repairing: attemptCount > 0 && hasDownloadInfo && !hasDownloadError,
+    repair_failed: attemptCount > 0 && hasDownloadInfo && hasDownloadError
   };
   if (!valid[record.importStatus]) {
     throw createManifestError('marki_source_manifest_invalid', '来源记录下载状态与明细不一致。');

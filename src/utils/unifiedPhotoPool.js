@@ -41,10 +41,6 @@ export function mergeScannedLocalPhotoSubpool({
     addedPhotoIds.push(newPhoto.id);
   }
 
-  if (addedPhotoIds.length > 0) {
-    nextPhotos = nextPhotos.map(invalidatePhotoSmartSortState);
-  }
-
   const nextSelectedIds = uniqueIds([
     ...selectedIds.filter((photoId) => retainedPhotoIds.has(cleanId(photoId))),
     ...addedPhotoIds
@@ -104,22 +100,6 @@ function createScannedLocalPhoto(photo = {}) {
     previewInfo: null,
     archiveResult: null,
     originalMissing: false
-  };
-}
-
-function invalidatePhotoSmartSortState(photo = {}) {
-  if (
-    photo.originalMissing
-    || photo.sortStatus === 'ignored'
-    || photo.sortStatus === 'archived'
-    || photo.archiveResult?.status === '归档成功'
-    || photo.archiveResult?.success === true
-  ) {
-    return photo;
-  }
-  return {
-    ...photo,
-    smartSortStatus: 'not_run'
   };
 }
 

@@ -188,6 +188,49 @@ export async function persistMarkiWorkbenchImport({
   };
 }
 
+export function prepareWorkspaceAfterPhotoAppend({
+  workspace = {},
+  addedPhotoIds = [],
+  repairedPhotoIds = []
+} = {}) {
+  const hasAddedPhotos = Array.isArray(addedPhotoIds) && addedPhotoIds.length > 0;
+  const repairedIds = new Set(
+    (Array.isArray(repairedPhotoIds) ? repairedPhotoIds : []).map(String)
+  );
+  const previewAffected = repairedIds.size > 0
+    && (Array.isArray(workspace.archivePreviewPlan?.items)
+      ? workspace.archivePreviewPlan.items
+      : []
+    ).some((item) => repairedIds.has(String(item?.photoId || '')));
+  return buildSortWorkspaceSnapshotWorkspace({
+    ...workspace,
+    archivePreviewPlan: previewAffected ? null : workspace.archivePreviewPlan,
+    filter: hasAddedPhotos ? 'all' : workspace.filter,
+    searchText: hasAddedPhotos ? '' : workspace.searchText
+  });
+}
+
+export async function persistLocalPhotoRelinks({
+  currentWorkspace = {},
+  nextPhotos = [],
+  saveSnapshot,
+  commitWorkspace
+} = {}) {
+  if (typeof saveSnapshot !== 'function' || typeof commitWorkspace !== 'function') {
+    throw new TypeError('本地照片重新定位持久化依赖无效');
+  }
+  const workspace = buildSortWorkspaceSnapshotWorkspace({
+    ...currentWorkspace,
+    photos: nextPhotos
+  });
+  const snapshotResult = await saveSnapshot(workspace);
+  if (snapshotResult?.success !== true) {
+    return { success: false, workspace, snapshotResult };
+  }
+  commitWorkspace(workspace);
+  return { success: true, workspace, snapshotResult };
+}
+
 export function getEmptySortWorkspaceSnapshotWorkspace(overrides = {}) {
   return buildSortWorkspaceSnapshotWorkspace({
     ...SNAPSHOT_WORKSPACE_DEFAULTS,

@@ -5,11 +5,13 @@ const path = require('node:path');
 const {
   CONFIG_FILES,
   getConfigPaths,
-  loadUserConfigs
+  loadUserConfigs,
+  validateStoredConfigData
 } = require('./configService.cjs');
 const {
   loadSettings,
-  saveSettings
+  saveSettings,
+  validateStoredSettingsData
 } = require('./settingsService.cjs');
 
 const APP_FOLDER_NAME = '物业工作照片归档助手';
@@ -25,7 +27,7 @@ async function loadRuntimeConfiguration(paths, options = {}) {
   ));
   const [configResult, settings] = await Promise.all([
     loadUserConfigs(roots.canonicalRoot),
-    loadSettings(roots.canonicalRoot)
+    loadSettings(roots.canonicalRoot, { strictBusinessSchema: true })
   ]);
   return buildRuntimeConfiguration({
     runtimeConfigs: configResult.runtimeConfigs,
@@ -50,7 +52,7 @@ async function saveRuntimeSettings(paths, nextSettings, options = {}) {
 async function saveRuntimeDirectory(paths, directoryKind, directoryPath, options = {}) {
   const roots = normalizeStorageRoots(paths);
   await withMigrationLock(roots.canonicalRoot, () => migrateLegacyConfiguration(roots, options));
-  const settings = await loadSettings(roots.canonicalRoot);
+  const settings = await loadSettings(roots.canonicalRoot, { strictBusinessSchema: true });
   const normalizedPath = String(directoryPath || '').trim();
   const patch = {};
   if (directoryKind === 'photoSource') {
@@ -109,8 +111,8 @@ async function migrateLegacyConfiguration(paths, options = {}) {
     const relativePath = path.relative(canonicalAppDir, canonicalPath).replaceAll('\\', '/');
     const legacyPath = path.join(legacyAppDir, ...relativePath.split('/'));
     const [canonicalState, legacyState] = await Promise.all([
-      inspectJsonConfigurationFile(fileSystem, canonicalPath),
-      inspectJsonConfigurationFile(fileSystem, legacyPath)
+      inspectJsonConfigurationFile(fileSystem, canonicalPath, relativePath),
+      inspectJsonConfigurationFile(fileSystem, legacyPath, relativePath)
     ]);
     const result = {
       fileName: relativePath,
@@ -120,7 +122,10 @@ async function migrateLegacyConfiguration(paths, options = {}) {
       conflict: false,
       sourceSha256: legacyState.hash,
       targetSha256: canonicalState.hash,
-      completedAt
+      completedAt,
+      validationCode: canonicalState.status === 'missing'
+        ? legacyState.validationCode
+        : canonicalState.validationCode
     };
 
     if (canonicalState.status === 'valid') {
@@ -135,25 +140,42 @@ async function migrateLegacyConfiguration(paths, options = {}) {
       }
     } else if (canonicalState.status === 'missing' && legacyState.status === 'valid') {
       await copyFileAtomically(fileSystem, legacyPath, canonicalPath);
-      const migratedState = await inspectJsonConfigurationFile(fileSystem, canonicalPath);
+      const migratedState = await inspectJsonConfigurationFile(
+        fileSystem,
+        canonicalPath,
+        relativePath
+      );
       if (migratedState.status !== 'valid' || migratedState.hash !== legacyState.hash) {
         throw new Error(`运行配置迁移校验失败：${relativePath}`);
       }
       result.canonicalStatus = migratedState.status;
       result.targetSha256 = migratedState.hash;
+      result.validationCode = migratedState.validationCode;
       result.action = 'migrated_from_documents';
       migratedCount += 1;
-    } else if (canonicalState.status === 'corrupt') {
-      result.action = 'blocked_canonical_corrupt';
+    } else if (canonicalState.status === 'corrupt_json') {
+      result.action = 'blocked_canonical_corrupt_json';
       warnings.push({
-        code: 'runtime_configuration_canonical_corrupt',
+        code: 'runtime_configuration_canonical_corrupt_json',
         message: `${relativePath} 的正式配置损坏，已拒绝使用旧配置覆盖。`
       });
-    } else if (legacyState.status === 'corrupt') {
-      result.action = 'blocked_legacy_corrupt';
+    } else if (canonicalState.status === 'invalid_business_schema') {
+      result.action = 'blocked_canonical_invalid_business_schema';
       warnings.push({
-        code: 'runtime_configuration_legacy_corrupt',
+        code: 'runtime_configuration_canonical_invalid_business_schema',
+        message: `${relativePath} 的正式配置业务结构无效，已拒绝使用旧配置覆盖。`
+      });
+    } else if (legacyState.status === 'corrupt_json') {
+      result.action = 'blocked_legacy_corrupt_json';
+      warnings.push({
+        code: 'runtime_configuration_legacy_corrupt_json',
         message: `${relativePath} 的旧配置损坏，未执行迁移。`
+      });
+    } else if (legacyState.status === 'invalid_business_schema') {
+      result.action = 'blocked_legacy_invalid_business_schema';
+      warnings.push({
+        code: 'runtime_configuration_legacy_invalid_business_schema',
+        message: `${relativePath} 的旧配置业务结构无效，未执行迁移。`
       });
     } else {
       result.action = 'not_present';
@@ -217,27 +239,54 @@ async function existingFiles(fileSystem, filePaths) {
   return result;
 }
 
-async function inspectJsonConfigurationFile(fileSystem, filePath) {
+async function inspectJsonConfigurationFile(fileSystem, filePath, relativePath) {
   let content;
   try {
     content = await fileSystem.readFile(filePath);
   } catch (error) {
-    if (error?.code === 'ENOENT') return { status: 'missing', hash: '' };
+    if (error?.code === 'ENOENT') {
+      return {
+        status: 'missing',
+        hash: '',
+        validationCode: 'configuration_file_missing'
+      };
+    }
     throw error;
   }
   try {
     const parsed = JSON.parse(content.toString('utf8'));
-    if (!parsed || typeof parsed !== 'object') throw new Error('invalid_json_root');
+    const validation = validateConfigurationBusinessSchema(relativePath, parsed);
+    if (!validation.valid) {
+      return {
+        status: 'invalid_business_schema',
+        hash: crypto.createHash('sha256').update(content).digest('hex'),
+        validationCode: validation.validationCode
+      };
+    }
     return {
       status: 'valid',
-      hash: crypto.createHash('sha256').update(content).digest('hex')
+      hash: crypto.createHash('sha256').update(content).digest('hex'),
+      validationCode: validation.validationCode
     };
   } catch {
     return {
-      status: 'corrupt',
-      hash: crypto.createHash('sha256').update(content).digest('hex')
+      status: 'corrupt_json',
+      hash: crypto.createHash('sha256').update(content).digest('hex'),
+      validationCode: 'configuration_json_parse_failed'
     };
   }
+}
+
+function validateConfigurationBusinessSchema(relativePath, parsed) {
+  if (relativePath === 'settings.json') {
+    return validateStoredSettingsData(parsed);
+  }
+  const fileName = path.basename(relativePath);
+  const configName = Object.entries(CONFIG_FILES)
+    .find(([, configuredFileName]) => configuredFileName === fileName)?.[0];
+  return configName
+    ? validateStoredConfigData(configName, parsed)
+    : { valid: false, validationCode: 'unknown_configuration_file' };
 }
 
 async function configurationSetsDiffer(fileSystem, leftPaths, rightPaths) {

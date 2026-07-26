@@ -75,14 +75,19 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
         record = prepared.record;
       }
     }
+    if (['repair_required', 'repairing', 'repair_failed'].includes(record.importStatus)) {
+      repairImportedFile = true;
+    }
 
-    const paths = buildDownloadPaths(importRoot, identifiers);
+    const paths = repairImportedFile
+      ? buildRepairDownloadPaths(importRoot, record)
+      : buildDownloadPaths(importRoot, identifiers);
     await runManifestOperation(
       () => manifestService.updateMarkiSourceImportStatus(
         documentsPath,
         identifiers.orgId,
         sourceKey,
-        'downloading',
+        repairImportedFile ? 'repairing' : 'downloading',
         {},
         options
       ),
@@ -121,7 +126,7 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
           documentsPath,
           identifiers.orgId,
           sourceKey,
-          'download_failed',
+          repairImportedFile ? 'repair_failed' : 'download_failed',
           { error: safeError },
           options
         ),
@@ -151,6 +156,23 @@ async function downloadMarkiPhoto(documentsPath, input = {}, options = {}) {
     } catch (error) {
       if (repairImportedFile) {
         await rollbackImportedFileReplacement(paths.finalPath, quarantinedPath);
+        await runManifestOperation(
+          () => manifestService.updateMarkiSourceImportStatus(
+            documentsPath,
+            identifiers.orgId,
+            sourceKey,
+            'repair_failed',
+            {
+              error: {
+                code: 'marki_manifest_commit_failed',
+                message: '新文件已验证，但来源记录提交失败，可重新修复。'
+              }
+            },
+            options
+          ),
+          'marki_manifest_access_failed',
+          '旧文件已恢复，但来源清单无法记录修复失败，请重试。'
+        ).catch(() => {});
       }
       throw error;
     }
@@ -296,7 +318,13 @@ async function retryMarkiPhotoDownload(documentsPath, input = {}, options = {}) 
     'marki_manifest_access_failed',
     '来源清单读取失败，请重试。'
   );
-  if (!record || !['download_failed', 'downloading'].includes(record.importStatus)) {
+  if (!record || ![
+    'download_failed',
+    'downloading',
+    'repair_required',
+    'repairing',
+    'repair_failed'
+  ].includes(record.importStatus)) {
     throw new MarkiPhotoDownloadError(
       'invalid_retry_state',
       '只有下载失败或中断的马克照片可以重试。'
@@ -531,12 +559,52 @@ async function inspectJpegFile(filePath, options = {}) {
   if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) {
     throw new MarkiPhotoDownloadError('invalid_jpeg_dimensions', '无法读取下载图片的宽高。');
   }
+  const decoded = await decodeJpegBuffer(buffer, options);
+  if (
+    decoded
+    && (
+      decoded.width <= 0
+      || decoded.height <= 0
+      || decoded.width !== dimensions.width
+      || decoded.height !== dimensions.height
+    )
+  ) {
+    throw new MarkiPhotoDownloadError('invalid_jpeg_dimensions', '下载图片无法通过真实解码校验。');
+  }
   return {
     size: stat.size,
     width: dimensions.width,
     height: dimensions.height,
     sha256: crypto.createHash('sha256').update(buffer).digest('hex')
   };
+}
+
+async function decodeJpegBuffer(buffer, options = {}) {
+  let decoder = typeof options.decodeImage === 'function' ? options.decodeImage : null;
+  if (!decoder) {
+    try {
+      const { nativeImage } = require('electron');
+      if (nativeImage && typeof nativeImage.createFromBuffer === 'function') {
+        decoder = (value) => {
+          const image = nativeImage.createFromBuffer(value);
+          if (!image || image.isEmpty()) return null;
+          return image.getSize();
+        };
+      }
+    } catch {
+      decoder = null;
+    }
+  }
+  if (!decoder) return null;
+  try {
+    const result = await decoder(buffer, { extension: '.jpg' });
+    return {
+      width: Number(result?.width) || 0,
+      height: Number(result?.height) || 0
+    };
+  } catch {
+    return { width: 0, height: 0 };
+  }
 }
 
 function readJpegDimensions(buffer) {
@@ -601,6 +669,15 @@ function buildDownloadPaths(importRoot, identifiers) {
   const finalPath = path.join(directoryPath, fileName);
   return {
     directoryPath,
+    finalPath,
+    partPath: `${finalPath}.part`
+  };
+}
+
+function buildRepairDownloadPaths(importRoot, record) {
+  const finalPath = resolveImportedFilePath(importRoot, record?.downloadInfo?.relativePath);
+  return {
+    directoryPath: path.dirname(finalPath),
     finalPath,
     partPath: `${finalPath}.part`
   };

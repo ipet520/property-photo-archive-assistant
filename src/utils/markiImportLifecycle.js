@@ -92,10 +92,12 @@ export function prepareMarkiWorkspaceFileRepairs(workspace = {}, workbenchImport
       .map((photo) => [String(photo.sourceKey), photo])
   );
   let repairedCount = 0;
+  const repairedPhotoIds = [];
   const photos = (Array.isArray(workspace.photos) ? workspace.photos : []).map((photo) => {
     const incoming = incomingBySourceKey.get(String(photo?.sourceKey || ''));
     if (!incoming || !isWorkspacePhotoFileRepairable(photo)) return photo;
     repairedCount += 1;
+    repairedPhotoIds.push(String(photo.id));
     return {
       ...photo,
       originalPath: incoming.originalPath,
@@ -129,6 +131,7 @@ export function prepareMarkiWorkspaceFileRepairs(workspace = {}, workbenchImport
   });
   return {
     repairedCount,
+    repairedPhotoIds,
     workspace: repairedCount > 0 ? { ...workspace, photos } : workspace
   };
 }

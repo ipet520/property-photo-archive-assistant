@@ -810,7 +810,12 @@ function createLegacySourceStatusResolver(checkSourceKeys) {
         const item = result?.bySourceKey?.[sourceKey];
         const status = String(item?.importStatus || '');
         if (status === 'imported') return [sourceKey, 'imported_active'];
-        if (status === 'download_failed') return [sourceKey, 'failed_retryable'];
+        if ([
+          'download_failed',
+          'repair_required',
+          'repairing',
+          'repair_failed'
+        ].includes(status)) return [sourceKey, 'failed_retryable'];
         if (status === 'downloading') return [sourceKey, 'downloading'];
         return [sourceKey, 'discovered'];
       }))

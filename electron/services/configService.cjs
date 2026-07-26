@@ -61,7 +61,14 @@ async function loadUserConfigs(documentsPath) {
   const configs = {};
   for (const [key, fileName] of Object.entries(CONFIG_FILES)) {
     const filePath = path.join(paths.userConfigDir, fileName);
-    configs[key] = await readJsonFile(filePath);
+    const stored = await readJsonFile(filePath);
+    const validation = validateStoredConfigData(key, stored);
+    if (!validation.valid) {
+      const error = new Error(`${fileName} 的业务结构无效。`);
+      error.code = validation.validationCode;
+      throw error;
+    }
+    configs[key] = stored;
   }
   const projectConfig = unpackProjectConfig(configs.projects);
   configs.projects = projectConfig.projects;
@@ -632,7 +639,9 @@ function normalizeRuntimeWatermarkCategories(categories) {
 
 function validateConfig(configName, data, context = {}) {
   if (SIMPLE_CONFIG_KEYS.has(configName)) {
-    validateNames(normalizeSimpleItems(data, configName), '名称');
+    const items = normalizeSimpleItems(data, configName);
+    validateNames(items, '名称');
+    validateUniqueIds(items, `${configName} ID`);
   }
   if (configName === 'watermarkCategories') {
     const categories = normalizeWatermarkCategories(data);
@@ -655,6 +664,103 @@ function validateConfig(configName, data, context = {}) {
     });
   }
   return { success: true };
+}
+
+function validateStoredConfigData(configName, data) {
+  try {
+    if (configName === 'projects') {
+      const unpacked = unpackProjectConfigForValidation(data);
+      assertStoredNamedItems(unpacked.projects, '项目');
+      assertStoredNamedItems(unpacked.constructionUnits, '施工单位');
+      const projects = normalizeSimpleItems(unpacked.projects, 'projects', {
+        defaultName: '潇湘新区二期'
+      });
+      if (projects.length !== unpacked.projects.length) {
+        throw new Error('项目记录不完整');
+      }
+      validateConfig('projects', projects);
+      const constructionUnits = normalizeConstructionUnits(unpacked.constructionUnits);
+      if (constructionUnits.length !== unpacked.constructionUnits.length) {
+        throw new Error('施工单位记录不完整');
+      }
+      validateConfig('constructionUnits', constructionUnits, { projects });
+    } else if (configName === 'departments' || configName === 'keywords') {
+      if (!Array.isArray(data)) throw new Error('配置根节点必须为数组');
+      assertStoredNamedItems(data, configName);
+      const normalized = normalizeConfigForStorage(configName, data);
+      if (normalized.length !== data.length) throw new Error('配置记录不完整');
+      validateConfig(configName, normalized);
+    } else if (configName === 'watermarkCategories') {
+      assertStoredWatermarkCategories(data);
+      const normalized = normalizeWatermarkCategories(data);
+      const sourceCount = Array.isArray(data) ? data.length : Object.keys(data).length;
+      if (normalized.length !== sourceCount) throw new Error('归档分类记录不完整');
+      validateConfig(configName, normalized);
+    } else {
+      throw new Error('未知配置文件');
+    }
+    return { valid: true, validationCode: 'business_schema_valid' };
+  } catch {
+    return { valid: false, validationCode: `invalid_${configName}_business_schema` };
+  }
+}
+
+function unpackProjectConfigForValidation(data) {
+  if (Array.isArray(data)) return { projects: data, constructionUnits: [] };
+  if (
+    !isPlainObject(data)
+    || !Array.isArray(data.projects)
+    || !Array.isArray(data.constructionUnits)
+  ) {
+    throw new Error('项目配置根节点无效');
+  }
+  return {
+    projects: data.projects,
+    constructionUnits: data.constructionUnits
+  };
+}
+
+function assertStoredNamedItems(items, label) {
+  if (!Array.isArray(items)) throw new Error(`${label}配置必须为数组`);
+  for (const item of items) {
+    if (typeof item === 'string') {
+      if (!item.trim()) throw new Error(`${label}名称不能为空`);
+      continue;
+    }
+    if (
+      !isPlainObject(item)
+      || !String(item.id || '').trim()
+      || !String(item.name || item.title || '').trim()
+      || (item.enabled !== undefined && typeof item.enabled !== 'boolean')
+    ) {
+      throw new Error(`${label}记录结构无效`);
+    }
+  }
+}
+
+function assertStoredWatermarkCategories(data) {
+  if (!Array.isArray(data) && !isPlainObject(data)) {
+    throw new Error('归档分类配置根节点无效');
+  }
+  const entries = Array.isArray(data)
+    ? data.map((item) => [item?.name, item])
+    : Object.entries(data);
+  for (const [name, category] of entries) {
+    if (
+      !isPlainObject(category)
+      || !String(name || category.name || '').trim()
+      || !Array.isArray(category.items)
+    ) {
+      throw new Error('归档分类记录结构无效');
+    }
+    assertStoredNamedItems(category.items, '工作内容');
+  }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function validateUniqueIds(items, label) {
@@ -778,6 +884,7 @@ module.exports = {
   normalizeRuntimeConfigs,
   normalizeEditableConfigs,
   normalizeConstructionUnits,
+  validateStoredConfigData,
   unpackProjectConfig,
   packProjectConfig,
   recoverConfigTransaction,

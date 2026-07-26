@@ -31,15 +31,23 @@ function getDefaultSettings() {
   };
 }
 
-async function loadSettings(documentsPath) {
+async function loadSettings(documentsPath, options = {}) {
   const settingsPath = getSettingsPath(documentsPath);
   const settings = getDefaultSettings();
 
   try {
     const content = await fs.readFile(settingsPath, 'utf-8');
-    Object.assign(settings, JSON.parse(content));
+    const parsed = JSON.parse(content);
+    const validation = validateStoredSettingsData(parsed);
+    if (!validation.valid) {
+      const invalidError = new Error('系统设置业务结构无效。');
+      invalidError.code = validation.validationCode;
+      throw invalidError;
+    }
+    Object.assign(settings, parsed);
   } catch (error) {
     if (error.code !== 'ENOENT') {
+      if (options.strictBusinessSchema === true) throw error;
       return { ...settings, settingsPath, warning: `设置文件读取失败：${error.message}` };
     }
   }
@@ -124,6 +132,94 @@ function normalizeSettings(settings) {
   };
 }
 
+function validateStoredSettingsData(data) {
+  try {
+    if (!isPlainObject(data)) throw new Error('设置根节点无效');
+    const businessKeys = new Set([
+      'lastPhotoFolder',
+      'lastArchiveRoot',
+      'defaultPhotoFolder',
+      'defaultArchiveRoot',
+      'defaultArchivePackageRoot',
+      'rememberLastPaths',
+      'archivePackageSettings',
+      'recentPhotoFolders',
+      'recentArchiveRoots'
+    ]);
+    if (!Object.keys(data).some((key) => businessKeys.has(key))) {
+      throw new Error('设置不包含业务字段');
+    }
+    for (const key of [
+      'lastPhotoFolder',
+      'lastArchiveRoot',
+      'defaultPhotoFolder',
+      'defaultArchiveRoot',
+      'defaultArchivePackageRoot'
+    ]) {
+      if (data[key] !== undefined && typeof data[key] !== 'string') {
+        throw new Error('设置路径字段无效');
+      }
+    }
+    if (data.rememberLastPaths !== undefined && typeof data.rememberLastPaths !== 'boolean') {
+      throw new Error('设置布尔字段无效');
+    }
+    for (const key of ['recentPhotoFolders', 'recentArchiveRoots']) {
+      if (
+        data[key] !== undefined
+        && (
+          !Array.isArray(data[key])
+          || data[key].some((item) => typeof item !== 'string')
+        )
+      ) {
+        throw new Error('最近目录字段无效');
+      }
+    }
+    if (
+      data.archivePackageSettings !== undefined
+      && !isPlainObject(data.archivePackageSettings)
+    ) {
+      throw new Error('归档包设置无效');
+    }
+    if (data.archivePackageSettings !== undefined) {
+      for (const key of ['groupingRule', 'packageNamePrefix']) {
+        if (
+          data.archivePackageSettings[key] !== undefined
+          && typeof data.archivePackageSettings[key] !== 'string'
+        ) {
+          throw new Error('归档包文本设置无效');
+        }
+      }
+      for (const key of ['generateReadme', 'generateCatalog', 'promptOpenAfterGenerated']) {
+        if (
+          data.archivePackageSettings[key] !== undefined
+          && typeof data.archivePackageSettings[key] !== 'boolean'
+        ) {
+          throw new Error('归档包布尔设置无效');
+        }
+      }
+    }
+    if (
+      data.schemaVersion !== undefined
+      && (!Number.isInteger(data.schemaVersion) || data.schemaVersion < 1)
+    ) {
+      throw new Error('设置版本无效');
+    }
+    if (data.revision !== undefined && typeof data.revision !== 'string') {
+      throw new Error('设置修订标识无效');
+    }
+    normalizeSettings(data);
+    return { valid: true, validationCode: 'business_schema_valid' };
+  } catch {
+    return { valid: false, validationCode: 'invalid_settings_business_schema' };
+  }
+}
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 async function writeJsonAtomically(filePath, value, options = {}) {
   const fileSystem = options.fs || fs;
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
@@ -192,6 +288,7 @@ module.exports = {
   getDefaultSettings,
   loadSettings,
   normalizeSettings,
+  validateStoredSettingsData,
   saveSettings,
   updateLastPhotoFolder,
   updateLastArchiveRoot,

@@ -318,6 +318,140 @@ export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = 
   }, configs);
 }
 
+const BATCH_COMMON_FIELDS = Object.freeze([
+  'date',
+  'projectId',
+  'projectName',
+  'project',
+  'projectOriginalText',
+  'projectConfirmed',
+  'projectSource',
+  'archiveCategory',
+  'watermarkCategory'
+]);
+
+const BATCH_COMMON_SOURCE_FIELDS = new Set([
+  'date',
+  'project',
+  'archiveCategory',
+  'watermarkCategory',
+  'workContent',
+  'watermarkTemplateType'
+]);
+
+export function buildBatchArchiveFormPatch(form = {}, options = {}) {
+  const editedFields = new Set(
+    (Array.isArray(options.editedFields) ? options.editedFields : [])
+      .map((field) => String(field || '').trim())
+      .filter(Boolean)
+  );
+  const patch = {};
+  if (editedFields.has('date')) patch.date = cloneFieldValue(form.date);
+  if (editedFields.has('project')) {
+    for (const field of BATCH_COMMON_FIELDS.filter((key) => key.startsWith('project'))) {
+      patch[field] = cloneFieldValue(form[field]);
+    }
+  }
+  if (editedFields.has('watermarkCategory') || editedFields.has('archiveCategory')) {
+    patch.archiveCategory = cloneFieldValue(form.archiveCategory);
+    patch.watermarkCategory = cloneFieldValue(form.watermarkCategory);
+  }
+  if (editedFields.has('watermarkTemplateType')) {
+    patch.watermarkTemplateType = form.watermarkTemplateType;
+  }
+  if (
+    editedFields.has('workContent')
+    && form.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD
+  ) {
+    patch.workContent = form.workContent;
+  }
+  patch.fieldSources = Object.fromEntries(
+    Object.entries(form.fieldSources || {})
+      .filter(([field]) => (
+        BATCH_COMMON_SOURCE_FIELDS.has(field)
+        && (
+          editedFields.has(field)
+          || (field === 'archiveCategory' && editedFields.has('watermarkCategory'))
+          || (field === 'watermarkCategory' && editedFields.has('archiveCategory'))
+        )
+      ))
+      .map(([field, value]) => [field, cloneFieldValue(value)])
+  );
+  return patch;
+}
+
+export function buildPerPhotoArchiveServiceForm({
+  effectiveArchiveInfo = {},
+  photoDraft = null,
+  batchPatch = {},
+  configs = {}
+} = {}) {
+  const base = {
+    ...effectiveArchiveInfo,
+    ...(photoDraft && typeof photoDraft === 'object' ? photoDraft : {})
+  };
+  const baseTemplate = normalizeValue(base.watermarkTemplateType);
+  const patchTemplate = normalizeValue(batchPatch.watermarkTemplateType);
+  const watermarkTemplateType = (
+    baseTemplate && baseTemplate !== WATERMARK_TEMPLATE_TYPES.UNRESOLVED
+  )
+    ? baseTemplate
+    : patchTemplate || baseTemplate || WATERMARK_TEMPLATE_TYPES.UNRESOLVED;
+  const commonPatch = Object.fromEntries(
+    BATCH_COMMON_FIELDS
+      .filter((field) => Object.hasOwn(batchPatch, field))
+      .map((field) => [field, cloneFieldValue(batchPatch[field])])
+  );
+  const merged = {
+    ...base,
+    ...commonPatch,
+    watermarkTemplateType,
+    fieldSources: {
+      ...(base.fieldSources || {}),
+      ...(batchPatch.fieldSources || {})
+    },
+    unresolvedFields: Array.isArray(base.unresolvedFields)
+      ? [...base.unresolvedFields]
+      : []
+  };
+  if (
+    watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD
+    && Object.hasOwn(batchPatch, 'workContent')
+  ) {
+    merged.workContent = batchPatch.workContent;
+  }
+  if (watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION) {
+    merged.workContent = NOT_APPLICABLE_WORK_CONTENT;
+  }
+  return buildCurrentPhotoArchiveServiceForm(
+    isolateTemplateSpecificFields(merged),
+    configs
+  );
+}
+
+export function buildPerPhotoArchivePreviewInputs({
+  photos = [],
+  effectiveArchiveInfoByPhotoId = {},
+  photoDraftByPhotoId = {},
+  batchPatch = {},
+  configs = {}
+} = {}) {
+  return (Array.isArray(photos) ? photos : []).map((photo) => {
+    const serviceForm = buildPerPhotoArchiveServiceForm({
+      effectiveArchiveInfo: effectiveArchiveInfoByPhotoId[photo.id] || photo.archiveInfo || {},
+      photoDraft: photoDraftByPhotoId[photo.id],
+      batchPatch,
+      configs
+    });
+    return {
+      photo,
+      serviceForm,
+      archiveInfo: normalizeConfirmedArchiveInfo(serviceForm),
+      missingFields: validateArchiveFormByTemplate(serviceForm, configs)
+    };
+  });
+}
+
 export function sanitizeArchiveFields(fields = {}, configs = {}) {
   const categories = Object.keys(configs.watermarkCategories || {});
   const watermarkCategory = categories.includes(fields.watermarkCategory) ? fields.watermarkCategory : normalizeValue(fields.watermarkCategory);
@@ -351,6 +485,11 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
       ? [...fields.unresolvedFields]
       : []
   });
+}
+
+function cloneFieldValue(value) {
+  if (value && typeof value === 'object') return structuredClone(value);
+  return value;
 }
 
 export function resolveCanonicalPhotoResult({

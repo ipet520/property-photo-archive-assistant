@@ -74,7 +74,11 @@ export function mergeMarkiWorkbenchImportPackage(currentState, workbenchImportPa
       continue;
     }
 
-    acceptedPhotos.push(photo);
+    acceptedPhotos.push({
+      ...photo,
+      sortStatus: 'unassigned',
+      smartSortStatus: 'not_run'
+    });
     addedPhotoIds.push(photoId);
     existingPhotoIds.add(photoId);
     existingSourceKeys.set(sourceKey, photoId);
