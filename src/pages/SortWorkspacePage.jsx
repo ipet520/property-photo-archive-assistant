@@ -1942,6 +1942,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         recognitionResultsByPhoto,
         watermarkRecordsByPhoto,
         archiveSuggestionsByPhoto,
+        configs,
         getOcrAvailability: async () => {
           const latestServiceStatus = await getRecognitionStatus();
           setRecognitionServiceStatus(latestServiceStatus);
@@ -3915,7 +3916,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                         <SelectField
                           label="工作内容"
                           value={form.workContent}
-                          options={configs.watermarkCategories?.[form.watermarkCategory]?.items || []}
+                          options={includeCurrentFormOption(
+                            configs.watermarkCategories?.[form.watermarkCategory]?.items,
+                            form.workContent
+                          )}
                           onChange={(workContent) => updateForm({ workContent })}
                           required
                           disabled={currentFormLocked || !form.watermarkCategory}
@@ -4484,10 +4488,15 @@ function reconcileForm(current, configs) {
     archiveCategory: watermarkCategory,
     workContent: current.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
       ? NOT_APPLICABLE_WORK_CONTENT
-      : (configs.watermarkCategories?.[watermarkCategory]?.items || []).includes(current.workContent)
-        ? current.workContent
-        : ''
+      : String(current.workContent || '').trim()
   };
+}
+
+function includeCurrentFormOption(options, currentValue) {
+  const values = Array.isArray(options) ? [...options] : [];
+  const current = String(currentValue || '').trim();
+  if (current && !values.includes(current)) values.push(current);
+  return values;
 }
 
 function normalizeArchiveInfo(form) {

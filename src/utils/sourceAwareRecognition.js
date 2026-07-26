@@ -3,6 +3,7 @@ import {
   normalizeSmartGroupDescriptor
 } from './smartGroupKey.js';
 import {
+  buildTemplateDrivenCanonical,
   resolveWatermarkTemplateType,
   WATERMARK_TEMPLATE_TYPES
 } from './watermarkTemplateAdapter.js';
@@ -387,6 +388,7 @@ export function classifyPhotoRecognitionRoute({
   recognitionResult = null,
   watermarkRecord = null,
   archiveSuggestion = null,
+  configs = {},
   eligible = true
 } = {}) {
   if (!eligible) return 'skip';
@@ -412,14 +414,16 @@ export function classifyPhotoRecognitionRoute({
   const platformMissing = getMarkiPlatformMissingRequiredFields({
     recognitionResult,
     watermarkRecord,
-    archiveSuggestion
+    archiveSuggestion,
+    configs
   });
   if (platformMissing.length === 0) return 'marki_platform_only';
 
   return getMissingRequiredFields({
     recognitionResult,
     watermarkRecord,
-    archiveSuggestion
+    archiveSuggestion,
+    configs
   }).length === 0
     ? 'marki_existing_supplement'
     : 'marki_ocr_fallback';
@@ -428,12 +432,14 @@ export function classifyPhotoRecognitionRoute({
 export function getMissingRequiredFields({
   recognitionResult = null,
   watermarkRecord = null,
-  archiveSuggestion = null
+  archiveSuggestion = null,
+  configs = {}
 } = {}) {
   const values = getEffectiveRequiredFieldValues({
     recognitionResult,
     watermarkRecord,
-    archiveSuggestion
+    archiveSuggestion,
+    configs
   });
   return getApplicableRequiredFields({
     recognitionResult,
@@ -553,6 +559,7 @@ export async function orchestrateSourceAwareRecognition({
   recognitionResultsByPhoto = {},
   watermarkRecordsByPhoto = {},
   archiveSuggestionsByPhoto = {},
+  configs = {},
   getOcrAvailability = async () => ({ available: true }),
   recognizePhoto,
   buildOcrArtifacts,
@@ -575,7 +582,8 @@ export async function orchestrateSourceAwareRecognition({
     photo,
     recognitionResult: recognitionResultsByPhoto[photo.id],
     watermarkRecord: watermarkRecordsByPhoto[photo.id],
-    archiveSuggestion: archiveSuggestionsByPhoto[photo.id]
+    archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+    configs
   }));
   const needsOcr = routes.some((route) => route === 'local_ocr' || route === 'marki_ocr_fallback');
   let ocrAvailability = { available: true, skipped: true };
@@ -830,12 +838,14 @@ function isLegacyLocalPhoto({
 function getMarkiPlatformMissingRequiredFields({
   recognitionResult = null,
   watermarkRecord = null,
-  archiveSuggestion = null
+  archiveSuggestion = null,
+  configs = {}
 } = {}) {
   const values = getMarkiPlatformRequiredFieldValues({
     recognitionResult,
     watermarkRecord,
-    archiveSuggestion
+    archiveSuggestion,
+    configs
   });
   return getApplicableRequiredFields({
     recognitionResult,
@@ -856,8 +866,16 @@ function getApplicableRequiredFields(input = {}) {
 function getMarkiPlatformRequiredFieldValues({
   recognitionResult = null,
   watermarkRecord = null,
-  archiveSuggestion = null
+  archiveSuggestion = null,
+  configs = {}
 } = {}) {
+  const canonicalValues = buildMarkiPlatformCanonicalRequiredFields({
+    recognitionResult,
+    watermarkRecord,
+    configs
+  });
+  if (canonicalValues) return canonicalValues;
+
   const processing = getSourceAwareProcessing(recognitionResult);
   const persistedBaseline = normalizeRequiredFieldObject(
     processing?.platformBaseline?.requiredFields
@@ -894,12 +912,14 @@ function getMarkiPlatformRequiredFieldValues({
 function getEffectiveRequiredFieldValues({
   recognitionResult = null,
   watermarkRecord = null,
-  archiveSuggestion = null
+  archiveSuggestion = null,
+  configs = {}
 } = {}) {
   const currentValues = getRequiredFieldValues({
     recognitionResult,
     watermarkRecord,
-    archiveSuggestion
+    archiveSuggestion,
+    configs
   });
   const processing = getSourceAwareProcessing(recognitionResult);
   if (!hasAllRequiredFieldKeys(processing?.effectiveResult?.requiredFields)) {
@@ -912,6 +932,39 @@ function getEffectiveRequiredFieldValues({
     field.key,
     cleanFieldValue(currentValues[field.key]) || cleanFieldValue(persistedValues[field.key])
   ]));
+}
+
+function buildMarkiPlatformCanonicalRequiredFields({
+  recognitionResult = null,
+  watermarkRecord = null,
+  configs = {}
+} = {}) {
+  if (
+    !configs
+    || typeof configs !== 'object'
+    || Object.keys(configs.watermarkCategories || {}).length === 0
+  ) {
+    return null;
+  }
+  const baselineRecognition = recognitionResult && typeof recognitionResult === 'object'
+    ? {
+        ...recognitionResult,
+        sourceAwareProcessing: undefined
+      }
+    : recognitionResult;
+  const canonical = buildTemplateDrivenCanonical({
+    recognitionResult: baselineRecognition,
+    watermarkRecord,
+    configs
+  });
+  return {
+    date: cleanFieldValue(canonical.date),
+    project: cleanFieldValue(canonical.projectName || canonical.project),
+    watermarkCategory: cleanFieldValue(
+      canonical.archiveCategory || canonical.watermarkCategory
+    ),
+    workContent: cleanFieldValue(canonical.workContent)
+  };
 }
 
 function getRequiredFieldValues({

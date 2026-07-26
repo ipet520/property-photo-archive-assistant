@@ -1,3 +1,5 @@
+import MARKI_TEMPLATE_CATEGORY_MAPPINGS from '../../electron/shared/markiTemplateCategoryMappings.json' with { type: 'json' };
+
 export const WATERMARK_TEMPLATE_TYPES = Object.freeze({
   STANDARD_WORK_RECORD: 'standard_work_record',
   TIME_LOCATION: 'time_location',
@@ -49,6 +51,9 @@ export function resolveWatermarkTemplateType(input = {}) {
     )
   );
   const normalizedTemplateName = normalizeComparable(trustedTemplateName);
+  const mappedStandardCategory = resolveExplicitMarkiTemplateCategory(
+    trustedTemplateName || fields.archiveCategory
+  );
   if (
     normalizedTemplateName.includes(normalizeComparable(VEHICLE_ARCHIVE_CATEGORY))
     || Boolean(fields.vehiclePlate && fields.violationType)
@@ -63,6 +68,9 @@ export function resolveWatermarkTemplateType(input = {}) {
     return WATERMARK_TEMPLATE_TYPES.TIME_LOCATION;
   }
   if (/工作记录/.test(trustedTemplateName)) {
+    return WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD;
+  }
+  if (mappedStandardCategory && fields.workContent) {
     return WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD;
   }
   if (
@@ -88,13 +96,20 @@ export function buildTemplateDrivenCanonical(input = {}) {
     : watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION
       ? VEHICLE_ARCHIVE_CATEGORY
       : fields.archiveCategory;
-  const archiveCategory = matchConfiguredCategory(categoryCandidate, configs);
+  const categoryMatch = matchConfiguredCategory(categoryCandidate, configs);
+  const archiveCategory = categoryMatch.value;
   const workCandidate = watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.VEHICLE_VIOLATION
     ? fields.violationType
     : fields.workContent;
-  const workContent = watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
-    ? NOT_APPLICABLE_WORK_CONTENT
-    : matchConfiguredWorkContent(workCandidate, archiveCategory, configs);
+  const workContentMatch = watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
+    ? { value: NOT_APPLICABLE_WORK_CONTENT, source: '' }
+    : matchConfiguredWorkContent(workCandidate, archiveCategory, configs, {
+        allowTrustedMarkiValue: (
+          watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD
+          && isTrustedMarkiStructuredInput(input)
+        )
+      });
+  const workContent = workContentMatch.value;
   const constructionMatch = archiveCategory === ENGINEERING_ARCHIVE_CATEGORY
     ? matchConstructionUnit(
         fields.constructionUnitOriginalText,
@@ -102,6 +117,11 @@ export function buildTemplateDrivenCanonical(input = {}) {
         configs.constructionUnits
       )
     : emptyMatch(fields.constructionUnitOriginalText);
+  const categoryFieldSource = cleanValue(
+    fields.fieldSources?.archiveCategory
+    || fields.fieldSources?.watermarkCategory
+    || categoryMatch.source
+  );
   const unresolvedFields = [];
   if (!fields.date) unresolvedFields.push('date');
   if (!projectMatch.name) unresolvedFields.push('project');
@@ -187,12 +207,12 @@ export function buildTemplateDrivenCanonical(input = {}) {
       ...(projectMatch.name ? { project: 'watermark_match' } : {}),
       ...(archiveCategory
         ? {
-            archiveCategory: 'watermark_exact',
-            watermarkCategory: 'watermark_exact'
+            archiveCategory: categoryFieldSource,
+            watermarkCategory: categoryFieldSource
           }
         : {}),
       ...(workContent && workContent !== NOT_APPLICABLE_WORK_CONTENT
-        ? { workContent: 'watermark_exact' }
+        ? { workContent: workContentMatch.source }
         : {}),
       ...(constructionMatch.confirmed ? { constructionUnit: 'watermark_match' } : {})
     },
@@ -356,18 +376,58 @@ function matchConfiguredProject(value, configs) {
 
 function matchConfiguredCategory(value, configs) {
   const candidate = normalizeComparable(value);
-  if (!candidate) return '';
+  if (!candidate) return { value: '', source: '' };
   const matches = Object.keys(configs.watermarkCategories || {})
     .filter((name) => normalizeComparable(name) === candidate);
-  return matches.length === 1 ? matches[0] : '';
+  if (matches.length === 1) {
+    return {
+      value: matches[0],
+      source: 'watermark_exact'
+    };
+  }
+  const mappedCategory = resolveExplicitMarkiTemplateCategory(value);
+  if (!mappedCategory) return { value: '', source: '' };
+  const mappedMatches = Object.keys(configs.watermarkCategories || {})
+    .filter((name) => normalizeComparable(name) === normalizeComparable(mappedCategory));
+  return mappedMatches.length === 1
+    ? {
+        value: mappedMatches[0],
+        source: 'marki.template_mapping.exact'
+      }
+    : { value: '', source: '' };
 }
 
-function matchConfiguredWorkContent(value, category, configs) {
+function matchConfiguredWorkContent(value, category, configs, options = {}) {
   const candidate = normalizeComparable(value);
-  if (!candidate || !category) return '';
+  const originalValue = cleanValue(value);
+  if (!candidate || !category) return { value: '', source: '' };
   const matches = (configs.watermarkCategories?.[category]?.items || [])
     .filter((name) => normalizeComparable(name) === candidate);
-  return matches.length === 1 ? matches[0] : '';
+  if (matches.length === 1) {
+    return {
+      value: matches[0],
+      source: 'watermark.work_content.config_exact'
+    };
+  }
+  return options.allowTrustedMarkiValue && originalValue
+    ? {
+        value: originalValue,
+        source: 'marki.content.trusted'
+      }
+    : { value: '', source: '' };
+}
+
+function resolveExplicitMarkiTemplateCategory(value) {
+  const candidate = normalizeComparable(value);
+  if (!candidate) return '';
+  const entry = Object.entries(MARKI_TEMPLATE_CATEGORY_MAPPINGS)
+    .find(([sourceName]) => normalizeComparable(sourceName) === candidate);
+  return cleanValue(entry?.[1]);
+}
+
+function isTrustedMarkiStructuredInput(input = {}) {
+  return cleanValue(input.recognitionResult?.source) === 'marki_api'
+    && cleanValue(input.recognitionResult?.providerType) === 'structured_data';
 }
 
 function matchConstructionUnit(value, projectId, items = []) {

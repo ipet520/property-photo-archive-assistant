@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
+const MARKI_TEMPLATE_CATEGORY_MAPPINGS = require('../shared/markiTemplateCategoryMappings.json');
 const { buildMarkiSourceKey } = require('./markiSourceManifestService.cjs');
 const {
   buildMarkiSourceMetadataRecord,
@@ -17,7 +18,6 @@ const REQUIRED_ARCHIVE_FIELDS = Object.freeze([
   ['工作内容', 'workContent']
 ]);
 const RESERVED_FIELD_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-const DEFAULT_CATEGORY_ALIASES = Object.freeze({});
 const FIELD_LABEL_ALIASES = Object.freeze({
   '拍摄日期': '日期',
   '拍照日期': '日期',
@@ -132,7 +132,11 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
   const categoryMatch = matchConfiguredValue(
     normalizedMoment.markName,
     normalizeCategoryOptions(configs.watermarkCategories),
-    DEFAULT_CATEGORY_ALIASES
+    MARKI_TEMPLATE_CATEGORY_MAPPINGS,
+    {
+      allowConfiguredAliases: false,
+      mappingSource: 'marki.template_mapping.exact'
+    }
   );
   const locationInfo = resolveLocation(fields['地点'], normalizedMoment.lng, normalizedMoment.lat);
   const workContent = resolveWorkContent(fields, normalizedMoment.markName);
@@ -247,7 +251,10 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     date: suggestedFields.date,
     projectOriginalText: fields['小区名称'] || '',
     communityName: fields['小区名称'] || '',
-    archiveCategory: normalizedMoment.markName,
+    archiveCategory: suggestedFields.watermarkCategory,
+    watermarkCategory: suggestedFields.watermarkCategory,
+    watermarkTemplateName: normalizedMoment.markName,
+    archiveCategoryOriginalText: normalizedMoment.markName,
     workContent,
     remarks: fields['工作备注'] || '',
     locationArea: locationInfo.value,
@@ -289,7 +296,7 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
       locationText: locationInfo.value,
       locationSource: locationInfo.source,
       projectText: fields['小区名称'] || '',
-      watermarkCategoryText: normalizedMoment.markName,
+      watermarkCategoryText: suggestedFields.watermarkCategory,
       workContentText: workContent,
       remarkText: fields['工作备注'] || '',
       photographerText: fields['上传人'] || '',
@@ -670,7 +677,12 @@ function isMotorVehicleWatermark(markName, fields) {
     || Boolean(fields['违停类型']);
 }
 
-function matchConfiguredValue(candidateValue, configuredOptions, aliases = {}) {
+function matchConfiguredValue(
+  candidateValue,
+  configuredOptions,
+  aliases = {},
+  options = {}
+) {
   const candidate = cleanMarkiFieldValue(candidateValue);
   if (!candidate) {
     return { value: '', candidate: '', source: '', confidence: null };
@@ -687,16 +699,18 @@ function matchConfiguredValue(candidateValue, configuredOptions, aliases = {}) {
       confidence: 0.98
     };
   }
-  const configuredAlias = configuredOptions.find((item) => (
-    item.aliases.some((alias) => normalizeMatchText(alias) === normalizedCandidate)
-  ));
-  if (configuredAlias) {
-    return {
-      value: configuredAlias.name,
-      candidate,
-      source: 'marki.config.alias',
-      confidence: 0.9
-    };
+  if (options.allowConfiguredAliases !== false) {
+    const configuredAlias = configuredOptions.find((item) => (
+      item.aliases.some((alias) => normalizeMatchText(alias) === normalizedCandidate)
+    ));
+    if (configuredAlias) {
+      return {
+        value: configuredAlias.name,
+        candidate,
+        source: 'marki.config.alias',
+        confidence: 0.9
+      };
+    }
   }
   const aliasTarget = findAliasTarget(candidate, aliases);
   const aliasMatch = configuredOptions.find((item) => (
@@ -706,7 +720,7 @@ function matchConfiguredValue(candidateValue, configuredOptions, aliases = {}) {
     return {
       value: aliasMatch.name,
       candidate,
-      source: 'marki.mapping.alias',
+      source: options.mappingSource || 'marki.mapping.alias',
       confidence: 0.88
     };
   }
@@ -1016,7 +1030,7 @@ function cloneJson(value) {
 }
 
 module.exports = {
-  DEFAULT_CATEGORY_ALIASES,
+  MARKI_TEMPLATE_CATEGORY_MAPPINGS,
   MAX_CONTENT_LENGTH,
   MAX_IMPORT_ITEMS,
   MarkiStructuredImportError,

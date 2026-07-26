@@ -57,7 +57,10 @@ export function validateArchiveFormByTemplate(form = {}, configs = {}) {
   }
 
   if (templateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD) {
-    if (!isConfiguredWorkContent(form.workContent, archiveCategory, safeConfigs)) {
+    if (
+      !isConfiguredWorkContent(form.workContent, archiveCategory, safeConfigs)
+      && !isTrustedMarkiWorkContent(form)
+    ) {
       missing.push(FIELD_LABELS.workContent);
     }
     if (
@@ -106,6 +109,12 @@ function isConfiguredWorkContent(value, archiveCategory, configs) {
   const normalized = clean(value);
   return Boolean(normalized)
     && (configs.watermarkCategories?.[archiveCategory]?.items || []).includes(normalized);
+}
+
+function isTrustedMarkiWorkContent(form = {}) {
+  const value = clean(form.workContent);
+  const source = clean(form.fieldSources?.workContent);
+  return Boolean(value) && source.startsWith('marki.content.');
 }
 
 function isValidConstructionUnit(form, configs) {

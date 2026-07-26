@@ -159,6 +159,7 @@ async function main() {
     await checkMarkiPhotoDownload(path.join(temporaryRoot, 'marki-download'));
     await checkMarkiSourceMetadata(path.join(temporaryRoot, 'marki-source-metadata'));
     await checkMarkiStructuredImport(path.join(temporaryRoot, 'marki-structured'));
+    await checkMarkiStructuredSmartSortBridge(path.join(temporaryRoot, 'marki-structured-smart-sort'));
     await checkMarkiImportOrchestrator(path.join(temporaryRoot, 'marki-orchestrator'));
     await checkMarkiImportBatchService(path.join(temporaryRoot, 'marki-import-batches'));
     await checkMarkiTrustedImport(path.join(temporaryRoot, 'marki-trusted-import'));
@@ -3079,6 +3080,389 @@ async function checkMarkiStructuredImport(root) {
     }),
     (error) => error?.code === 'marki_moment_type_not_supported',
     'V3.2 工作台导入包必须拒绝视频'
+  );
+}
+
+async function checkMarkiStructuredSmartSortBridge(root) {
+  const sourceAware = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sourceAwareRecognition.js')).href}?marki-bridge=${Date.now()}`
+  );
+  const canonicalModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/photoCanonical.js')).href}?marki-bridge=${Date.now()}`
+  );
+  const groupBuilder = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/smartGroupBuilder.js')).href}?marki-bridge=${Date.now()}`
+  );
+  const rightPanel = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortRightPanelState.js')).href}?marki-bridge=${Date.now()}`
+  );
+  const validation = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/archiveFormValidation.js')).href}?marki-bridge=${Date.now()}`
+  );
+
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  const check = (condition, message) => {
+    assertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const deepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const scenario = async (name, callback) => {
+    await callback();
+    scenarioCount += 1;
+  };
+
+  await fs.mkdir(root, { recursive: true });
+  const configs = {
+    projects: ['潇湘新区二期'],
+    projectOptions: [{ id: 'project-xiaoxiang-2', name: '潇湘新区二期' }],
+    constructionUnits: [],
+    watermarkCategories: {
+      '巡查检查工作记录': { items: ['秩序巡查'] },
+      '时间地点水印': { items: [] },
+      '机动车违规管理': { items: ['占用消防通道'] }
+    }
+  };
+  const orgId = '12345';
+  const sourceKeyFor = (momentId) => buildMarkiSourceKey(orgId, momentId);
+  const makeDownload = (momentId, index = 0) => ({
+    sourceKey: sourceKeyFor(momentId),
+    importStatus: 'imported',
+    localPath: path.join(root, `${momentId}.jpg`),
+    fileName: `${momentId}.jpg`,
+    size: 4096 + index,
+    sha256: createHash('sha256').update(momentId).digest('hex'),
+    width: 1080,
+    height: 1440,
+    completedAt: `2026-07-26T0${index}:30:00.000Z`
+  });
+  const makeMoment = ({
+    id,
+    markName = '巡查检查类',
+    workContent = '秩序巡查',
+    location = '二期一号门',
+    remark = '夜班巡查正常',
+    extraEntries = []
+  }) => ({
+    id,
+    uid: 20001,
+    teamId: 10001,
+    momentType: 1,
+    markName,
+    content: JSON.stringify([
+      ['日期', '2026-07-26 08:30:00'],
+      ['小区名称', '潇湘新区二期'],
+      ...(workContent ? [['工作内容', workContent]] : []),
+      ...(location ? [['地点', location]] : []),
+      ...(remark ? [['工作备注', remark]] : []),
+      ...extraEntries
+    ]),
+    lng: 0,
+    lat: 0,
+    postTime: Math.floor(Date.parse('2026-07-26T00:30:00Z') / 1000)
+  });
+  const buildPackage = (moments, batchId) => buildMarkiStructuredImportBundle({
+    orgId,
+    configs,
+    items: moments.map((moment, index) => ({
+      moment,
+      download: makeDownload(moment.id, index)
+    }))
+  }, {
+    batchId,
+    now: () => new Date('2026-07-26T01:00:00.000Z')
+  }).workbenchImportPackage;
+  const runSourceAware = async (workbenchImportPackage) => {
+    let ocrCallCount = 0;
+    let ocrAvailabilityCount = 0;
+    const result = await sourceAware.orchestrateSourceAwareRecognition({
+      photos: workbenchImportPackage.photos,
+      recognitionResultsByPhoto: workbenchImportPackage.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: workbenchImportPackage.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: workbenchImportPackage.archiveSuggestionsByPhoto,
+      configs,
+      getOcrAvailability: async () => {
+        ocrAvailabilityCount += 1;
+        return { available: true };
+      },
+      recognizePhoto: async () => {
+        ocrCallCount += 1;
+        throw new Error('完整 Marki 结构化数据不得执行 OCR');
+      },
+      buildOcrArtifacts: () => {
+        throw new Error('完整 Marki 结构化数据不得生成 OCR 产物');
+      },
+      generateGroups: null
+    });
+    return { result, ocrCallCount, ocrAvailabilityCount };
+  };
+  const buildCanonicalMaps = (orchestration) => {
+    const sourceCanonicalByPhotoId = {};
+    const effectiveArchiveInfoByPhotoId = {};
+    for (const photo of orchestration.photos) {
+      const recognitionResult = orchestration.recognitionResultsByPhoto[photo.id];
+      const sourceCanonical = canonicalModule.buildSourceCanonical({
+        photo,
+        recognitionResult,
+        watermarkRecord: orchestration.watermarkRecordsByPhoto[photo.id],
+        sourceAwareProcessing: recognitionResult?.sourceAwareProcessing,
+        configs
+      });
+      sourceCanonicalByPhotoId[photo.id] = sourceCanonical;
+      effectiveArchiveInfoByPhotoId[photo.id] = canonicalModule.resolveEffectivePhotoArchiveInfo({
+        photo,
+        sourceCanonical,
+        sourceAwareProcessing: recognitionResult?.sourceAwareProcessing
+      });
+    }
+    return { sourceCanonicalByPhotoId, effectiveArchiveInfoByPhotoId };
+  };
+  const buildGroups = (orchestration) => {
+    const maps = buildCanonicalMaps(orchestration);
+    const smartSortResult = groupBuilder.rebuildSmartSortResult({
+      photos: orchestration.photos,
+      ...maps,
+      includePhotoIds: orchestration.processingResults
+        .filter((item) => item.status === 'completed')
+        .map((item) => item.photoId)
+    });
+    return { ...maps, smartSortResult };
+  };
+
+  const completeMoment = makeMoment({ id: 'marki-bridge-complete-1' });
+  const completePackage = buildPackage([completeMoment], 'marki-bridge-complete-batch');
+  const completePhoto = completePackage.photos[0];
+  const completeRecognition = completePackage.recognitionResultsByPhoto[completePhoto.id];
+  const completeWatermark = completePackage.watermarkRecordsByPhoto[completePhoto.id];
+  const completeSuggestion = completePackage.archiveSuggestionsByPhoto[completePhoto.id];
+  const completeRun = await runSourceAware(completePackage);
+  const completeMaps = buildCanonicalMaps(completeRun.result);
+  const completeCanonical = completeMaps.sourceCanonicalByPhotoId[completePhoto.id];
+
+  await scenario('1 巡查检查类完整 Marki 结构化数据直用', () => {
+    equal(completeRecognition.watermarkTemplateName, '巡查检查类', '原始模板名必须单独保留');
+    equal(completeRecognition.structuredFields.archiveCategory, '巡查检查工作记录', '标准分类必须进入 structuredFields');
+    equal(completeRecognition.structuredFields.watermarkCategory, '巡查检查工作记录', '标准水印分类必须进入 structuredFields');
+    equal(completeRecognition.structuredFields.watermarkTemplateName, '巡查检查类', 'structuredFields 必须保留来源模板名');
+    equal(completeWatermark.watermarkCategoryText, '巡查检查工作记录', 'watermarkRecord 必须使用标准分类');
+    deepEqual(completeSuggestion.missingRequiredFields, [], '显式映射成功后不得保留分类缺失');
+    equal(completeRun.result.processingResults[0].route, 'marki_platform_only', '完整 Marki 必须走平台直用');
+    equal(completeRun.ocrCallCount, 0, '完整 Marki 不得执行 OCR');
+    equal(completeRun.ocrAvailabilityCount, 0, '完整 Marki 不得检查 OCR 服务');
+    equal(completeCanonical.archiveCategory, '巡查检查工作记录', 'canonical 必须使用标准分类');
+    equal(completeCanonical.workContent, '秩序巡查', 'canonical 必须保留结构化工作内容');
+  });
+
+  const sameBusinessPackage = buildPackage([
+    makeMoment({ id: 'marki-bridge-same-1' }),
+    makeMoment({ id: 'marki-bridge-same-2' })
+  ], 'marki-bridge-same-batch');
+  const sameBusinessRun = await runSourceAware(sameBusinessPackage);
+  const sameBusinessGroups = buildGroups(sameBusinessRun.result);
+  await scenario('2 不同 momentId 的同业务照片合为一个组', () => {
+    equal(sameBusinessRun.ocrCallCount, 0, '两张完整 Marki 均不得 OCR');
+    deepEqual(
+      sameBusinessRun.result.processingResults.map((item) => item.route),
+      ['marki_platform_only', 'marki_platform_only'],
+      '两张完整 Marki 均应走平台直用'
+    );
+    check(
+      sameBusinessPackage.photos[0].sourceKey !== sameBusinessPackage.photos[1].sourceKey,
+      '不同 momentId 必须保留不同 sourceKey'
+    );
+    equal(sameBusinessGroups.smartSortResult.groupCount, 1, '同四维业务字段必须只生成一组');
+    equal(sameBusinessGroups.smartSortResult.groups[0].photoIds.length, 2, '业务组必须包含两张照片');
+    equal(sameBusinessGroups.smartSortResult.groups[0].groupValidity, 'valid', '完整业务组不得 needs_completion');
+  });
+
+  const customWorkPackage = buildPackage([
+    makeMoment({
+      id: 'marki-bridge-custom-work',
+      workContent: '消防通道日常巡查'
+    })
+  ], 'marki-bridge-custom-work-batch');
+  const customWorkRun = await runSourceAware(customWorkPackage);
+  const customWorkGroups = buildGroups(customWorkRun.result);
+  const customWorkPhoto = customWorkPackage.photos[0];
+  const customWorkCanonical = customWorkGroups.sourceCanonicalByPhotoId[customWorkPhoto.id];
+  await scenario('3 可信非预设 Marki 工作内容保持有效', () => {
+    equal(customWorkRun.ocrCallCount, 0, '非预设可信工作内容不得触发 OCR');
+    equal(customWorkRun.result.processingResults[0].route, 'marki_platform_only', '非预设可信内容仍应平台直用');
+    equal(customWorkCanonical.workContent, '消防通道日常巡查', 'canonical 必须保留原始可信内容');
+    equal(customWorkCanonical.fieldSources.workContent, 'marki.content.trusted', '非预设内容必须标明可信 Marki 来源');
+    equal(customWorkGroups.smartSortResult.groupCount, 1, '非预设内容必须正常参与分组');
+    equal(customWorkGroups.smartSortResult.groups[0].groupValidity, 'valid', '非预设内容组不得标记待补全');
+    deepEqual(
+      validation.validateArchiveFormByTemplate(customWorkCanonical, configs),
+      [],
+      '可信 Marki 非预设内容不得被表单校验当作缺失'
+    );
+  });
+
+  const oldRecognition = structuredClone(completeRecognition);
+  oldRecognition.structuredFields.archiveCategory = '巡查检查类';
+  delete oldRecognition.structuredFields.watermarkCategory;
+  delete oldRecognition.structuredFields.watermarkTemplateName;
+  oldRecognition.parsedFields.watermarkCategory = null;
+  oldRecognition.parsedFields.categoryHint = null;
+  oldRecognition.parsedWatermark.watermarkCategory = null;
+  const oldWatermark = {
+    ...structuredClone(completeWatermark),
+    watermarkCategoryText: '巡查检查类',
+    watermarkTemplateName: '巡查检查类'
+  };
+  const oldSuggestion = structuredClone(completeSuggestion);
+  oldSuggestion.suggestedFields.watermarkCategory = '';
+  oldSuggestion.fieldSources.watermarkCategory = '';
+  oldSuggestion.missingRequiredFields = ['归档分类'];
+  oldSuggestion.status = 'needs_completion';
+  const oldPackage = {
+    batchId: 'marki-bridge-old-batch',
+    photos: [completePhoto],
+    recognitionResultsByPhoto: { [completePhoto.id]: oldRecognition },
+    watermarkRecordsByPhoto: { [completePhoto.id]: oldWatermark },
+    archiveSuggestionsByPhoto: { [completePhoto.id]: oldSuggestion }
+  };
+  const oldRun = await runSourceAware(oldPackage);
+  const oldCanonical = buildCanonicalMaps(oldRun.result).sourceCanonicalByPhotoId[completePhoto.id];
+  await scenario('4 旧导入 raw archiveCategory 离线兼容', () => {
+    equal(oldRun.result.processingResults[0].route, 'marki_platform_only', '旧导入重智拣必须恢复平台直用');
+    equal(oldRun.ocrCallCount, 0, '旧导入映射成功后不得 OCR');
+    equal(oldRun.ocrAvailabilityCount, 0, '旧导入映射成功后不得检查 OCR');
+    equal(oldCanonical.archiveCategory, '巡查检查工作记录', '旧原始模板名必须映射为标准分类');
+  });
+
+  const unknownPackage = buildPackage([
+    makeMoment({ id: 'marki-bridge-unknown', markName: '未配置模板' })
+  ], 'marki-bridge-unknown-batch');
+  const unknownPhoto = unknownPackage.photos[0];
+  const unknownRoute = sourceAware.classifyPhotoRecognitionRoute({
+    photo: unknownPhoto,
+    recognitionResult: unknownPackage.recognitionResultsByPhoto[unknownPhoto.id],
+    watermarkRecord: unknownPackage.watermarkRecordsByPhoto[unknownPhoto.id],
+    archiveSuggestion: unknownPackage.archiveSuggestionsByPhoto[unknownPhoto.id],
+    configs
+  });
+  const unknownCanonical = canonicalModule.buildSourceCanonical({
+    photo: unknownPhoto,
+    recognitionResult: unknownPackage.recognitionResultsByPhoto[unknownPhoto.id],
+    watermarkRecord: unknownPackage.watermarkRecordsByPhoto[unknownPhoto.id],
+    configs
+  });
+  await scenario('5 未知模板不猜测标准分类', () => {
+    equal(unknownCanonical.archiveCategory, '', '未知模板不得默认分类');
+    check(unknownCanonical.unresolvedFields.includes('archiveCategory'), '未知模板必须保持分类待补全');
+    equal(unknownRoute, 'marki_ocr_fallback', '真正缺分类时必须保留现有补充路由');
+    check(
+      unknownCanonical.archiveCategory !== '巡查检查工作记录',
+      '未知模板不得落入巡查检查工作记录'
+    );
+  });
+
+  const timePackage = buildPackage([
+    makeMoment({
+      id: 'marki-bridge-time',
+      markName: '时间地点水印',
+      workContent: '',
+      remark: ''
+    })
+  ], 'marki-bridge-time-batch');
+  const timeRun = await runSourceAware(timePackage);
+  const timePhoto = timePackage.photos[0];
+  const timeCanonical = buildCanonicalMaps(timeRun.result).sourceCanonicalByPhotoId[timePhoto.id];
+  await scenario('6 时间地点模板保持专用不适用语义', () => {
+    equal(timeRun.result.processingResults[0].route, 'marki_platform_only', '完整时间地点照片应平台直用');
+    equal(timeRun.ocrCallCount, 0, '时间地点工作内容不适用不得触发 OCR');
+    equal(timeCanonical.watermarkTemplateType, 'time_location', '时间地点模板不得回归');
+    equal(timeCanonical.archiveCategory, '时间地点水印', '时间地点分类必须保持');
+    equal(timeCanonical.workContent, 'not_applicable', '时间地点工作内容必须使用稳定不适用值');
+  });
+
+  const vehiclePackage = buildPackage([
+    makeMoment({
+      id: 'marki-bridge-vehicle-1',
+      markName: '机动车违规管理',
+      workContent: '',
+      extraEntries: [
+        ['违停类型', '占用消防通道'],
+        ['车牌号码', '云D12345']
+      ]
+    }),
+    makeMoment({
+      id: 'marki-bridge-vehicle-2',
+      markName: '机动车违规管理',
+      workContent: '',
+      extraEntries: [
+        ['违停类型', '占用消防通道'],
+        ['车牌号码', '云D67890']
+      ]
+    })
+  ], 'marki-bridge-vehicle-batch');
+  const vehicleRun = await runSourceAware(vehiclePackage);
+  const vehicleGroups = buildGroups(vehicleRun.result);
+  const vehicleMembers = vehiclePackage.photos.map((photo) => ({
+    photoId: photo.id,
+    effectiveInfo: vehicleGroups.effectiveArchiveInfoByPhotoId[photo.id]
+  }));
+  const vehicleGroupCanonical = canonicalModule.buildGroupCanonical(vehicleMembers);
+  await scenario('7 机动车模板和照片级字段保持隔离', () => {
+    equal(vehicleRun.ocrCallCount, 0, '完整机动车结构化数据不得 OCR');
+    equal(vehicleGroups.smartSortResult.groupCount, 1, '同违停类型的两张照片可同四维组');
+    equal(vehicleGroupCanonical.groupCommonFields.watermarkTemplateType, 'vehicle_violation', '机动车模板不得回归');
+    equal(vehicleGroupCanonical.groupCommonFields.workContent, '占用消防通道', '违停类型必须成为公共工作内容');
+    equal(
+      vehicleGroupCanonical.photoSpecificFields[vehiclePackage.photos[0].id].vehiclePlate,
+      '云D12345',
+      '第一张车牌必须保持照片级'
+    );
+    equal(
+      vehicleGroupCanonical.photoSpecificFields[vehiclePackage.photos[1].id].vehiclePlate,
+      '云D67890',
+      '第二张车牌必须保持照片级'
+    );
+    check(vehicleGroupCanonical.mixedFields.includes('vehiclePlate'), '不同车牌必须标记为照片级多值');
+  });
+
+  await scenario('8 Marki bundle 到归档表单完整贯通', () => {
+    const group = sameBusinessGroups.smartSortResult.groups[0];
+    const members = group.photoIds.map((photoId) => ({
+      photoId,
+      effectiveInfo: sameBusinessGroups.effectiveArchiveInfoByPhotoId[photoId]
+    }));
+    const groupCanonical = canonicalModule.buildGroupCanonical(members);
+    const activePhoto = sameBusinessRun.result.photos[0];
+    const form = rightPanel.buildArchiveFormSeed({
+      photo: activePhoto,
+      recognitionResult: sameBusinessRun.result.recognitionResultsByPhoto[activePhoto.id],
+      watermarkRecord: sameBusinessRun.result.watermarkRecordsByPhoto[activePhoto.id],
+      archiveSuggestion: sameBusinessRun.result.archiveSuggestionsByPhoto[activePhoto.id],
+      group,
+      groupCanonical,
+      sourceCanonical: sameBusinessGroups.sourceCanonicalByPhotoId[activePhoto.id],
+      configs
+    });
+    equal(groupCanonical.groupValidity, 'valid', '两张同业务照片必须形成合法 group canonical');
+    equal(form.date, '2026-07-26', '表单必须自动套用日期');
+    equal(form.projectName, '潇湘新区二期', '表单必须自动套用正式项目');
+    equal(form.watermarkCategory, '巡查检查工作记录', '表单必须自动套用标准分类');
+    equal(form.workContent, '秩序巡查', '表单必须自动套用工作内容');
+    equal(form.locationArea, '二期一号门', '表单必须自动套用位置');
+    equal(form.remarks, '夜班巡查正常', '表单必须自动套用备注');
+    deepEqual(validation.validateArchiveFormByTemplate(form, configs), [], '端到端表单不得为空或待补全');
+  });
+
+  assert.equal(scenarioCount, 8, 'Marki 结构化智拣桥接必须执行八个行为场景');
+  assert.equal(assertionCount >= 50, true, 'Marki 结构化智拣桥接至少应执行五十个行为断言');
+  console.log(
+    `Marki 结构化智拣桥接自检通过：${scenarioCount} 个行为场景，`
+    + `${assertionCount} 个行为断言，0 个源码契约断言。`
   );
 }
 
@@ -10675,12 +11059,13 @@ async function checkWatermarkTemplateFormContract(root) {
     equal(standardCanonical.archiveCategory, '巡查检查工作记录', '当前正式分类应精确匹配');
     equal(standardCanonical.workContent, '秩序巡查', '工作内容应在当前分类下精确匹配');
   });
-  scenario('3 未登记分类保持 unresolved', () => {
+  scenario('3 Marki 明确模板名使用共享精确映射', () => {
     const result = canonical({ ...standardFields, archiveCategory: '巡查检查类' }, '巡查检查类');
-    equal(result.archiveCategory, '', '未登记旧分类名称不得自动兼容');
-    check(result.unresolvedFields.includes('archiveCategory'), '未登记分类应进入 unresolvedFields');
+    equal(result.archiveCategory, '巡查检查工作记录', '明确模板名必须映射为当前正式分类');
+    equal(result.fieldSources.archiveCategory, 'marki.template_mapping.exact', '显式映射来源必须与标准名称精确匹配区分');
+    check(!result.unresolvedFields.includes('archiveCategory'), '显式映射成功后分类不得 unresolved');
   });
-  scenario('4 不创建旧名称别名', () => {
+  scenario('4 映射表外旧名称仍保持 unresolved', () => {
     const result = mapMarkiMoment({
       id: 'old-category-name',
       uid: 1,
@@ -10694,7 +11079,7 @@ async function checkWatermarkTemplateFormContract(root) {
       ]),
       postTime: 1784390400
     }, configs);
-    equal(result.suggestedFields.watermarkCategory, '', 'Marki 当前运行链不得维护旧分类别名');
+    equal(result.suggestedFields.watermarkCategory, '', '映射表外旧名称不得自动兼容');
   });
   scenario('5 映射不修改当前配置', () => {
     deepEqual(configs, configSnapshot, '模板映射不得修改运行时配置');
@@ -11438,7 +11823,7 @@ async function checkSmartClassificationBusinessClosure(root) {
     ['分类精确匹配', source('安全管理工作记录', complete), 'archiveCategory', '安全管理工作记录'],
     ['分类不模糊包含', source('安全管理工作记录', { ...complete, archiveCategory: '安全管理' }), 'archiveCategory', ''],
     ['工作内容分类内精确匹配', source('安全管理工作记录', complete), 'workContent', '治理飞线充电'],
-    ['工作内容不得跨分类借用', source('安全管理工作记录', { ...complete, archiveCategory: '工程类工作记录' }), 'workContent', ''],
+    ['Marki 可信工作内容不受预设白名单清空', source('安全管理工作记录', { ...complete, archiveCategory: '工程类工作记录' }), 'workContent', '治理飞线充电'],
     ['时间地点固定不适用', source('时间地点', { date: complete.date, projectOriginalText: complete.projectOriginalText, locationArea: '南门' }), 'workContent', NOT_APPLICABLE_WORK_CONTENT],
     ['机动车工作内容同步违停类型', source('机动车违规管理', { date: complete.date, projectOriginalText: complete.projectOriginalText, vehiclePlate: '湘A12345', violationType: '占用消防通道' }), 'workContent', '占用消防通道']
   ];
