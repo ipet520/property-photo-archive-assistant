@@ -1,7 +1,5 @@
-export const MARKI_WATERMARK_FILTERS = Object.freeze({
-  WATERMARKED: 'watermarked',
-  UNWATERMARKED: 'unwatermarked',
-  UNKNOWN: 'watermark_unknown',
+export const MARKI_TEMPLATE_FILTERS = Object.freeze({
+  UNKNOWN: 'template_unknown',
   ALL: 'all'
 });
 
@@ -11,8 +9,7 @@ export const MARKI_IMPORT_STATUS_FILTERS = Object.freeze([
   { value: 'imported_active', label: '已在工作池' },
   { value: 'workspace_file_repairable', label: '工作池文件需修复' },
   { value: 'removed_reimportable', label: '可重新导入' },
-  { value: 'failed_retryable', label: '导入失败' },
-  { value: 'filtered', label: '已过滤' }
+  { value: 'failed_retryable', label: '导入失败' }
 ]);
 
 const SELECTABLE_STATUSES = new Set([
@@ -22,44 +19,45 @@ const SELECTABLE_STATUSES = new Set([
   'failed_retryable'
 ]);
 
-export function normalizeMarkiWatermarkName(value) {
+export function normalizeMarkiTemplateName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ');
 }
 
-export function buildMarkiWatermarkFilterOptions(photos = []) {
+export function buildMarkiTemplateFilterOptions(photos = []) {
   const names = new Map();
+  let hasUnknown = false;
   for (const photo of photos) {
-    if (getWatermarkStatus(photo) !== MARKI_WATERMARK_FILTERS.WATERMARKED) continue;
-    const name = normalizeMarkiWatermarkName(photo.markName);
-    if (!name) continue;
-    names.set(
-      photo.watermarkKey || `name:${name}`,
-      name === '时间地点(兜底选择)' ? '时间地点（兜底选择）' : name
-    );
+    const name = normalizeMarkiTemplateName(photo.templateName ?? photo.markName);
+    if (!name) {
+      hasUnknown = true;
+      continue;
+    }
+    names.set(`name:${name}`, name);
   }
   return [
-    { value: MARKI_WATERMARK_FILTERS.WATERMARKED, label: '全部有水印' },
+    { value: MARKI_TEMPLATE_FILTERS.ALL, label: '全部模板' },
     ...[...names.entries()]
       .sort((left, right) => left[1].localeCompare(right[1], 'zh-CN'))
       .map(([value, label]) => ({ value, label })),
-    { value: MARKI_WATERMARK_FILTERS.UNWATERMARKED, label: '无水印' },
-    { value: MARKI_WATERMARK_FILTERS.UNKNOWN, label: '水印状态待确认' },
-    { value: MARKI_WATERMARK_FILTERS.ALL, label: '全部结果' }
+    ...(hasUnknown
+      ? [{ value: MARKI_TEMPLATE_FILTERS.UNKNOWN, label: '模板未知' }]
+      : [])
   ];
 }
 
 export function filterMarkiQueryPhotos(photos = [], filters = {}) {
-  const watermarkFilter = String(filters.watermarkFilter || MARKI_WATERMARK_FILTERS.WATERMARKED);
+  const templateFilter = normalizeStoredTemplateFilter(
+    filters.templateFilter ?? filters.watermarkFilter
+  );
   const importStatusFilter = String(filters.importStatusFilter || 'all');
   return photos.filter((photo) => (
-    matchesWatermarkFilter(photo, watermarkFilter)
+    matchesTemplateFilter(photo, templateFilter)
     && matchesImportStatusFilter(photo, importStatusFilter)
   ));
 }
 
 export function isMarkiQueryPhotoSelectable(photo) {
-  return getWatermarkStatus(photo) === MARKI_WATERMARK_FILTERS.WATERMARKED
-    && SELECTABLE_STATUSES.has(String(photo.selectedSourceStatus || ''));
+  return SELECTABLE_STATUSES.has(String(photo.selectedSourceStatus || ''));
 }
 
 export function selectMarkiFilteredTokens(photos = []) {
@@ -75,12 +73,6 @@ export function summarizeMarkiQueryResults(rawPhotos = [], filteredPhotos = [], 
     loadedCount: rawPhotos.length,
     filteredCount: filteredPhotos.length,
     selectedCount: filteredPhotos.filter((photo) => selected.has(String(photo.selectionToken))).length,
-    unwatermarkedCount: rawPhotos.filter(
-      (photo) => getWatermarkStatus(photo) === MARKI_WATERMARK_FILTERS.UNWATERMARKED
-    ).length,
-    watermarkUnknownCount: rawPhotos.filter(
-      (photo) => getWatermarkStatus(photo) === MARKI_WATERMARK_FILTERS.UNKNOWN
-    ).length,
     selectableCount: filteredPhotos.filter(isMarkiQueryPhotoSelectable).length
   };
 }
@@ -143,8 +135,6 @@ export function formatMarkiImportLifecycleStatus(status) {
     workspace_file_repairable: '工作池文件需修复',
     removed_reimportable: '可重新导入',
     failed_retryable: '导入失败',
-    filtered_unwatermarked: '无水印已过滤',
-    watermark_unknown: '水印状态待确认',
     queued: '等待导入',
     downloading: '正在导入',
     downloaded: '已下载',
@@ -154,44 +144,30 @@ export function formatMarkiImportLifecycleStatus(status) {
   }[status] || '状态未知';
 }
 
-function matchesWatermarkFilter(photo, filter) {
-  if (filter === MARKI_WATERMARK_FILTERS.ALL) return true;
-  const status = getWatermarkStatus(photo);
-  if (filter === MARKI_WATERMARK_FILTERS.WATERMARKED) {
-    return status === MARKI_WATERMARK_FILTERS.WATERMARKED;
-  }
-  if (filter === MARKI_WATERMARK_FILTERS.UNWATERMARKED) {
-    return status === MARKI_WATERMARK_FILTERS.UNWATERMARKED;
-  }
-  if (filter === MARKI_WATERMARK_FILTERS.UNKNOWN) {
-    return status === MARKI_WATERMARK_FILTERS.UNKNOWN;
-  }
-  return status === MARKI_WATERMARK_FILTERS.WATERMARKED
-    && String(photo.watermarkKey || '') === filter;
+function matchesTemplateFilter(photo, filter) {
+  if (filter === MARKI_TEMPLATE_FILTERS.ALL) return true;
+  const templateName = normalizeMarkiTemplateName(photo?.templateName ?? photo?.markName);
+  const templateKey = templateName ? `name:${templateName}` : MARKI_TEMPLATE_FILTERS.UNKNOWN;
+  return templateKey === filter;
 }
 
 function matchesImportStatusFilter(photo, filter) {
   const status = String(photo?.selectedSourceStatus || '');
   if (filter === 'all') return true;
   if (filter === 'not_imported') return status === 'discovered';
-  if (filter === 'filtered') {
-    return ['filtered_unwatermarked', 'watermark_unknown'].includes(status);
-  }
   return status === filter;
 }
 
-function getWatermarkStatus(photo) {
-  const status = String(photo?.watermarkStatus || '');
-  if ([
-    MARKI_WATERMARK_FILTERS.WATERMARKED,
-    MARKI_WATERMARK_FILTERS.UNWATERMARKED,
-    MARKI_WATERMARK_FILTERS.UNKNOWN
-  ].includes(status)) {
-    return status;
+export function normalizeStoredTemplateFilter(value) {
+  const text = String(value || '').normalize('NFKC').trim();
+  if (text === MARKI_TEMPLATE_FILTERS.ALL || text === MARKI_TEMPLATE_FILTERS.UNKNOWN) {
+    return text;
   }
-  if (photo?.isWatermarked === true) return MARKI_WATERMARK_FILTERS.WATERMARKED;
-  if (photo?.isWatermarked === false) return MARKI_WATERMARK_FILTERS.UNWATERMARKED;
-  return MARKI_WATERMARK_FILTERS.UNKNOWN;
+  if (text.startsWith('name:')) {
+    const name = normalizeMarkiTemplateName(text.slice(5));
+    return name ? `name:${name}` : MARKI_TEMPLATE_FILTERS.ALL;
+  }
+  return MARKI_TEMPLATE_FILTERS.ALL;
 }
 
 function isWorkspacePhotoFileRepairable(photo = {}) {

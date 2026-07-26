@@ -3281,6 +3281,7 @@ async function checkMarkiPhotoQuerySessions(root) {
 
   const firstApiBody = JSON.parse(apiRequests[0].options.body);
   assert.equal(firstApiBody.momType, 1, '照片查询请求体必须固定 momType=1');
+  assert.equal(Object.hasOwn(firstApiBody, 'templateFilter'), false, '模板筛选不得发送给开放接口');
   scenarioCount += 1;
 
   assert.equal(firstApiBody.teamId, 10001, '照片查询应写入可选 teamId');
@@ -3374,10 +3375,8 @@ async function checkMarkiPhotoQuerySessions(root) {
       'teamId',
       'uid',
       'photographerName',
-      'markName',
-      'watermarkKey',
-      'watermarkStatus',
-      'isWatermarked',
+      'templateName',
+      'templateKey',
       'postTime',
       'displayDate',
       'projectText',
@@ -3385,13 +3384,12 @@ async function checkMarkiPhotoQuerySessions(root) {
       'locationText',
       'selectedSourceStatus'
     ],
-    'renderer 照片摘要必须严格使用十五字段安全白名单'
+    'renderer 照片摘要必须严格使用十三字段安全白名单'
   );
   scenarioCount += 1;
 
-  const safeSummarySource = JSON.stringify(created.photos[0]);
   for (const forbidden of ['momentId', 'sourceKey', 'url', 'content', 'parsedEntries', '防伪码', 'lng', 'lat', 'orgId']) {
-    assert.equal(safeSummarySource.includes(forbidden), false, `renderer 摘要不得包含 ${forbidden}`);
+    assert.equal(Object.hasOwn(created.photos[0], forbidden), false, `renderer 摘要不得包含 ${forbidden}`);
   }
   scenarioCount += 1;
 
@@ -3417,12 +3415,20 @@ async function checkMarkiPhotoQuerySessions(root) {
     '下一页应按首次出现顺序追加摘要'
   );
   assert.equal(pagedNext.pagination.pageCount, 2, '下一页成功后应增加页数');
+  assert.equal(
+    paged.calls.every((call) => !Object.hasOwn(call.input, 'templateFilter')),
+    true,
+    '首次查询和下一页都不得把 templateFilter 发送给开放接口'
+  );
   scenarioCount += 1;
 
   const duplicatePaged = makeService({
     pages: [
-      makePage([makeMoment('repeat')], { next: 'repeat-next', hasMore: true }),
-      makePage([makeMoment('repeat'), makeMoment('unique')])
+      makePage([makeMoment('repeat', { markName: '' })], { next: 'repeat-next', hasMore: true }),
+      makePage([
+        makeMoment('repeat', { markName: '后页不应覆盖' }),
+        makeMoment('unique')
+      ])
     ]
   });
   const duplicateFirst = await duplicatePaged.service.create(createInput());
@@ -3430,6 +3436,7 @@ async function checkMarkiPhotoQuerySessions(root) {
   const duplicateNext = await duplicatePaged.service.loadNext(duplicateFirst.sessionId, { credentials });
   assert.equal(duplicateNext.photos.length, 2, '跨页重复 moment 不得生成重复摘要');
   assert.equal(duplicateNext.photos[0].selectionToken, originalToken, '跨页重复 moment 应复用原 selectionToken');
+  assert.equal(duplicateNext.photos[0].templateKey, 'template_unknown', '跨页重复 moment 不得使用水印等级覆盖首次记录');
   scenarioCount += 1;
 
   assert.equal(Object.hasOwn(pagedNext, 'next'), false, '会话结果不得返回真实 next');
@@ -3455,46 +3462,55 @@ async function checkMarkiPhotoQuerySessions(root) {
     pages: [makePage([makeMoment('mark-id', { markName: '', markId: 'template-100' })])]
   });
   const markIdResult = await markIdService.service.create(createInput());
-  assert.equal(markIdResult.photos[0].watermarkStatus, 'watermarked', '存在可信 markId 必须判为有水印');
+  assert.equal(markIdResult.photos[0].templateKey, 'template_unknown', 'markId 不得被解释为图片水印版本或模板名称');
   scenarioCount += 1;
 
   const markNameService = makeService({
-    pages: [makePage([makeMoment('mark-name', { markName: '安全管理工作记录' })])]
+    pages: [makePage([
+      makeMoment('mark-name-a', { markName: ' 安全管理　工作记录 ' }),
+      makeMoment('mark-name-b', { markName: '安全管理 工作记录' })
+    ])]
   });
   const markNameResult = await markNameService.service.create(createInput());
-  assert.equal(markNameResult.photos[0].watermarkStatus, 'watermarked', '存在可信 markName 必须判为有水印');
-  scenarioCount += 1;
-
-  const unwatermarkedService = makeService({
-    pages: [makePage([makeMoment('no-watermark', { markName: '', isWatermarked: false })])]
-  });
-  const unwatermarkedResult = await unwatermarkedService.service.create(createInput());
-  assert.equal(unwatermarkedResult.photos[0].watermarkStatus, 'unwatermarked', '平台明确无水印才可判为 unwatermarked');
-  assert.equal(unwatermarkedResult.photos[0].selectedSourceStatus, 'filtered_unwatermarked', '明确无水印才能进入 filtered_unwatermarked');
-  assert.throws(
-    () => unwatermarkedService.service.beginImport(
-      unwatermarkedResult.sessionId,
-      [unwatermarkedResult.photos[0].selectionToken]
-    ),
-    (error) => error?.code === 'marki_photo_import_watermark_unconfirmed',
-    '主进程必须拒绝导入明确无水印照片'
+  assert.equal(markNameResult.photos.length, 2, '不同 moment.id 即使模板相同也必须同时保留');
+  assert.equal(markNameResult.photos[0].templateName, '安全管理 工作记录', '模板名称必须执行 NFKC 和安全空白规范化');
+  assert.equal(markNameResult.photos[0].templateKey, markNameResult.photos[1].templateKey, '相同 markName 必须生成相同 templateKey');
+  const sameTemplateTask = markNameService.service.beginImport(
+    markNameResult.sessionId,
+    markNameResult.photos.map((photo) => photo.selectionToken)
+  );
+  assert.equal(new Set(sameTemplateTask.items.map((item) => item.sourceKey)).size, 2, '不同 moment.id 必须生成不同 sourceKey');
+  assert.deepEqual(
+    sameTemplateTask.items.map((item) => item.sourceKey),
+    ['marki_api:12345:mark-name-a', 'marki_api:12345:mark-name-b'],
+    '模板筛选不得改变 marki_api:<orgId>:<momentId> 来源键'
   );
   scenarioCount += 1;
 
-  const unknownWatermarkService = makeService({
-    pages: [makePage([makeMoment('unknown-watermark', { markName: '' })])]
+  const explicitVersionService = makeService({
+    pages: [makePage([makeMoment('explicit-version', { markName: '', isWatermarked: false })])]
   });
-  const unknownWatermarkResult = await unknownWatermarkService.service.create(createInput());
-  assert.equal(unknownWatermarkResult.photos[0].watermarkStatus, 'watermark_unknown', '水印字段缺失必须判为待确认');
-  assert.equal(unknownWatermarkResult.photos[0].selectedSourceStatus, 'watermark_unknown', '水印待确认不得冒充无水印过滤状态');
-  assert.throws(
-    () => unknownWatermarkService.service.beginImport(
-      unknownWatermarkResult.sessionId,
-      [unknownWatermarkResult.photos[0].selectionToken]
-    ),
-    (error) => error?.code === 'marki_photo_import_watermark_unconfirmed',
-    '主进程必须拒绝导入水印状态待确认照片'
+  const explicitVersionResult = await explicitVersionService.service.create(createInput());
+  assert.equal(explicitVersionResult.photos[0].templateKey, 'template_unknown', '图片版本状态不得参与模板判断');
+  assert.equal(explicitVersionResult.photos[0].selectedSourceStatus, 'discovered', '生命周期状态不得被图片版本字段覆盖');
+  assert.equal(
+    explicitVersionService.service.beginImport(
+      explicitVersionResult.sessionId,
+      [explicitVersionResult.photos[0].selectionToken]
+    ).success,
+    true,
+    '模板未知但生命周期可导入的照片必须允许选择'
   );
+  scenarioCount += 1;
+
+  const contentOnlyService = makeService({
+    pages: [makePage([makeMoment('content-only', {
+      markName: '',
+      content: JSON.stringify([['水印模板', '工程类工作记录']])
+    })])]
+  });
+  const contentOnlyResult = await contentOnlyService.service.create(createInput());
+  assert.equal(contentOnlyResult.photos[0].templateKey, 'template_unknown', '不得从 content 推断模板或图片水印版本');
   scenarioCount += 1;
 
   const getWithoutCredentials = await core.service.get(created.sessionId);
@@ -3688,7 +3704,7 @@ async function checkMarkiImportTimeHelpers() {
     {
       teamId: '',
       uid: '',
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all',
       start: '2026-07-18T00:00',
       end: '2026-07-18T14:30'
@@ -3700,7 +3716,7 @@ async function checkMarkiImportTimeHelpers() {
     {
       teamId: '',
       uid: '',
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all',
       start: '2026-07-17T00:00',
       end: '2026-07-17T23:59'
@@ -3712,7 +3728,7 @@ async function checkMarkiImportTimeHelpers() {
     {
       teamId: '',
       uid: '',
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all',
       start: '2026-07-18T00:00',
       end: '2026-07-18T00:05'
@@ -5161,7 +5177,7 @@ async function checkMarkiTrustedImport(root) {
   const documentsPath = path.join(root, 'documents');
   const userDataPath = path.join(root, 'user-data');
   const credentials = { orgId: '12345', key: 'self-check-key' };
-  const buildMoment = (id) => ({
+  const buildMoment = (id, overrides = {}) => ({
     id,
     uid: '20001',
     teamId: '10001',
@@ -5175,7 +5191,8 @@ async function checkMarkiTrustedImport(root) {
     markName: '工程类专用',
     lng: 103.8,
     lat: 25.5,
-    postTime: Math.floor(Date.parse('2026-07-18T02:00:00Z') / 1000)
+    postTime: Math.floor(Date.parse('2026-07-18T02:00:00Z') / 1000),
+    ...overrides
   });
   const createSession = async (moments) => {
     const service = createMarkiPhotoQuerySessionService({
@@ -5270,12 +5287,114 @@ async function checkMarkiTrustedImport(root) {
     request: {
       sessionId: query.sessionId,
       selectionTokens,
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all'
     }
   });
 
   await fs.mkdir(root, { recursive: true });
+  const templateMismatchSession = await createSession([buildMoment('template-mismatch-001')]);
+  let mismatchDownloadCalls = 0;
+  const mismatchRequest = buildRequest(
+    templateMismatchSession.query,
+    [templateMismatchSession.query.photos[0].selectionToken]
+  );
+  mismatchRequest.request.templateFilter = 'name:其他模板';
+  await assert.rejects(
+    () => importMarkiPhotoQuerySelection(
+      mismatchRequest,
+      buildImportOptions(templateMismatchSession.service, {
+        downloadMarkiPhoto: async () => {
+          mismatchDownloadCalls += 1;
+          throw new Error('must not download');
+        },
+        prepareStructuredImport: async () => {
+          throw new Error('must not prepare');
+        }
+      })
+    ),
+    (error) => error?.code === 'marki_photo_import_filter_mismatch',
+    '可信导入必须二次拒绝 templateFilter 与照片 templateKey 不一致'
+  );
+  assert.equal(mismatchDownloadCalls, 0, '模板筛选不匹配时不得开始下载');
+
+  const statusMismatchSession = await createSession([buildMoment('status-mismatch-001')]);
+  const statusMismatchRequest = buildRequest(
+    statusMismatchSession.query,
+    [statusMismatchSession.query.photos[0].selectionToken]
+  );
+  statusMismatchRequest.request.importStatusFilter = 'imported_active';
+  await assert.rejects(
+    () => importMarkiPhotoQuerySelection(
+      statusMismatchRequest,
+      buildImportOptions(statusMismatchSession.service, {
+        downloadMarkiPhoto: async () => {
+          throw new Error('must not download');
+        },
+        prepareStructuredImport: async () => {
+          throw new Error('must not prepare');
+        }
+      })
+    ),
+    (error) => error?.code === 'marki_photo_import_filter_mismatch',
+    '可信导入必须用重新读取的生命周期状态复核 importStatusFilter'
+  );
+
+  const unknownTemplateSession = await createSession([
+    buildMoment('template-unknown-001', { markName: '' })
+  ]);
+  const unknownTemplateRequest = buildRequest(
+    unknownTemplateSession.query,
+    [unknownTemplateSession.query.photos[0].selectionToken]
+  );
+  unknownTemplateRequest.request.templateFilter = 'template_unknown';
+  const unknownTemplateResult = await importMarkiPhotoQuerySelection(
+    unknownTemplateRequest,
+    buildImportOptions(unknownTemplateSession.service, {
+      resolveSourceStatuses: async () => ({
+        bySourceKey: {
+          [buildMarkiSourceKey(credentials.orgId, 'template-unknown-001')]: 'imported_active'
+        }
+      }),
+      downloadMarkiPhoto: async () => {
+        throw new Error('must not download imported item');
+      },
+      prepareStructuredImport: async () => {
+        throw new Error('must not prepare imported item');
+      }
+    })
+  );
+  assert.equal(unknownTemplateResult.status, 'nothing_to_import', '模板未知筛选必须通过可信层精确复核');
+
+  const legacyFilterSession = await createSession([buildMoment('legacy-filter-001')]);
+  const legacyFilterRequest = buildRequest(
+    legacyFilterSession.query,
+    [legacyFilterSession.query.photos[0].selectionToken]
+  );
+  legacyFilterRequest.request = {
+    sessionId: legacyFilterRequest.request.sessionId,
+    selectionTokens: legacyFilterRequest.request.selectionTokens,
+    watermarkFilter: 'name:工程类专用',
+    importStatusFilter: 'all'
+  };
+  const legacyFilterResult = await importMarkiPhotoQuerySelection(
+    legacyFilterRequest,
+    buildImportOptions(legacyFilterSession.service, {
+      resolveSourceStatuses: async () => ({
+        bySourceKey: {
+          [buildMarkiSourceKey(credentials.orgId, 'legacy-filter-001')]: 'imported_active'
+        }
+      }),
+      downloadMarkiPhoto: async () => {
+        throw new Error('must not download imported item');
+      },
+      prepareStructuredImport: async () => {
+        throw new Error('must not prepare imported item');
+      }
+    })
+  );
+  assert.equal(legacyFilterResult.status, 'nothing_to_import', '旧 name:* watermarkFilter 必须兼容迁移为模板筛选');
+
   const { service, query } = await createSession([
     buildMoment('trusted-001'),
     buildMoment('trusted-002'),
@@ -5451,7 +5570,7 @@ async function checkMarkiTrustedImport(root) {
       request: {
         sessionId: fallbackSessionId,
         selectionTokens: [fallbackSelectionToken],
-        watermarkFilter: 'watermarked',
+        templateFilter: 'all',
         importStatusFilter: 'all'
       }
     },
@@ -5469,10 +5588,8 @@ async function checkMarkiTrustedImport(root) {
           selectionToken: fallbackSelectionToken,
           sourceKey: buildMarkiSourceKey(credentials.orgId, fallbackMoment.id),
           selectedSourceStatus: 'discovered',
-          watermarkStatus: 'watermarked',
-          isWatermarked: true,
-          markName: fallbackMoment.markName,
-          watermarkKey: `name:${fallbackMoment.markName}`,
+          templateName: fallbackMoment.markName,
+          templateKey: `name:${fallbackMoment.markName}`,
           moment: fallbackMoment
         }]
       }),
@@ -5720,7 +5837,7 @@ async function checkMarkiEndToEndFlow(root) {
     request: {
       sessionId: secondPage.sessionId,
       selectionTokens: selectedTokens,
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all'
     }
   };
@@ -5857,7 +5974,7 @@ async function checkMarkiEndToEndFlow(root) {
     request: {
       sessionId: duplicateQuery.sessionId,
       selectionTokens: duplicateQuery.photos.map((photo) => photo.selectionToken),
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all'
     }
   }, {
@@ -5908,7 +6025,7 @@ async function checkMarkiEndToEndFlow(root) {
     request: {
       sessionId: metadataQuery.sessionId,
       selectionTokens: metadataQuery.photos.map((photo) => photo.selectionToken),
-      watermarkFilter: 'watermarked',
+      templateFilter: 'all',
       importStatusFilter: 'all'
     }
   };
@@ -13078,150 +13195,135 @@ async function checkMarkiImportLifecycleClosure(root) {
     sourceContractCount += 1;
   };
 
-  const watermarkedPhotos = [
+  const queryPhotos = [
     {
       selectionToken: 'token-a',
       displayId: '1',
-      markName: ' 时间地点（兜底选择） ',
-      watermarkKey: 'name:时间地点（兜底选择）',
-      isWatermarked: true,
+      templateName: ' 时间地点（兜底选择） ',
+      templateKey: 'name:时间地点（兜底选择）',
       selectedSourceStatus: 'discovered'
     },
     {
       selectionToken: 'token-b',
       displayId: '2',
-      markName: '工程记录',
-      watermarkKey: 'name:工程记录',
-      isWatermarked: true,
+      templateName: '工程记录',
+      templateKey: 'name:工程记录',
       selectedSourceStatus: 'imported_active'
     },
     {
       selectionToken: 'token-c',
       displayId: '3',
-      markName: '',
-      watermarkKey: 'unwatermarked',
-      isWatermarked: false,
-      selectedSourceStatus: 'filtered_unwatermarked'
+      templateName: '',
+      templateKey: 'template_unknown',
+      selectedSourceStatus: 'discovered'
     },
     {
       selectionToken: 'token-d',
       displayId: '4',
-      markName: '工程记录',
-      watermarkKey: 'name:工程记录',
-      isWatermarked: true,
+      templateName: '工程记录',
+      templateKey: 'name:工程记录',
       selectedSourceStatus: 'removed_reimportable'
     },
     {
       selectionToken: 'token-e',
       displayId: '5',
-      markName: '工程记录',
-      watermarkKey: 'name:工程记录',
-      isWatermarked: true,
+      templateName: '工程记录',
+      templateKey: 'name:工程记录',
       selectedSourceStatus: 'failed_retryable'
     },
     {
       selectionToken: 'token-f',
       displayId: '6',
-      markName: '',
-      watermarkKey: 'watermark_unknown',
-      watermarkStatus: 'watermark_unknown',
-      selectedSourceStatus: 'watermark_unknown'
+      templateName: '',
+      templateKey: 'template_unknown',
+      selectedSourceStatus: 'archived_locked'
     }
   ];
-  const rawCopy = structuredClone(watermarkedPhotos);
-  const watermarkOptions = lifecycleModule.buildMarkiWatermarkFilterOptions(watermarkedPhotos);
-  behavior(watermarkOptions[0].value === 'watermarked', '水印筛选默认入口应为全部有水印');
-  behavior(watermarkOptions.some((item) => item.label === '时间地点（兜底选择）'), '时间地点水印必须作为真实有水印分类');
-  behavior(watermarkOptions.some((item) => item.value === 'name:工程记录'), '具体水印分类必须动态生成');
-  behavior(watermarkOptions.at(-3).value === 'unwatermarked', '水印筛选必须提供无水印选项');
-  behavior(watermarkOptions.at(-2).value === 'watermark_unknown', '水印筛选必须单列状态待确认选项');
-  behavior(watermarkOptions.at(-1).value === 'all', '水印筛选必须提供全部含无水印选项');
+  const rawCopy = structuredClone(queryPhotos);
+  const templateOptions = lifecycleModule.buildMarkiTemplateFilterOptions(queryPhotos);
+  behavior(templateOptions[0].value === 'all', '模板筛选默认入口必须为全部模板');
+  behavior(templateOptions.some((item) => item.label === '时间地点(兜底选择)'), 'markName 必须经规范化后动态生成具体模板选项');
+  behavior(templateOptions.some((item) => item.value === 'name:工程记录'), '相同模板名称必须合并为一个筛选选项');
+  behavior(templateOptions.some((item) => item.value === 'template_unknown'), 'markName 为空时必须提供模板未知选项');
+  behavior(!templateOptions.some((item) => item.value === 'watermarked'), '不得再生成虚构的全部有水印筛选');
+  behavior(!templateOptions.some((item) => item.value === 'unwatermarked'), '不得再生成无水印筛选');
   behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'watermarked',
-      importStatusFilter: 'all'
-    }).length === 4,
-    '默认筛选必须过滤无水印照片'
-  );
-  behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'name:工程记录',
-      importStatusFilter: 'all'
-    }).length === 3,
-    '具体水印分类筛选必须准确'
-  );
-  behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'unwatermarked',
-      importStatusFilter: 'all'
-    })[0].selectionToken === 'token-c',
-    '无水印筛选必须只返回无水印照片'
-  );
-  behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'all',
       importStatusFilter: 'all'
     }).length === 6,
-    '全部筛选必须保留有水印、无水印和状态待确认结果'
-  );
-  behavior(!lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[2]), '无水印照片不得选择');
-  behavior(!lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[5]), '水印状态待确认照片不得选择');
-  behavior(!lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[1]), '已在工作池照片不得选择');
-  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[0]), '未导入有水印照片必须可选择');
-  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[3]), '已撤销照片必须可重新选择');
-  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(watermarkedPhotos[4]), '失败照片必须可重试选择');
-  behavior(
-    lifecycleModule.selectMarkiFilteredTokens(watermarkedPhotos).join(',') === 'token-a,token-d,token-e',
-    '全选必须只包含当前可导入照片'
+    '全部模板必须保留所有已加载记录'
   );
   behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'name:工程记录',
+      importStatusFilter: 'all'
+    }).length === 3,
+    '具体模板筛选必须精确匹配'
+  );
+  behavior(
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'template_unknown',
+      importStatusFilter: 'all'
+    }).map((item) => item.selectionToken).join(',') === 'token-c,token-f',
+    '模板未知筛选必须只返回 markName 为空的照片'
+  );
+  behavior(
+    lifecycleModule.normalizeStoredTemplateFilter('name: 工程　记录') === 'name:工程 记录',
+    '旧 name:* 水印筛选必须迁移为同值模板筛选'
+  );
+  behavior(lifecycleModule.normalizeStoredTemplateFilter('watermarked') === 'all', '其他旧水印筛选必须迁移为全部模板');
+  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[2]), '模板未知但生命周期为 discovered 的照片必须可选择');
+  behavior(!lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[5]), '已归档照片不得重复选择');
+  behavior(!lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[1]), '已在工作池照片不得选择');
+  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[0]), 'discovered 照片必须可选择');
+  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[3]), '已撤销照片必须可重新选择');
+  behavior(lifecycleModule.isMarkiQueryPhotoSelectable(queryPhotos[4]), '失败照片必须可重试选择');
+  behavior(
+    lifecycleModule.selectMarkiFilteredTokens(queryPhotos).join(',') === 'token-a,token-c,token-d,token-e',
+    '全选资格必须只由生命周期状态决定'
+  );
+  behavior(
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'all',
       importStatusFilter: 'not_imported'
-    })[0].selectionToken === 'token-a',
+    }).map((item) => item.selectionToken).join(',') === 'token-a,token-c',
     '未导入状态筛选必须准确'
   );
   behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'all',
       importStatusFilter: 'imported_active'
     })[0].selectionToken === 'token-b',
     '已在工作池状态筛选必须准确'
   );
   behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'all',
       importStatusFilter: 'removed_reimportable'
     })[0].selectionToken === 'token-d',
     '可重新导入状态筛选必须准确'
   );
   behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
+    lifecycleModule.filterMarkiQueryPhotos(queryPhotos, {
+      templateFilter: 'all',
       importStatusFilter: 'failed_retryable'
     })[0].selectionToken === 'token-e',
     '失败状态筛选必须准确'
   );
-  behavior(
-    lifecycleModule.filterMarkiQueryPhotos(watermarkedPhotos, {
-      watermarkFilter: 'all',
-      importStatusFilter: 'filtered'
-    })[0].selectionToken === 'token-c',
-    '已过滤状态筛选必须准确'
-  );
   const querySummary = lifecycleModule.summarizeMarkiQueryResults(
-    watermarkedPhotos,
-    watermarkedPhotos.slice(0, 3),
-    ['token-a', 'token-d']
+    queryPhotos,
+    queryPhotos.slice(0, 3),
+    ['token-a', 'token-c', 'token-d']
   );
   behavior(querySummary.loadedCount === 6, '已加载数量必须来自原始结果');
   behavior(querySummary.filteredCount === 3, '当前筛选数量必须来自筛选结果');
-  behavior(querySummary.selectedCount === 1, '已选择数量必须只统计当前可见选择');
-  behavior(querySummary.unwatermarkedCount === 1, '无水印数量必须准确');
-  behavior(querySummary.watermarkUnknownCount === 1, '水印状态待确认数量必须准确');
-  behavior(querySummary.selectableCount === 1, '可选择数量必须准确');
-  behavior(JSON.stringify(watermarkedPhotos) === JSON.stringify(rawCopy), '客户端筛选不得修改原始查询结果');
-  behavior(lifecycleModule.normalizeMarkiWatermarkName(' 工程　记录 ') === '工程 记录', '水印名称必须执行 NFKC 和安全空白规范化');
+  behavior(querySummary.selectedCount === 2, '已选择数量必须只统计当前可见选择');
+  behavior(!Object.hasOwn(querySummary, 'unwatermarkedCount'), '新摘要不得产生无水印数量');
+  behavior(!Object.hasOwn(querySummary, 'watermarkUnknownCount'), '新摘要不得产生水印状态待确认数量');
+  behavior(querySummary.selectableCount === 2, '可选择数量必须只按生命周期计算');
+  behavior(JSON.stringify(queryPhotos) === JSON.stringify(rawCopy), '客户端筛选不得修改原始查询结果');
+  behavior(lifecycleModule.normalizeMarkiTemplateName(' 工程　记录 ') === '工程 记录', '模板名称必须执行 NFKC 和安全空白规范化');
 
   const occupancyBase = {
     id: 'workspace-marki-photo',
@@ -13367,7 +13469,7 @@ async function checkMarkiImportLifecycleClosure(root) {
       teamId: '10',
       start: '2026-07-20 00:00:00',
       end: '2026-07-20 23:59:59',
-      watermarkFilter: 'watermarked',
+      watermarkFilter: 'name:时间地点',
       importStatusFilter: 'all',
       loadedCount: 4,
       selectedCount: 2,
@@ -13382,9 +13484,27 @@ async function checkMarkiImportLifecycleClosure(root) {
   const created = await beginMarkiImportLifecycleBatch(userDataPath, beginInput, snapshotOptions);
   behavior(created.status === 'created', '新批次必须从 created 开始');
   behavior(created.totalCount === 2, '新批次总数必须准确');
-  behavior(created.filteredCount === 1, '无水印过滤统计必须单独保存');
+  behavior(created.querySummary.templateFilter === 'name:时间地点', '旧 name:* 水印筛选必须迁移为同值 templateFilter');
+  behavior(!Object.hasOwn(created.querySummary, 'watermarkFilter'), '新生命周期摘要不得再写 watermarkFilter');
+  behavior(!Object.hasOwn(created.querySummary, 'unwatermarkedCount'), '新生命周期摘要不得再写 unwatermarkedCount');
+  behavior(!Object.hasOwn(created, 'filteredCount'), '新生命周期结果不得再派生虚构水印过滤数量');
   behavior(created.duplicateCount === 1, '活跃重复统计必须单独保存');
   behavior(created.items.every((item) => item.status === 'queued'), '新批次单项必须进入 queued');
+  const legacyOtherFilter = await beginMarkiImportLifecycleBatch(
+    path.join(root, 'legacy-other-filter'),
+    {
+      batchId: 'legacy-watermark-filter',
+      querySummary: {
+        watermarkFilter: 'watermarked',
+        importStatusFilter: 'all',
+        loadedCount: 1,
+        selectedCount: 1
+      },
+      items: [{ sourceKey: 'marki_api:12345:legacy-filter', displayId: '1', markName: '' }]
+    },
+    snapshotOptions
+  );
+  behavior(legacyOtherFilter.querySummary.templateFilter === 'all', '其他旧 watermarkFilter 必须迁移为全部模板');
   const downloading = await markMarkiImportLifecycleDownloading(userDataPath, batchId, snapshotOptions);
   behavior(downloading.status === 'downloading', '批次必须进入 downloading');
   behavior(downloading.items.every((item) => item.status === 'downloading'), '下载项必须进入 downloading');
@@ -13622,8 +13742,11 @@ async function checkMarkiImportLifecycleClosure(root) {
   const preloadSource = await fs.readFile(path.resolve(process.cwd(), 'electron/preload.cjs'), 'utf8');
   sourceContract(pageSource.includes('<strong>平台查询条件</strong>'), '页面必须明确平台查询条件区域');
   sourceContract(pageSource.includes('<strong>已加载结果筛选</strong>'), '页面必须明确已加载结果筛选区域');
-  sourceContract(pageSource.includes('<span>水印状态 / 模板</span>'), '已加载结果筛选必须包含水印三态和动态模板');
+  sourceContract(pageSource.includes('<span>水印模板</span>'), '已加载结果筛选必须包含动态水印模板');
   sourceContract(pageSource.includes('<span>导入状态</span>'), '已加载结果筛选必须包含导入状态');
+  sourceContract(!pageSource.includes('全部有水印'), '页面不得保留虚构的全部有水印选项');
+  sourceContract(!pageSource.includes('水印状态待确认'), '页面不得保留虚构的水印状态待确认文案');
+  sourceContract(!pageSource.includes('只有已确认有水印的照片可以导入'), '页面不得以虚构水印状态阻断导入');
   sourceContract(pageSource.includes('全选当前筛选结果'), '查询工具栏必须使用当前筛选全选语义');
   sourceContract(pageSource.includes('rawQueryResults'), '页面必须保留原始查询结果');
   sourceContract(pageSource.includes('filteredQueryResults'), '页面必须派生当前筛选结果');
@@ -13644,7 +13767,7 @@ async function checkMarkiImportLifecycleClosure(root) {
   console.log(
     `马克查询筛选与导入生命周期自检通过：${behaviorAssertionCount} 个行为场景，`
     + `${behaviorAssertionCount} 个行为断言，${sourceContractCount} 个源码契约断言；`
-    + '其中无水印过滤 6 项、崩溃恢复 4 项、撤销/重导/缓存 24 项。'
+    + '覆盖模板筛选、生命周期资格、崩溃恢复、撤销、重导和缓存清理。'
   );
 }
 

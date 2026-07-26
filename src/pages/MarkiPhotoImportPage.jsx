@@ -21,10 +21,11 @@ import {
 } from '../utils/markiClient.js';
 import {
   MARKI_IMPORT_STATUS_FILTERS,
-  buildMarkiWatermarkFilterOptions,
+  buildMarkiTemplateFilterOptions,
   filterMarkiQueryPhotos,
   formatMarkiImportLifecycleStatus,
   isMarkiQueryPhotoSelectable,
+  normalizeStoredTemplateFilter,
   selectMarkiFilteredTokens,
   summarizeMarkiQueryResults
 } from '../utils/markiImportLifecycle.js';
@@ -135,7 +136,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   }, [filters, retryLocked, selectedTokens, session]);
 
   async function changeFilter(key, value) {
-    if (['watermarkFilter', 'importStatusFilter'].includes(key)) {
+    if (['templateFilter', 'importStatusFilter'].includes(key)) {
       setSelectedTokens([]);
       setRetryLocked(false);
       setFilters((current) => ({ ...current, [key]: value }));
@@ -253,7 +254,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
     const result = await importMarkiPhotoQuerySelection({
       sessionId: session.sessionId,
       selectionTokens: selectedTokens,
-      watermarkFilter: filters.watermarkFilter,
+      templateFilter: filters.templateFilter,
       importStatusFilter: filters.importStatusFilter
     });
     setBusy('');
@@ -362,8 +363,8 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   const configuredReady = configured === true;
   const isBusy = Boolean(busy);
   const rawQueryResults = session?.photos || [];
-  const watermarkOptions = useMemo(
-    () => buildMarkiWatermarkFilterOptions(rawQueryResults),
+  const templateOptions = useMemo(
+    () => buildMarkiTemplateFilterOptions(rawQueryResults),
     [rawQueryResults]
   );
   const filteredQueryResults = useMemo(
@@ -389,7 +390,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
         <div>
           <p className="eyebrow">马克开放平台</p>
           <h1>马克照片导入</h1>
-          <p>查询并选择马克水印照片，下载后追加到现有照片分拣工作台。</p>
+          <p>查询并选择马克照片，下载后追加到现有照片分拣工作台。</p>
         </div>
         <button
           type="button"
@@ -482,13 +483,13 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
           <span>这里只筛选当前会话内已加载的安全摘要，不改变平台查询条件。</span>
         </div>
         <label>
-          <span>水印状态 / 模板</span>
+          <span>水印模板</span>
           <select
-            value={filters.watermarkFilter}
-            onChange={(event) => void changeFilter('watermarkFilter', event.target.value)}
+            value={filters.templateFilter}
+            onChange={(event) => void changeFilter('templateFilter', event.target.value)}
             disabled={!session || isBusy}
           >
-            {watermarkOptions.map((option) => (
+            {templateOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
@@ -546,7 +547,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                   <th>编号</th>
                   <th>上传时间</th>
                   <th>团队 / 人员</th>
-                  <th>水印</th>
+                  <th>水印模板</th>
                   <th>项目</th>
                   <th>工作内容</th>
                   <th>地点</th>
@@ -573,7 +574,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                         <strong>{teamNameById.get(String(photo.teamId)) || `团队 ${photo.teamId || '-'}`}</strong>
                         <span>{memberNameById.get(String(photo.uid)) || photo.photographerName || `UID ${photo.uid || '-'}`}</span>
                       </td>
-                      <td>{formatWatermarkStatus(photo)}</td>
+                      <td>{formatTemplateName(photo)}</td>
                       <td>{photo.projectText || '-'}</td>
                       <td>{photo.workContentText || '-'}</td>
                       <td>{photo.locationText || '-'}</td>
@@ -613,7 +614,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                     查询已加载 {record.querySummary?.loadedCount || 0} 张，
                     选择 {record.querySummary?.selectedCount || record.totalCount} 张，
                     进入工作池 {record.appendedCount} 张，
-                    过滤 {record.filteredCount} 张，重复 {record.duplicateCount} 张，
+                    重复 {record.duplicateCount} 张，
                     失败 {record.failedCount} 张，已撤销 {record.removedCount} 张
                   </span>
                   <small>{formatRecordQuerySummary(record.querySummary)}</small>
@@ -738,7 +739,9 @@ function normalizeStoredFilters(value, fallback) {
   const candidate = {
     teamId: String(value.teamId || ''),
     uid: String(value.uid || ''),
-    watermarkFilter: String(value.watermarkFilter || fallback.watermarkFilter),
+    templateFilter: normalizeStoredTemplateFilter(
+      value.templateFilter ?? value.watermarkFilter ?? fallback.templateFilter
+    ),
     importStatusFilter: String(value.importStatusFilter || fallback.importStatusFilter),
     start: String(value.start || ''),
     end: String(value.end || '')
@@ -754,7 +757,9 @@ function buildRecordRetryFilters(record, fallback) {
   const normalized = normalizeStoredFilters({
     teamId: querySummary?.teamId,
     uid: querySummary?.uid,
-    watermarkFilter: querySummary?.watermarkFilter || fallback.watermarkFilter,
+    templateFilter: normalizeStoredTemplateFilter(
+      querySummary?.templateFilter ?? querySummary?.watermarkFilter ?? fallback.templateFilter
+    ),
     importStatusFilter,
     start: normalizeStoredDateTime(querySummary?.start),
     end: normalizeStoredDateTime(querySummary?.end)
@@ -769,10 +774,8 @@ function normalizeStoredDateTime(value) {
   return String(value || '').trim().replace(' ', 'T').slice(0, 16);
 }
 
-function formatWatermarkStatus(photo) {
-  if (photo?.watermarkStatus === 'watermarked') return photo.markName || '有水印';
-  if (photo?.watermarkStatus === 'unwatermarked') return '无水印';
-  return '水印状态待确认';
+function formatTemplateName(photo) {
+  return String(photo?.templateName || photo?.markName || '').trim() || '模板未知';
 }
 
 function readStoredSession() {

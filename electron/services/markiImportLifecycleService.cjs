@@ -668,8 +668,6 @@ function buildSafeRecord(record) {
 function countRecordItems(items, querySummary = {}) {
   const count = (statuses) => items.filter((item) => statuses.has(item.status)).length;
   return {
-    filteredCount: normalizeCount(querySummary.unwatermarkedCount)
-      + normalizeCount(querySummary.watermarkUnknownCount),
     duplicateCount: normalizeCount(querySummary.duplicateCount),
     downloadedCount: count(new Set(['downloaded', 'append_pending', 'imported_active', 'archived_locked'])),
     appendedCount: count(new Set(['imported_active', 'archived_locked'])),
@@ -868,14 +866,24 @@ function normalizeQuerySummary(input = {}) {
     uid: normalizeText(input.uid, 100),
     start: normalizeText(input.start, 30),
     end: normalizeText(input.end, 30),
-    watermarkFilter: normalizeText(input.watermarkFilter, 500) || 'watermarked',
+    templateFilter: normalizeStoredTemplateFilter(
+      input.templateFilter,
+      input.watermarkFilter
+    ),
     importStatusFilter: normalizeText(input.importStatusFilter, 100) || 'all',
     loadedCount: normalizeCount(input.loadedCount),
     selectedCount: normalizeCount(input.selectedCount),
-    unwatermarkedCount: normalizeCount(input.unwatermarkedCount),
-    watermarkUnknownCount: normalizeCount(input.watermarkUnknownCount),
     duplicateCount: normalizeCount(input.duplicateCount)
   };
+}
+
+function normalizeStoredTemplateFilter(templateFilter, legacyWatermarkFilter) {
+  const current = normalizeText(templateFilter, 500);
+  if (current === 'all' || current === 'template_unknown' || /^name:.{1,495}$/u.test(current)) {
+    return current;
+  }
+  const legacy = normalizeText(legacyWatermarkFilter, 500);
+  return /^name:.{1,495}$/u.test(legacy) ? legacy : 'all';
 }
 
 function normalizeCount(value) {

@@ -28,8 +28,6 @@ const SESSION_INPUT_KEYS = new Set(['credentials', 'documentsPath', 'userDataPat
 const FILTER_KEYS = new Set(['teamId', 'uid', 'start', 'end']);
 const SAFE_SOURCE_STATUSES = new Set([
   'discovered',
-  'filtered_unwatermarked',
-  'watermark_unknown',
   'workspace_file_repairable',
   'queued',
   'downloading',
@@ -265,30 +263,13 @@ async function appendPageToSession(session, result, dependencies) {
       );
     }
     const sourceKey = dependencies.buildMarkiSourceKey(session.orgId, momentId);
-    const watermarkIdentity = resolveWatermarkIdentity(moment);
+    const templateIdentity = resolveTemplateIdentity(moment);
     const existingToken = session.selectionTokenBySourceKey.get(sourceKey);
     if (existingToken) {
-      const existing = session.momentsBySelectionToken.get(existingToken);
-      if (getWatermarkStatusRank(watermarkIdentity.watermarkStatus)
-        > getWatermarkStatusRank(existing?.watermarkStatus)) {
-        existing.moment = cloneMoment(moment);
-        existing.markName = watermarkIdentity.markName;
-        existing.watermarkKey = watermarkIdentity.watermarkKey;
-        existing.watermarkStatus = watermarkIdentity.watermarkStatus;
-        existing.isWatermarked = watermarkIdentity.isWatermarked;
-      }
       continue;
     }
     const pageExisting = candidateBySourceKey.get(sourceKey);
     if (pageExisting) {
-      if (getWatermarkStatusRank(watermarkIdentity.watermarkStatus)
-        > getWatermarkStatusRank(pageExisting.watermarkStatus)) {
-        candidateBySourceKey.set(sourceKey, {
-          moment: cloneMoment(moment),
-          sourceKey,
-          ...watermarkIdentity
-        });
-      }
       continue;
     }
     if (session.orderedSelectionTokens.length + candidateBySourceKey.size >= MAX_SESSION_PHOTOS) {
@@ -298,7 +279,7 @@ async function appendPageToSession(session, result, dependencies) {
     candidateBySourceKey.set(sourceKey, {
       moment: cloneMoment(moment),
       sourceKey,
-      ...watermarkIdentity
+      ...templateIdentity
     });
   }
   const candidates = [...candidateBySourceKey.values()];
@@ -316,11 +297,9 @@ async function appendPageToSession(session, result, dependencies) {
     ...candidate,
     selectionToken: createOpaqueId(dependencies.randomUUID),
     displayId: String(session.orderedSelectionTokens.length + index + 1),
-    selectedSourceStatus: candidate.watermarkStatus === 'watermarked'
-      ? normalizeSourceStatus(statusBySourceKey[candidate.sourceKey] || 'discovered')
-      : candidate.watermarkStatus === 'unwatermarked'
-        ? 'filtered_unwatermarked'
-        : 'watermark_unknown'
+    selectedSourceStatus: normalizeSourceStatus(
+      statusBySourceKey[candidate.sourceKey] || 'discovered'
+    )
   }));
 
   for (const entry of preparedEntries) {
@@ -328,10 +307,8 @@ async function appendPageToSession(session, result, dependencies) {
       moment: entry.moment,
       sourceKey: entry.sourceKey,
       displayId: entry.displayId,
-      markName: entry.markName,
-      watermarkKey: entry.watermarkKey,
-      watermarkStatus: entry.watermarkStatus,
-      isWatermarked: entry.isWatermarked,
+      templateName: entry.templateName,
+      templateKey: entry.templateKey,
       selectedSourceStatus: entry.selectedSourceStatus,
       importStatus: IMPORT_TASK_STATUSES.IDLE,
       importTaskId: ''
@@ -368,12 +345,6 @@ function beginSelectionImport(sessions, sessionId, selectionTokens, options) {
     }
     return entry;
   });
-  if (entries.some((entry) => entry.watermarkStatus !== 'watermarked')) {
-    throw new MarkiPhotoQuerySessionError(
-      'marki_photo_import_watermark_unconfirmed',
-      '只有已确认有水印的照片可以导入。'
-    );
-  }
   const retryTask = [...session.importTasks.values()].find(
     (task) => task.status === IMPORT_TASK_STATUSES.FAILED && task.tokenSetKey === tokenSetKey
   );
@@ -506,13 +477,7 @@ function buildTrustedImportTaskResult(session, task, retry) {
     querySummary: {
       ...session.filters,
       loadedCount: session.orderedSelectionTokens.length,
-      selectedCount: task.selectionTokens.length,
-      unwatermarkedCount: session.orderedSelectionTokens.filter((selectionToken) => (
-        session.momentsBySelectionToken.get(selectionToken)?.watermarkStatus === 'unwatermarked'
-      )).length,
-      watermarkUnknownCount: session.orderedSelectionTokens.filter((selectionToken) => (
-        session.momentsBySelectionToken.get(selectionToken)?.watermarkStatus === 'watermark_unknown'
-      )).length
+      selectedCount: task.selectionTokens.length
     },
     items: task.selectionTokens.map((selectionToken) => {
       const entry = session.momentsBySelectionToken.get(selectionToken);
@@ -521,10 +486,8 @@ function buildTrustedImportTaskResult(session, task, retry) {
         displayId: entry.displayId,
         sourceKey: entry.sourceKey,
         selectedSourceStatus: entry.selectedSourceStatus,
-        watermarkStatus: entry.watermarkStatus,
-        isWatermarked: entry.isWatermarked,
-        markName: entry.markName,
-        watermarkKey: entry.watermarkKey,
+        templateName: entry.templateName,
+        templateKey: entry.templateKey,
         moment: cloneMoment(entry.moment)
       };
     })
@@ -626,10 +589,8 @@ function buildSafePhotoSummary(selectionToken, entry) {
     teamId: String(moment.teamId || ''),
     uid: String(moment.uid || ''),
     photographerName: '',
-    markName: entry.markName,
-    watermarkKey: entry.watermarkKey,
-    watermarkStatus: entry.watermarkStatus,
-    isWatermarked: entry.isWatermarked,
+    templateName: entry.templateName,
+    templateKey: entry.templateKey,
     postTime: Number(moment.postTime) || 0,
     displayDate: formatPostTimeUtc8(moment.postTime),
     projectText: getOwnField(fields, '小区名称'),
@@ -814,11 +775,7 @@ async function refreshSessionSourceStatuses(session, dependencies) {
   for (const selectionToken of session.orderedSelectionTokens) {
     const entry = session.momentsBySelectionToken.get(selectionToken);
     if (!entry) continue;
-    if (entry.watermarkStatus === 'unwatermarked') {
-      entry.selectedSourceStatus = 'filtered_unwatermarked';
-    } else if (entry.watermarkStatus === 'watermark_unknown') {
-      entry.selectedSourceStatus = 'watermark_unknown';
-    } else if (entry.importStatus === IMPORT_TASK_STATUSES.IN_PROGRESS) {
+    if (entry.importStatus === IMPORT_TASK_STATUSES.IN_PROGRESS) {
       entry.selectedSourceStatus = 'downloading';
     } else if (entry.importStatus === IMPORT_TASK_STATUSES.FAILED) {
       entry.selectedSourceStatus = 'failed_retryable';
@@ -834,60 +791,15 @@ async function refreshSessionSourceStatuses(session, dependencies) {
   }
 }
 
-function resolveWatermarkIdentity(moment) {
-  const parsed = parseMarkiContent(moment?.content);
-  const fields = parsed.success ? parsed.fields : Object.create(null);
-  const markName = normalizeWatermarkName(
-    moment?.markName
-      || getOwnField(fields, '水印')
-      || getOwnField(fields, '水印名称')
-      || getOwnField(fields, '水印模板')
-  );
-  const explicitStatus = normalizeExplicitWatermarkStatus(moment);
-  const watermarkStatus = markName
-    ? 'watermarked'
-    : explicitStatus;
+function resolveTemplateIdentity(moment) {
+  const templateName = normalizeTemplateName(moment?.markName);
   return {
-    markName,
-    watermarkStatus,
-    isWatermarked: watermarkStatus === 'watermarked'
-      ? true
-      : watermarkStatus === 'unwatermarked'
-        ? false
-        : null,
-    watermarkKey: markName
-      ? `name:${markName}`
-      : watermarkStatus
+    templateName,
+    templateKey: templateName ? `name:${templateName}` : 'template_unknown'
   };
 }
 
-function normalizeExplicitWatermarkStatus(moment = {}) {
-  const rawStatus = String(
-    moment.watermarkStatus
-    || moment.markStatus
-    || ''
-  ).normalize('NFKC').trim().toLowerCase();
-  if (['watermarked', 'with_watermark', 'has_watermark', '有水印'].includes(rawStatus)) {
-    return 'watermarked';
-  }
-  if (['unwatermarked', 'without_watermark', 'no_watermark', '无水印'].includes(rawStatus)) {
-    return 'unwatermarked';
-  }
-  if (moment.isWatermarked === true || moment.hasWatermark === true) return 'watermarked';
-  if (moment.isWatermarked === false || moment.hasWatermark === false) return 'unwatermarked';
-  if (String(moment.markId || moment.watermarkId || moment.templateId || '').trim()) {
-    return 'watermarked';
-  }
-  return 'watermark_unknown';
-}
-
-function getWatermarkStatusRank(status) {
-  if (status === 'watermarked') return 3;
-  if (status === 'watermark_unknown') return 2;
-  return 1;
-}
-
-function normalizeWatermarkName(value) {
+function normalizeTemplateName(value) {
   return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 

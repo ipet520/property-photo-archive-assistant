@@ -12,7 +12,7 @@ export function createDefaultMarkiImportFilters(nowValue = Date.now()) {
   return {
     teamId: '',
     uid: '',
-    watermarkFilter: 'watermarked',
+    templateFilter: 'all',
     importStatusFilter: 'all',
     start: `${date}T00:00`,
     end: `${date}T${padDatePart(beijingNow.getUTCHours())}:${padDatePart(beijingNow.getUTCMinutes())}`

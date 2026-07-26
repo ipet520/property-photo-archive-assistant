@@ -30,6 +30,12 @@ const MAX_CONCURRENT_DOWNLOADS = 3;
 const REQUEST_KEYS = new Set([
   'sessionId',
   'selectionTokens',
+  'templateFilter',
+  'importStatusFilter'
+]);
+const LEGACY_REQUEST_KEYS = new Set([
+  'sessionId',
+  'selectionTokens',
   'watermarkFilter',
   'importStatusFilter'
 ]);
@@ -81,14 +87,14 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
         batchId,
         querySummary: {
           ...task.querySummary,
-          watermarkFilter: normalized.request.watermarkFilter,
+          templateFilter: normalized.request.templateFilter,
           importStatusFilter: normalized.request.importStatusFilter,
           duplicateCount: task.selectionTokens.length - effectiveItems.length
         },
         items: effectiveItems.map((item) => ({
           sourceKey: item.sourceKey,
           displayId: resolveSafeDisplayId(item, task.items),
-          markName: item.markName
+          markName: item.templateName || item.moment?.markName || ''
         }))
       },
       options.lifecycleOptions || {}
@@ -475,21 +481,15 @@ async function resolveEffectiveItems(task, input, dependencies) {
 }
 
 function matchesTrustedImportFilters(item, request) {
-  if (item.watermarkStatus !== 'watermarked') {
-    throw new MarkiTrustedImportError(
-      'marki_photo_import_watermark_unconfirmed',
-      '只有已确认有水印的照片可以导入。'
-    );
-  }
-  const watermarkFilter = request.watermarkFilter;
+  const templateFilter = request.templateFilter;
+  const templateKey = resolveItemTemplateKey(item);
   if (
-    watermarkFilter !== 'all'
-    && watermarkFilter !== 'watermarked'
-    && watermarkFilter !== item.watermarkKey
+    templateFilter !== 'all'
+    && templateFilter !== templateKey
   ) {
     throw new MarkiTrustedImportError(
       'marki_photo_import_filter_mismatch',
-      '所选照片不符合当前水印筛选条件。'
+      '所选照片不符合当前水印模板筛选条件。'
     );
   }
   const status = String(item.selectedSourceStatus || '');
@@ -667,7 +667,10 @@ function normalizeInput(input) {
   const credentials = normalizeCredentials(input.credentials);
   const documentsPath = normalizeAbsolutePath(input.documentsPath);
   const userDataPath = normalizeAbsolutePath(input.userDataPath);
-  assertExactObject(input.request, REQUEST_KEYS, 'marki_photo_import_invalid_request');
+  const legacyRequest = isExactObject(input.request, LEGACY_REQUEST_KEYS);
+  if (!legacyRequest) {
+    assertExactObject(input.request, REQUEST_KEYS, 'marki_photo_import_invalid_request');
+  }
   return {
     credentials,
     documentsPath,
@@ -675,24 +678,51 @@ function normalizeInput(input) {
     request: {
       sessionId: normalizeUuid(input.request.sessionId),
       selectionTokens: normalizeSelectionTokens(input.request.selectionTokens),
-      watermarkFilter: normalizeWatermarkFilter(input.request.watermarkFilter),
+      templateFilter: legacyRequest
+        ? migrateLegacyWatermarkFilter(input.request.watermarkFilter)
+        : normalizeTemplateFilter(input.request.templateFilter),
       importStatusFilter: normalizeImportStatusFilter(input.request.importStatusFilter)
     }
   };
 }
 
-function normalizeWatermarkFilter(value) {
+function normalizeTemplateFilter(value) {
   const text = String(value || '').normalize('NFKC').trim();
-  if (
-    ['watermarked', 'unwatermarked', 'all'].includes(text)
-    || /^name:.{1,500}$/u.test(text)
-  ) {
-    return text;
+  if (text === 'all' || text === 'template_unknown') return text;
+  if (text.startsWith('name:')) {
+    const name = normalizeTemplateName(text.slice(5));
+    if (name && text === `name:${name}`) return text;
   }
   throw new MarkiTrustedImportError(
     'marki_photo_import_invalid_request',
-    '马克水印筛选条件无效。'
+    '马克水印模板筛选条件无效。'
   );
+}
+
+function migrateLegacyWatermarkFilter(value) {
+  const text = String(value || '').normalize('NFKC').trim();
+  return text.startsWith('name:')
+    ? normalizeTemplateFilter(text)
+    : 'all';
+}
+
+function resolveItemTemplateKey(item) {
+  const explicit = String(item?.templateKey || '').normalize('NFKC').trim();
+  if (explicit === 'template_unknown' || explicit.startsWith('name:')) {
+    return normalizeTemplateFilter(explicit);
+  }
+  const legacy = String(item?.watermarkKey || '').normalize('NFKC').trim();
+  if (legacy.startsWith('name:')) return normalizeTemplateFilter(legacy);
+  const name = normalizeTemplateName(
+    item?.templateName
+    || item?.markName
+    || item?.moment?.markName
+  );
+  return name ? `name:${name}` : 'template_unknown';
+}
+
+function normalizeTemplateName(value) {
+  return String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 
 function normalizeImportStatusFilter(value) {
@@ -769,6 +799,12 @@ function assertExactObject(value, allowedKeys, code) {
   ) {
     throw new MarkiTrustedImportError(code, '马克照片导入请求格式不正确。');
   }
+}
+
+function isExactObject(value, allowedKeys) {
+  return isPlainObject(value)
+    && Object.keys(value).length === allowedKeys.size
+    && Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
 function resolveDependencies(options) {
