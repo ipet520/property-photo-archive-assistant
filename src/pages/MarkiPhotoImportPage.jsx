@@ -29,12 +29,14 @@ import {
   selectMarkiFilteredTokens,
   summarizeMarkiQueryResults
 } from '../utils/markiImportLifecycle.js';
+import { classifyPhotoProjectCompatibility } from '../utils/activeProjectContext.js';
 
 const SESSION_STORAGE_KEY = 'marki-photo-import-session-v1';
 const MAX_MEMBER_PAGES = 100;
 const MAX_RANGE_MS = 31 * 24 * 60 * 60 * 1000;
 
-export default function MarkiPhotoImportPage({ onNavigate }) {
+export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
+  const activeProject = archiveState?.activeProject;
   const initialFilters = useMemo(() => createDefaultMarkiImportFilters(), []);
   const [configured, setConfigured] = useState(null);
   const [teams, setTeams] = useState([]);
@@ -60,7 +62,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       setNotice({ type: 'info', text: '正在刷新待处理批次...' });
     }
     try {
-      const result = await readyBatchRefreshRef.current();
+      const result = await readyBatchRefreshRef.current(activeProject);
       if (!mountedRef.current) return;
       if (result.success) {
         setReadyBatches(result.items);
@@ -73,7 +75,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
         setIsRefreshingReadyBatches(false);
       }
     }
-  }, []);
+  }, [activeProject]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -94,7 +96,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       if (isConfigured && teamResult?.success) {
         setTeams(Array.isArray(teamResult.teams) ? teamResult.teams : []);
       }
-      const recoveryResult = await recoverMarkiImportLifecycle();
+      const recoveryResult = await recoverMarkiImportLifecycle(activeProject);
       if (recoveryResult?.success === false) {
         setNotice({
           type: 'error',
@@ -103,6 +105,10 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       }
       await Promise.all([loadReadyBatches(), loadImportRecords()]);
       const stored = readStoredSession();
+      if (stored?.activeProjectId && stored.activeProjectId !== activeProject?.projectId) {
+        if (stored.sessionId) await destroyMarkiPhotoQuerySession(stored.sessionId);
+        clearStoredSession();
+      }
       if (isConfigured && stored?.sessionId) {
         const restored = await getMarkiPhotoQuerySession(stored.sessionId);
         if (!mountedRef.current) return;
@@ -123,7 +129,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       }
       setBusy('');
     }
-  }, [initialFilters, loadReadyBatches]);
+  }, [activeProject, initialFilters, loadReadyBatches]);
 
   useEffect(() => {
     if (!session?.sessionId) return;
@@ -131,9 +137,10 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       sessionId: session.sessionId,
       filters,
       selectedTokens,
-      retryLocked
+      retryLocked,
+      activeProjectId: activeProject?.projectId || ''
     });
-  }, [filters, retryLocked, selectedTokens, session]);
+  }, [activeProject?.projectId, filters, retryLocked, selectedTokens, session]);
 
   async function changeFilter(key, value) {
     if (['templateFilter', 'importStatusFilter'].includes(key)) {
@@ -235,6 +242,8 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
 
   function toggleSelection(selectionToken) {
     if (retryLocked) return;
+    const photo = projectAwareQueryResults.find((item) => item.selectionToken === selectionToken);
+    if (!photo || !isMarkiQueryPhotoSelectable(photo)) return;
     setSelectedTokens((current) => (
       current.includes(selectionToken)
         ? current.filter((token) => token !== selectionToken)
@@ -255,7 +264,9 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
       sessionId: session.sessionId,
       selectionTokens: selectedTokens,
       templateFilter: filters.templateFilter,
-      importStatusFilter: filters.importStatusFilter
+      importStatusFilter: filters.importStatusFilter,
+      activeProjectId: activeProject?.projectId,
+      activeProjectName: activeProject?.projectName
     });
     setBusy('');
     if (result?.status === 'ready' && result.batchId) {
@@ -296,7 +307,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   }
 
   async function loadImportRecords({ announce = false } = {}) {
-    const result = await listMarkiImportRecords();
+    const result = await listMarkiImportRecords(activeProject);
     if (!mountedRef.current) return;
     if (result?.success) {
       setImportRecords(Array.isArray(result.items) ? result.items : []);
@@ -315,7 +326,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
     if (isBusy) return;
     if (confirmMessage && !window.confirm(confirmMessage)) return;
     setBusy('record');
-    const result = await action(batchId);
+    const result = await action(batchId, activeProject);
     setBusy('');
     if (!result?.success) {
       setNotice({ type: 'error', text: result?.error?.message || '导入记录操作失败。' });
@@ -363,17 +374,25 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
   const configuredReady = configured === true;
   const isBusy = Boolean(busy);
   const rawQueryResults = session?.photos || [];
+  const projectAwareQueryResults = useMemo(() => rawQueryResults.map((photo) => ({
+    ...photo,
+    projectCompatibility: classifyPhotoProjectCompatibility({
+      activeProject,
+      projectOptions: archiveState?.projectOptions || [],
+      sourceProjectText: photo.projectText
+    })
+  })), [activeProject, archiveState?.projectOptions, rawQueryResults]);
   const templateOptions = useMemo(
-    () => buildMarkiTemplateFilterOptions(rawQueryResults),
-    [rawQueryResults]
+    () => buildMarkiTemplateFilterOptions(projectAwareQueryResults),
+    [projectAwareQueryResults]
   );
   const filteredQueryResults = useMemo(
-    () => filterMarkiQueryPhotos(rawQueryResults, filters),
-    [filters, rawQueryResults]
+    () => filterMarkiQueryPhotos(projectAwareQueryResults, filters),
+    [filters, projectAwareQueryResults]
   );
   const querySummary = useMemo(
-    () => summarizeMarkiQueryResults(rawQueryResults, filteredQueryResults, selectedTokens),
-    [filteredQueryResults, rawQueryResults, selectedTokens]
+    () => summarizeMarkiQueryResults(projectAwareQueryResults, filteredQueryResults, selectedTokens),
+    [filteredQueryResults, projectAwareQueryResults, selectedTokens]
   );
   const teamNameById = useMemo(
     () => new Map(teams.map((team) => [String(team.teamId || ''), team.teamName || ''])),
@@ -391,6 +410,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
           <p className="eyebrow">马克开放平台</p>
           <h1>马克照片导入</h1>
           <p>查询并选择马克照片，下载后追加到现有照片分拣工作台。</p>
+          <p><strong>当前导入项目：{activeProject?.projectName || '未选择'}</strong></p>
         </div>
         <button
           type="button"
@@ -515,6 +535,11 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
             已加载 {querySummary.loadedCount} 张，当前筛选 {querySummary.filteredCount} 张，
             已选择 {querySummary.selectedCount} 张
           </span>
+          <span>
+            当前项目可导入 {querySummary.currentProjectCount} 张，来源项目为空可归属 {querySummary.assignToCurrentCount} 张，
+            项目不匹配 {querySummary.projectMismatchCount} 张，项目无法确认 {querySummary.projectUnresolvedCount} 张，
+            已归属其他项目 {querySummary.sourceProjectLockedCount} 张
+          </span>
         </div>
         <div className="marki-import-toolbar-actions">
           <button type="button" onClick={selectAllLoaded} disabled={!querySummary.selectableCount || isBusy || retryLocked}>全选当前筛选结果</button>
@@ -549,6 +574,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                   <th>团队 / 人员</th>
                   <th>水印模板</th>
                   <th>项目</th>
+                  <th>项目兼容状态</th>
                   <th>工作内容</th>
                   <th>地点</th>
                   <th>来源状态</th>
@@ -576,6 +602,7 @@ export default function MarkiPhotoImportPage({ onNavigate }) {
                       </td>
                       <td>{formatTemplateName(photo)}</td>
                       <td>{photo.projectText || '-'}</td>
+                      <td>{formatProjectCompatibility(photo.projectCompatibility, activeProject)}</td>
                       <td>{photo.workContentText || '-'}</td>
                       <td>{photo.locationText || '-'}</td>
                       <td><span className={`marki-import-source-status ${photo.selectedSourceStatus}`}>{formatMarkiImportLifecycleStatus(photo.selectedSourceStatus)}</span></td>
@@ -778,6 +805,19 @@ function formatTemplateName(photo) {
   return String(photo?.templateName || photo?.markName || '').trim() || '模板未知';
 }
 
+function formatProjectCompatibility(compatibility, activeProject) {
+  const currentProjectName = String(activeProject?.projectName || '当前项目');
+  if (compatibility?.status === 'current_project') return '当前项目，可导入';
+  if (compatibility?.status === 'assign_current_project') return `来源项目为空，将归属${currentProjectName}`;
+  if (compatibility?.status === 'project_mismatch') {
+    return `其他项目，不可导入（${compatibility.sourceProjectName || '项目不匹配'}）`;
+  }
+  if (compatibility?.status === 'source_project_locked') {
+    return `已归属其他项目，不可导入（${compatibility.sourceProjectName || '项目已锁定'}）`;
+  }
+  return '项目无法确认，不可导入';
+}
+
 function readStoredSession() {
   try {
     const parsed = JSON.parse(window.sessionStorage.getItem(SESSION_STORAGE_KEY) || 'null');
@@ -786,7 +826,8 @@ function readStoredSession() {
       sessionId: String(parsed.sessionId || ''),
       filters: parsed.filters,
       selectedTokens: Array.isArray(parsed.selectedTokens) ? parsed.selectedTokens.map(String) : [],
-      retryLocked: parsed.retryLocked === true
+      retryLocked: parsed.retryLocked === true,
+      activeProjectId: String(parsed.activeProjectId || '')
     };
   } catch {
     clearStoredSession();

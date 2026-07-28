@@ -17,7 +17,7 @@ const FIELD_LABELS = Object.freeze({
   violationType: '违停类型'
 });
 
-export function validateArchiveFormByTemplate(form = {}, configs = {}) {
+export function validateArchiveFormByTemplate(form = {}, configs = {}, activeProject = null) {
   const safeConfigs = configs && typeof configs === 'object' ? configs : {};
   const templateType = clean(form.watermarkTemplateType);
   const archiveCategory = clean(form.archiveCategory || form.watermarkCategory);
@@ -30,7 +30,16 @@ export function validateArchiveFormByTemplate(form = {}, configs = {}) {
     missing.push(FIELD_LABELS.watermarkTemplateType);
   }
   if (!isValidDate(form.date)) missing.push(FIELD_LABELS.date);
-  if (!isConfiguredProject(projectId, projectName, safeConfigs)) missing.push(FIELD_LABELS.project);
+  if (
+    activeProject
+      ? (
+          clean(activeProject.projectId) !== projectId
+          || clean(activeProject.projectName) !== projectName
+        )
+      : !isConfiguredProject(projectId, projectName, safeConfigs)
+  ) {
+    missing.push(FIELD_LABELS.project);
+  }
   if (!Object.hasOwn(safeConfigs.watermarkCategories || {}, archiveCategory)) {
     missing.push(FIELD_LABELS.archiveCategory);
   }
@@ -88,8 +97,31 @@ export function validateArchiveFormByTemplate(form = {}, configs = {}) {
   return Array.from(new Set(missing));
 }
 
-export function isArchiveFormValidByTemplate(form = {}, configs = {}) {
-  return validateArchiveFormByTemplate(form, configs).length === 0;
+export function isArchiveFormValidByTemplate(form = {}, configs = {}, activeProject = null) {
+  return validateArchiveFormByTemplate(form, configs, activeProject).length === 0;
+}
+
+export function validateArchiveProjectContext(form = {}, activeProject = null) {
+  const projectId = clean(form.projectId);
+  const projectName = clean(form.projectName || form.project);
+  if (!activeProject?.projectId || !activeProject?.projectName) {
+    return {
+      valid: false,
+      code: 'active_project_required',
+      message: '请选择当前工作项目。'
+    };
+  }
+  if (
+    projectId !== clean(activeProject.projectId)
+    || projectName !== clean(activeProject.projectName)
+  ) {
+    return {
+      valid: false,
+      code: 'project_context_mismatch',
+      message: '归档信息项目与当前项目不一致。'
+    };
+  }
+  return { valid: true };
 }
 
 function isConfiguredProject(projectId, projectName, configs) {

@@ -4,6 +4,13 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages, scanImagesWithHealth } = require('./services/fileService.cjs');
 const { buildArchivePreview, archivePhotos, recoverPendingArchiveTransactions } = require('./services/archiveService.cjs');
+const {
+  assertArchivePlanProject,
+  assertArchivePreviewProject,
+  assertBatchProject,
+  attachActiveProjectToArchivePreview,
+  normalizeActiveProjectAgainstRuntime
+} = require('./services/activeProjectBoundaryService.cjs');
 const { matchArchivedPhotos } = require('./services/archiveFingerprintService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('./services/archivePackageService.cjs');
 const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs');
@@ -132,7 +139,9 @@ const {
   undoMarkiImportLifecycleBatch
 } = require('./services/markiImportLifecycleService.cjs');
 const {
+  inspectLegacySortWorkspaceSnapshot,
   loadSortWorkspaceSnapshot,
+  migrateLegacySortWorkspaceSnapshot,
   saveSortWorkspaceSnapshot
 } = require('./services/sortWorkspaceSnapshotService.cjs');
 const {
@@ -402,7 +411,7 @@ async function safeArchiveCall(action, fallback) {
 }
 
 function createArchiveIpcErrorResult(error = {}, inputCount = 0) {
-  const safeCode = /^(archive|ledger)_/.test(String(error.code || ''))
+  const safeCode = /^(archive|ledger|project)_/.test(String(error.code || ''))
     ? String(error.code)
     : 'archive_ipc_failed';
   const safeMessage = safeCode === 'archive_ipc_failed'
@@ -560,7 +569,6 @@ function disableNativeMenu() {
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.property.photo.archive.assistant');
   disableNativeMenu();
-  await recoverMarkiImportLifecycle(app.getPath('userData')).catch(() => {});
 
   protocol.handle('local-photo', (request) => {
     const url = new URL(request.url);
@@ -955,18 +963,37 @@ ipcMain.handle('configs:import', async () => {
     runtimeConfiguration: await publishRuntimeConfiguration()
   };
 });
-ipcMain.handle('archive:buildPreview', async (_event, payload) => {
-  const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
-  return buildArchivePreview({
-    ...payload,
-    archiveRoot: runtimeConfiguration.archiveRootDirectory
-  });
-});
+ipcMain.handle('archive:buildPreview', async (_event, payload) => safeArchiveCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const activeProject = normalizeActiveProjectAgainstRuntime(
+      payload?.activeProject,
+      runtimeConfiguration
+    );
+    assertArchivePreviewProject(payload, activeProject);
+    const result = await buildArchivePreview({
+      ...payload,
+      activeProject,
+      archiveRoot: runtimeConfiguration.archiveRootDirectory
+    });
+    return attachActiveProjectToArchivePreview(result, activeProject);
+  },
+  (error) => createArchiveIpcErrorResult(
+    error,
+    Array.isArray(payload?.photos) ? payload.photos.length : 0
+  )
+));
 ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchiveCall(
   async () => {
     const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const activeProject = normalizeActiveProjectAgainstRuntime(
+      archivePlan?.activeProject,
+      runtimeConfiguration
+    );
+    assertArchivePlanProject(archivePlan, activeProject);
     return archivePhotos({
       ...archivePlan,
+      activeProject,
       archiveRoot: runtimeConfiguration.archiveRootDirectory,
       ...(archivePlan?.previewPlan
         ? {
@@ -1022,11 +1049,17 @@ ipcMain.handle('sortDraft:load', async () => {
   return { success: true, filePath: result.filePaths[0], draft: JSON.parse(content) };
 });
 
-ipcMain.handle('sortWorkspaceSnapshot:save', async (_event, workspace) => safeSortWorkspaceSnapshotCall(
-  () => saveSortWorkspaceSnapshot(app.getPath('userData'), workspace)
+ipcMain.handle('sortWorkspaceSnapshot:save', async (_event, activeProject, workspace) => safeSortWorkspaceSnapshotCall(
+  () => saveSortWorkspaceSnapshot(app.getPath('userData'), workspace, { activeProject })
 ));
-ipcMain.handle('sortWorkspaceSnapshot:load', async () => safeSortWorkspaceSnapshotCall(
-  () => loadSortWorkspaceSnapshot(app.getPath('userData'))
+ipcMain.handle('sortWorkspaceSnapshot:load', async (_event, activeProject) => safeSortWorkspaceSnapshotCall(
+  () => loadSortWorkspaceSnapshot(app.getPath('userData'), { activeProject })
+));
+ipcMain.handle('sortWorkspaceSnapshot:inspectLegacy', async (_event, activeProject) => safeSortWorkspaceSnapshotCall(
+  () => inspectLegacySortWorkspaceSnapshot(app.getPath('userData'), activeProject)
+));
+ipcMain.handle('sortWorkspaceSnapshot:migrateLegacy', async (_event, activeProject) => safeSortWorkspaceSnapshotCall(
+  () => migrateLegacySortWorkspaceSnapshot(app.getPath('userData'), activeProject)
 ));
 
 ipcMain.handle('system:openPath', async (_event, targetPath) => {
@@ -1120,66 +1153,135 @@ ipcMain.handle('marki:destroy-photo-query-session', async (_event, sessionId) =>
   () => destroyMarkiPhotoQuerySession(sessionId)
 ));
 ipcMain.handle('marki:import-photo-query-selection', async (_event, input) => safeMarkiCall(
-  (credentials) => importMarkiPhotoQuerySelection({
-    credentials,
-    documentsPath: app.getPath('documents'),
-    userDataPath: app.getPath('userData'),
-    request: input
-  })
+  async (credentials) => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    return importMarkiPhotoQuerySelection({
+      credentials,
+      documentsPath: app.getPath('documents'),
+      userDataPath: app.getPath('userData'),
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      request: input
+    });
+  }
 ));
-ipcMain.handle('marki:list-ready-import-batches', async () => safeMarkiLocalCall(
-  () => listReadyMarkiImportBatches(app.getPath('userData'))
+ipcMain.handle('marki:list-ready-import-batches', async (_event, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    const result = await listReadyMarkiImportBatches(app.getPath('userData'));
+    return {
+      ...result,
+      items: (result.items || []).filter((item) => item.projectId === project.projectId)
+    };
+  }
 ));
-ipcMain.handle('marki:scan-workbench-recovery-candidates', async () => safeMarkiLocalCall(
-  () => scanMarkiWorkbenchRecoveryCandidates({
-    documentsPath: app.getPath('documents'),
-    userDataPath: app.getPath('userData')
-  })
+ipcMain.handle('marki:scan-workbench-recovery-candidates', async (_event, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return scanMarkiWorkbenchRecoveryCandidates({
+      documentsPath: app.getPath('documents'),
+      userDataPath: app.getPath('userData'),
+      activeProject: project
+    });
+  }
 ));
 ipcMain.handle('marki:recover-workbench-candidates', async (_event, input) => safeMarkiLocalCall(
-  () => recoverMarkiWorkbenchCandidates({
-    ...normalizeMarkiWorkbenchRecoveryRequest(input),
-    documentsPath: app.getPath('documents'),
-    userDataPath: app.getPath('userData')
-  })
-));
-ipcMain.handle('marki:get-import-batch', async (_event, batchId) => safeMarkiLocalCall(
-  () => getMarkiImportBatch(app.getPath('userData'), batchId)
-));
-ipcMain.handle('marki:consume-import-batch', async (_event, batchId) => safeMarkiLocalCall(
   async () => {
+    const request = normalizeMarkiWorkbenchRecoveryRequest(input);
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(
+      request.activeProject,
+      runtimeConfiguration
+    );
+    return recoverMarkiWorkbenchCandidates({
+      recoveryTokens: request.recoveryTokens,
+      documentsPath: app.getPath('documents'),
+      userDataPath: app.getPath('userData'),
+      activeProject: project
+    });
+  }
+));
+ipcMain.handle('marki:get-import-batch', async (_event, batchId, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    const batch = await getMarkiImportBatch(app.getPath('userData'), batchId);
+    assertBatchProject(batch, project);
+    return batch;
+  }
+));
+ipcMain.handle('marki:consume-import-batch', async (_event, batchId, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    const batch = await getMarkiImportBatch(app.getPath('userData'), batchId);
+    assertBatchProject(batch, project);
     let hasLifecycleRecord = true;
     try {
-      await markMarkiImportLifecycleAppending(app.getPath('userData'), batchId);
+      await markMarkiImportLifecycleAppending(app.getPath('userData'), batchId, {
+        activeProject: project
+      });
     } catch (error) {
       if (error?.code !== 'marki_import_record_not_found') throw error;
       hasLifecycleRecord = false;
     }
     const result = await consumeMarkiImportBatch(app.getPath('userData'), batchId);
     if (hasLifecycleRecord) {
-      await completeMarkiImportLifecycleBatch(app.getPath('userData'), batchId);
+      await completeMarkiImportLifecycleBatch(app.getPath('userData'), batchId, {
+        activeProject: project
+      });
     }
     return result;
   }
 ));
-ipcMain.handle('marki:list-import-records', async () => safeMarkiLocalCall(
-  () => listMarkiImportLifecycleRecords(app.getPath('userData'))
+ipcMain.handle('marki:list-import-records', async (_event, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return listMarkiImportLifecycleRecords(app.getPath('userData'), {
+      activeProject: project
+    });
+  }
 ));
-ipcMain.handle('marki:recover-import-lifecycle', async () => safeMarkiLocalCall(
-  () => recoverMarkiImportLifecycle(app.getPath('userData'))
+ipcMain.handle('marki:recover-import-lifecycle', async (_event, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return recoverMarkiImportLifecycle(app.getPath('userData'), {
+      activeProject: project
+    });
+  }
 ));
-ipcMain.handle('marki:undo-import-batch', async (_event, batchId) => safeMarkiLocalCall(
-  () => undoMarkiImportLifecycleBatch(app.getPath('userData'), batchId)
+ipcMain.handle('marki:undo-import-batch', async (_event, batchId, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return undoMarkiImportLifecycleBatch(app.getPath('userData'), batchId, {
+      activeProject: project
+    });
+  }
 ));
-ipcMain.handle('marki:clear-import-record', async (_event, batchId) => safeMarkiLocalCall(
-  () => clearMarkiImportLifecycleRecord(app.getPath('userData'), batchId)
+ipcMain.handle('marki:clear-import-record', async (_event, batchId, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return clearMarkiImportLifecycleRecord(app.getPath('userData'), batchId, {
+      activeProject: project
+    });
+  }
 ));
-ipcMain.handle('marki:cleanup-import-cache', async (_event, batchId) => safeMarkiLocalCall(
-  () => cleanupMarkiImportLifecycleCache(
-    app.getPath('documents'),
-    app.getPath('userData'),
-    batchId
-  )
+ipcMain.handle('marki:cleanup-import-cache', async (_event, batchId, activeProject) => safeMarkiLocalCall(
+  async () => {
+    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+    const project = normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration);
+    return cleanupMarkiImportLifecycleCache(
+      app.getPath('documents'),
+      app.getPath('userData'),
+      batchId,
+      { activeProject: project }
+    );
+  }
 ));
 
 ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
@@ -1360,15 +1462,17 @@ function normalizeMarkiWorkbenchRecoveryRequest(input) {
     !input
     || typeof input !== 'object'
     || Array.isArray(input)
-    || Object.keys(input).length !== 1
+    || Object.keys(input).length !== 2
     || !Object.hasOwn(input, 'recoveryTokens')
+    || !Object.hasOwn(input, 'activeProject')
   ) {
     const error = new Error('恢复请求无效。');
     error.code = 'marki_recovery_input_invalid';
     throw error;
   }
   return {
-    recoveryTokens: input.recoveryTokens
+    recoveryTokens: input.recoveryTokens,
+    activeProject: input.activeProject
   };
 }
 

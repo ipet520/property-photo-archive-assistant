@@ -17,6 +17,9 @@ const {
   buildMarkiStructuredImportBundle
 } = require('./markiStructuredImportService.cjs');
 const {
+  resolveMarkiImportSourceStatuses
+} = require('./markiImportLifecycleService.cjs');
+const {
   createEmptyWorkspace,
   loadSortWorkspaceSnapshot,
   saveSortWorkspaceSnapshot
@@ -29,7 +32,10 @@ const RECOVERY_STATUSES = Object.freeze([
   'missing_file',
   'corrupted_file',
   'missing_metadata',
-  'invalid_record'
+  'invalid_record',
+  'project_mismatch',
+  'project_unresolved',
+  'source_project_locked'
 ]);
 const MAX_RECOVERY_SELECTIONS = 1000;
 const SAFE_SUMMARY_FIELDS = Object.freeze([
@@ -66,8 +72,12 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
       try {
         const dependencies = resolveDependencies({ ...defaultOptions, ...options });
         const paths = normalizeInternalPaths(input);
-        const snapshotResult = await dependencies.loadSnapshot(paths.userDataPath);
+        const snapshotResult = await dependencies.loadSnapshot(paths.userDataPath, {
+          activeProject: paths.activeProject
+        });
         const workspace = resolveWorkspace(snapshotResult);
+        const configs = await dependencies.loadConfigs(paths.documentsPath);
+        const projectOptions = Array.isArray(configs?.projectOptions) ? configs.projectOptions : [];
         const existingBySourceKey = new Map(
           workspace.photos
             .filter((photo) => normalizeText(photo?.sourceKey))
@@ -88,14 +98,32 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
           for (const invalid of manifest.invalidRecords || []) {
             nextCandidates.push(createInvalidCandidate(orgId, invalid.index));
           }
-          for (const record of manifest.records || []) {
-            if (record.importStatus !== 'imported') continue;
+          const importedRecords = (manifest.records || [])
+            .filter((record) => record.importStatus === 'imported');
+          const sourceStatuses = await dependencies.resolveSourceStatuses({
+            documentsPath: paths.documentsPath,
+            userDataPath: paths.userDataPath,
+            orgId,
+            sourceKeys: importedRecords.map((record) => record.sourceKey),
+            activeProject: paths.activeProject
+          }, {
+            loadManifest: async () => ({
+              records: Object.fromEntries(importedRecords.map((record) => [
+                record.sourceKey,
+                record
+              ]))
+            })
+          });
+          for (const record of importedRecords) {
             nextCandidates.push(await inspectRecoveryRecord({
               dependencies,
               documentsPath: paths.documentsPath,
               importRoot,
               record,
-              existingPhoto: existingBySourceKey.get(record.sourceKey) || null
+              existingPhoto: existingBySourceKey.get(record.sourceKey) || null,
+              activeProject: paths.activeProject,
+              projectOptions,
+              assignedProject: sourceStatuses.assignedProjectBySourceKey?.[record.sourceKey] || null
             }));
           }
         }
@@ -144,7 +172,9 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
           }
           return candidate;
         });
-        const snapshotResult = await dependencies.loadSnapshot(paths.userDataPath);
+        const snapshotResult = await dependencies.loadSnapshot(paths.userDataPath, {
+          activeProject: paths.activeProject
+        });
         const currentWorkspace = resolveWorkspace(snapshotResult);
         const existingSourceKeys = new Set(
           currentWorkspace.photos
@@ -153,6 +183,8 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
         );
         const importRoot = getMarkiImportRoot(paths.documentsPath);
         const manifestCache = new Map();
+        const configs = await dependencies.loadConfigs(paths.documentsPath);
+        const projectOptions = Array.isArray(configs?.projectOptions) ? configs.projectOptions : [];
         const accepted = [];
         let duplicateCount = 0;
 
@@ -180,7 +212,10 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
             documentsPath: paths.documentsPath,
             importRoot,
             record,
-            existingPhoto: null
+            existingPhoto: null,
+            activeProject: paths.activeProject,
+            projectOptions,
+            assignedProject: candidate.assignedProject
           });
           if (inspected.status !== 'recoverable') {
             throw new MarkiWorkbenchRehydrateError(
@@ -203,18 +238,22 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
           };
         }
 
-        const configs = await dependencies.loadConfigs(paths.documentsPath);
         const batchId = `marki-rehydrate-${dependencies.randomUUID()}`;
         const workbenchImportPackage = buildCombinedWorkbenchPackage({
           batchId,
           candidates: accepted,
           configs,
-          buildStructuredImportBundle: dependencies.buildStructuredImportBundle
+          buildStructuredImportBundle: dependencies.buildStructuredImportBundle,
+          activeProject: paths.activeProject
         });
         const mergeWorkbenchImport = await dependencies.loadMergeFunction();
-        const merged = mergeWorkbenchImport(currentWorkspace, workbenchImportPackage);
+        const merged = mergeWorkbenchImport(currentWorkspace, workbenchImportPackage, {
+          activeProject: paths.activeProject
+        });
         const nextWorkspace = {
           ...currentWorkspace,
+          projectId: paths.activeProject.projectId,
+          projectName: paths.activeProject.projectName,
           photos: merged.photos,
           recognitionResultsByPhoto: merged.recognitionResultsByPhoto,
           watermarkRecordsByPhoto: merged.watermarkRecordsByPhoto,
@@ -232,7 +271,8 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
         };
         const snapshotSaveResult = await dependencies.saveSnapshot(
           paths.userDataPath,
-          nextWorkspace
+          nextWorkspace,
+          { activeProject: paths.activeProject }
         );
         if (snapshotSaveResult?.success !== true) {
           throw new MarkiWorkbenchRehydrateError(
@@ -279,7 +319,10 @@ async function inspectRecoveryRecord({
   documentsPath,
   importRoot,
   record,
-  existingPhoto
+  existingPhoto,
+  activeProject,
+  projectOptions,
+  assignedProject
 }) {
   const base = {
     orgId: normalizeText(record?.orgId),
@@ -291,7 +334,9 @@ async function inspectRecoveryRecord({
     download: null,
     capturedAt: '',
     photographerName: '',
-    projectName: ''
+    projectName: '',
+    assignedProject: assignedProject || null,
+    projectAssignmentSource: ''
   };
   if (existingPhoto) {
     return {
@@ -358,6 +403,21 @@ async function inspectRecoveryRecord({
   ) {
     return { ...base, status: 'invalid_record' };
   }
+  const sourceProjectText = findMetadataValue(metadata.parsedEntries, '小区名称');
+  const projectAssignment = resolveRecoveryProjectAssignment({
+    activeProject,
+    projectOptions,
+    sourceProjectText,
+    assignedProject
+  });
+  if (!projectAssignment.compatible) {
+    return {
+      ...base,
+      status: projectAssignment.status,
+      projectName: sourceProjectText,
+      assignedProject: assignedProject || null
+    };
+  }
 
   return {
     ...base,
@@ -378,7 +438,9 @@ async function inspectRecoveryRecord({
     },
     capturedAt: normalizeText(metadata.capturedAt) || formatPostTime(metadata.postTime),
     photographerName: findMetadataValue(metadata.parsedEntries, '上传人'),
-    projectName: findMetadataValue(metadata.parsedEntries, '小区名称')
+    projectName: sourceProjectText,
+    projectAssignmentSource: projectAssignment.projectAssignmentSource,
+    assignedProject: projectAssignment.assignedProject
   };
 }
 
@@ -444,7 +506,8 @@ function buildCombinedWorkbenchPackage({
   batchId,
   candidates,
   configs,
-  buildStructuredImportBundle
+  buildStructuredImportBundle,
+  activeProject
 }) {
   const combined = {
     batchId,
@@ -463,7 +526,7 @@ function buildCombinedWorkbenchPackage({
       orgId,
       configs,
       items: items.map(buildStructuredImportItem)
-    }, { batchId });
+    }, { batchId, activeProject });
     const workbenchPackage = bundle.workbenchImportPackage;
     combined.photos.push(...workbenchPackage.photos);
     Object.assign(combined.recognitionResultsByPhoto, workbenchPackage.recognitionResultsByPhoto);
@@ -495,7 +558,8 @@ function buildStructuredImportItem(candidate) {
       postTime: metadata.postTime
     },
     sourceMetadataRef: metadata.sourceMetadataRef,
-    download: candidate.download
+    download: candidate.download,
+    projectAssignmentSource: candidate.projectAssignmentSource
   };
 }
 
@@ -524,6 +588,43 @@ function resolveWorkspace(snapshotResult) {
     : createEmptyWorkspace();
 }
 
+function resolveRecoveryProjectAssignment({
+  activeProject,
+  projectOptions,
+  sourceProjectText,
+  assignedProject
+}) {
+  const lockedProjectId = normalizeText(assignedProject?.projectId);
+  const lockedProjectName = normalizeProjectText(assignedProject?.projectName);
+  if (lockedProjectId && lockedProjectId !== activeProject.projectId) {
+    return { compatible: false, status: 'source_project_locked' };
+  }
+  const sourceText = normalizeProjectText(sourceProjectText);
+  if (!sourceText) {
+    return {
+      compatible: true,
+      projectAssignmentSource: 'active_project_context',
+      assignedProject: activeProject
+    };
+  }
+  const normalizedOptions = (Array.isArray(projectOptions) ? projectOptions : [])
+    .map((item) => ({
+      projectId: normalizeText(item?.id),
+      projectName: normalizeProjectText(item?.name)
+    }))
+    .filter((item) => item.projectId && item.projectName);
+  const exactMatch = normalizedOptions.find((item) => item.projectName === sourceText);
+  if (!exactMatch) return { compatible: false, status: 'project_unresolved' };
+  if (exactMatch.projectId !== activeProject.projectId) {
+    return { compatible: false, status: 'project_mismatch' };
+  }
+  return {
+    compatible: true,
+    projectAssignmentSource: 'marki_structured_confirmed',
+    assignedProject: activeProject
+  };
+}
+
 function normalizeInternalPaths(input) {
   if (!isPlainObject(input)) {
     throw new MarkiWorkbenchRehydrateError(
@@ -533,17 +634,34 @@ function normalizeInternalPaths(input) {
   }
   const documentsPath = normalizeText(input.documentsPath);
   const userDataPath = normalizeText(input.userDataPath);
+  const activeProject = normalizeActiveProject(input.activeProject);
   if (!documentsPath || !path.isAbsolute(documentsPath) || !userDataPath || !path.isAbsolute(userDataPath)) {
     throw new MarkiWorkbenchRehydrateError(
       'marki_recovery_paths_invalid',
       '恢复服务目录无效。'
     );
   }
-  return { documentsPath, userDataPath };
+  return { documentsPath, userDataPath, activeProject };
+}
+
+function normalizeActiveProject(value) {
+  const projectId = normalizeText(value?.projectId);
+  const projectName = normalizeProjectText(value?.projectName);
+  if (!projectId || !projectName) {
+    throw new MarkiWorkbenchRehydrateError(
+      'active_project_required',
+      '请选择当前工作项目。'
+    );
+  }
+  return { projectId, projectName };
+}
+
+function normalizeProjectText(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/g, ' ').trim();
 }
 
 function normalizeRecoveryTokens(input) {
-  const allowedKeys = new Set(['documentsPath', 'userDataPath', 'recoveryTokens']);
+  const allowedKeys = new Set(['documentsPath', 'userDataPath', 'activeProject', 'recoveryTokens']);
   if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
     throw new MarkiWorkbenchRehydrateError(
       'marki_recovery_input_invalid',
@@ -583,6 +701,8 @@ function resolveDependencies(options) {
     loadConfigs: options.loadConfigs || loadConfigs,
     buildStructuredImportBundle: options.buildStructuredImportBundle
       || buildMarkiStructuredImportBundle,
+    resolveSourceStatuses: options.resolveSourceStatuses
+      || resolveMarkiImportSourceStatuses,
     loadSnapshot: options.loadSnapshot || loadSortWorkspaceSnapshot,
     saveSnapshot: options.saveSnapshot || saveSortWorkspaceSnapshot,
     loadMergeFunction: options.loadMergeFunction || loadMergeWorkbenchImport

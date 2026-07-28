@@ -1,5 +1,10 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeRuntimeConfiguration } from '../utils/runtimeConfig.js';
+import {
+  getEnabledProjectOptions,
+  resolveActiveProject,
+  validateActiveProject
+} from '../utils/activeProjectContext.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 export function useAppWorkspace() {
@@ -9,7 +14,9 @@ export function useAppWorkspace() {
   const [configPaths, setConfigPaths] = useState(null);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [runtimeConfiguration, setRuntimeConfiguration] = useState(null);
+  const [activeProject, setActiveProject] = useState(null);
   const [status, setStatus] = useState({ type: 'idle', text: '正在读取基础配置。' });
+  const projectWorkspaceControllerRef = useRef(null);
 
   useEffect(() => {
     let disposed = false;
@@ -46,6 +53,26 @@ export function useAppWorkspace() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!activeProject || !runtimeConfiguration) return;
+    const resolved = resolveActiveProject(activeProject.projectId, runtimeConfiguration);
+    if (resolved) {
+      if (resolved.projectName !== activeProject.projectName) setActiveProject(resolved);
+      return;
+    }
+    void (async () => {
+      const controller = projectWorkspaceControllerRef.current;
+      const saveResult = await controller?.flush?.(activeProject);
+      if (saveResult && saveResult.success !== true) {
+        setStatus({ type: 'error', text: '当前项目已停用，但工作台保存失败，暂未退出项目。' });
+        return;
+      }
+      controller?.clear?.();
+      setActiveProject(null);
+      setStatus({ type: 'warning', text: '当前项目已删除或停用，请重新选择项目。' });
+    })();
+  }, [activeProject, runtimeConfiguration]);
+
   async function handleConfigsSaved(savedResult) {
     const runtime = savedResult?.runtimeConfiguration
       || await window.archiveAssistant.loadRuntimeConfiguration();
@@ -75,16 +102,80 @@ export function useAppWorkspace() {
     setSettings(nextSettings);
   }, []);
 
+  const selectActiveProject = useCallback((projectId) => {
+    const resolved = resolveActiveProject(projectId, runtimeConfiguration);
+    if (!resolved) {
+      setStatus({ type: 'error', text: '所选项目不可用，请刷新基础配置后重试。' });
+      return { success: false, code: 'active_project_invalid' };
+    }
+    setActiveProject(resolved);
+    setStatus({ type: 'success', text: `当前项目已切换为“${resolved.projectName}”。` });
+    return { success: true, activeProject: resolved };
+  }, [runtimeConfiguration]);
+
+  const switchActiveProject = useCallback(async (projectId) => {
+    const resolved = resolveActiveProject(projectId, runtimeConfiguration);
+    if (!resolved) {
+      return { success: false, code: 'active_project_invalid', message: '所选项目不可用。' };
+    }
+    if (!activeProject) return selectActiveProject(projectId);
+    if (resolved.projectId === activeProject.projectId) {
+      return { success: true, activeProject: resolved, unchanged: true };
+    }
+    const controller = projectWorkspaceControllerRef.current;
+    if (controller?.isBusy?.()) {
+      return { success: false, code: 'project_switch_busy', message: '当前有任务正在执行，请完成后再切换项目。' };
+    }
+    const saveResult = await controller?.flush?.(activeProject);
+    if (saveResult && saveResult.success !== true) {
+      return {
+        success: false,
+        code: saveResult?.error?.code || 'sort_workspace_snapshot_save_failed',
+        message: saveResult?.error?.message || '当前项目工作台保存失败，已取消切换。'
+      };
+    }
+    controller?.clear?.();
+    setActiveProject(resolved);
+    setStatus({ type: 'success', text: `已切换到项目“${resolved.projectName}”。` });
+    return { success: true, activeProject: resolved };
+  }, [activeProject, runtimeConfiguration, selectActiveProject]);
+
+  const clearActiveProject = useCallback(() => {
+    projectWorkspaceControllerRef.current?.clear?.();
+    setActiveProject(null);
+  }, []);
+
+  const registerProjectWorkspaceController = useCallback((controller) => {
+    projectWorkspaceControllerRef.current = controller || null;
+    return () => {
+      if (projectWorkspaceControllerRef.current === controller) {
+        projectWorkspaceControllerRef.current = null;
+      }
+    };
+  }, []);
+
+  const projectOptions = getEnabledProjectOptions(runtimeConfiguration || {});
+  const activeProjectValidation = validateActiveProject(activeProject, runtimeConfiguration || {});
+
   return {
     configs,
     settings,
     appPaths,
     configPaths,
     runtimeConfiguration,
+    activeProject,
+    hasActiveProject: activeProjectValidation.valid,
+    activeProjectValidation,
+    projectOptions,
     archiveRoot,
     setCurrentArchiveRoot,
     applySavedSettings,
     status,
-    handleConfigsSaved
+    handleConfigsSaved,
+    selectActiveProject,
+    switchActiveProject,
+    clearActiveProject,
+    validateActiveProject: () => validateActiveProject(activeProject, runtimeConfiguration || {}),
+    registerProjectWorkspaceController
   };
 }

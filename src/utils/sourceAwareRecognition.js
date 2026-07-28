@@ -373,7 +373,7 @@ export function buildSourceAwareSmartSortPresentation({
 
 export function buildSourceAwareRecognitionNotice(stats = {}, options = {}) {
   const supersedeSyncFailedCount = Number(options.supersedeSyncFailedCount) || 0;
-  return `智拣完成：平台数据直用 ${Number(stats.platformOnlyCount) || 0} 张，复用已有补充 ${Number(stats.existingSupplementCount) || 0} 张，本地 OCR ${Number(stats.localOcrCount) || 0} 张，Marki OCR 补充 ${Number(stats.markiOcrFallbackCount) || 0} 张，仍需人工完善 ${Number(stats.needsManualCount) || 0} 张。${Number(stats.conflictCount) ? `其中 ${Number(stats.conflictCount)} 张存在平台与 OCR 字段冲突，请人工核查。` : ''}${Number(stats.ocrUnavailableCount) ? `另有 ${Number(stats.ocrUnavailableCount)} 张因 OCR 服务不可用未完成补充。` : ''}${supersedeSyncFailedCount ? `另有 ${supersedeSyncFailedCount} 条旧记录未能标记为已替代，请在数据中心核对。` : ''}`;
+  return `智拣完成：平台结构化数据直接使用 ${Number(stats.platformOnlyCount) || 0} 张，本地照片使用 OCR识别 ${Number(stats.localOcrCount) || 0} 张，Marki照片使用本机 OCR补充 ${Number(stats.markiOcrFallbackCount) || 0} 张，仍需人工完善 ${Number(stats.needsManualCount) || 0} 张。${Number(stats.conflictCount) ? `其中 ${Number(stats.conflictCount)} 张存在平台字段与 OCR补充结果冲突，请人工核查。` : ''}${Number(stats.ocrUnavailableCount) ? `另有 ${Number(stats.ocrUnavailableCount)} 张因本机 OCR服务不可用未完成补充。` : ''}${supersedeSyncFailedCount ? `另有 ${supersedeSyncFailedCount} 条旧记录未能标记为已替代，请在数据中心核对。` : ''}`;
 }
 
 const requiredFieldByAlias = new Map(
@@ -389,6 +389,7 @@ export function classifyPhotoRecognitionRoute({
   watermarkRecord = null,
   archiveSuggestion = null,
   configs = {},
+  activeProject = null,
   eligible = true
 } = {}) {
   if (!eligible) return 'skip';
@@ -415,7 +416,8 @@ export function classifyPhotoRecognitionRoute({
     recognitionResult,
     watermarkRecord,
     archiveSuggestion,
-    configs
+    configs,
+    activeProject
   });
   if (platformMissing.length === 0) return 'marki_platform_only';
 
@@ -423,7 +425,8 @@ export function classifyPhotoRecognitionRoute({
     recognitionResult,
     watermarkRecord,
     archiveSuggestion,
-    configs
+    configs,
+    activeProject
   }).length === 0
     ? 'marki_existing_supplement'
     : 'marki_ocr_fallback';
@@ -433,7 +436,8 @@ export function getMissingRequiredFields({
   recognitionResult = null,
   watermarkRecord = null,
   archiveSuggestion = null,
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   const values = getEffectiveRequiredFieldValues({
     recognitionResult,
@@ -441,6 +445,9 @@ export function getMissingRequiredFields({
     archiveSuggestion,
     configs
   });
+  if (activeProject?.projectId && activeProject?.projectName) {
+    values.project = activeProject.projectName;
+  }
   return getApplicableRequiredFields({
     recognitionResult,
     watermarkRecord,
@@ -560,6 +567,7 @@ export async function orchestrateSourceAwareRecognition({
   watermarkRecordsByPhoto = {},
   archiveSuggestionsByPhoto = {},
   configs = {},
+  activeProject = null,
   getOcrAvailability = async () => ({ available: true }),
   recognizePhoto,
   buildOcrArtifacts,
@@ -583,7 +591,8 @@ export async function orchestrateSourceAwareRecognition({
     recognitionResult: recognitionResultsByPhoto[photo.id],
     watermarkRecord: watermarkRecordsByPhoto[photo.id],
     archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
-    configs
+    configs,
+    activeProject
   }));
   const needsOcr = routes.some((route) => route === 'local_ocr' || route === 'marki_ocr_fallback');
   let ocrAvailability = { available: true, skipped: true };
@@ -653,7 +662,9 @@ export async function orchestrateSourceAwareRecognition({
         const missing = getMissingRequiredFields({
           recognitionResult: recognitionResultsByPhoto[photo.id],
           watermarkRecord: watermarkRecordsByPhoto[photo.id],
-          archiveSuggestion: archiveSuggestionsByPhoto[photo.id]
+          archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+          configs,
+          activeProject
         });
         if (missing.length > 0) stats.needsManualCount += 1;
       }
@@ -687,7 +698,7 @@ export async function orchestrateSourceAwareRecognition({
           artifacts.archiveSuggestion,
           getPhotoSortStatus
         );
-        const missing = getMissingRequiredFields(artifacts);
+        const missing = getMissingRequiredFields({ ...artifacts, configs, activeProject });
         const recognitionFailed = isRecognitionFailure(artifacts.recognitionResult);
         if (!recognitionFailed) groupablePhotos.push(nextPhotos[index]);
         if (missing.length > 0) stats.needsManualCount += 1;
@@ -713,7 +724,9 @@ export async function orchestrateSourceAwareRecognition({
           missingRequiredFields: getMissingRequiredFields({
             recognitionResult: recognitionResultsByPhoto[photo.id],
             watermarkRecord: watermarkRecordsByPhoto[photo.id],
-            archiveSuggestion: archiveSuggestionsByPhoto[photo.id]
+            archiveSuggestion: archiveSuggestionsByPhoto[photo.id],
+            configs,
+            activeProject
           })
         });
         continue;
@@ -839,7 +852,8 @@ function getMarkiPlatformMissingRequiredFields({
   recognitionResult = null,
   watermarkRecord = null,
   archiveSuggestion = null,
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   const values = getMarkiPlatformRequiredFieldValues({
     recognitionResult,
@@ -847,6 +861,9 @@ function getMarkiPlatformMissingRequiredFields({
     archiveSuggestion,
     configs
   });
+  if (activeProject?.projectId && activeProject?.projectName) {
+    values.project = activeProject.projectName;
+  }
   return getApplicableRequiredFields({
     recognitionResult,
     watermarkRecord,

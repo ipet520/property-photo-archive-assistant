@@ -4,6 +4,7 @@ import {
   NOT_APPLICABLE_WORK_CONTENT,
   WATERMARK_TEMPLATE_TYPES
 } from './watermarkTemplateAdapter.js';
+import { applyActiveProjectToArchiveInfo } from './activeProjectContext.js';
 
 const COMMON_GROUP_FIELDS = Object.freeze([
   'date',
@@ -36,7 +37,8 @@ export function buildSourceCanonical({
   recognitionResult = null,
   watermarkRecord = null,
   sourceAwareProcessing = null,
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   const canonical = buildTemplateDrivenCanonical({
     photo,
@@ -45,14 +47,21 @@ export function buildSourceCanonical({
     sourceAwareProcessing,
     configs
   });
-  return cloneCanonical(canonical);
+  return activeProject
+    ? cloneCanonical(applyActiveProjectToArchiveInfo(
+        canonical,
+        activeProject,
+        photo.projectAssignmentSource
+      ))
+    : cloneCanonical(canonical);
 }
 
 export function resolveEffectivePhotoArchiveInfo({
   photo = {},
   sourceCanonical = {},
   sourceAwareProcessing = null,
-  photoDraft = null
+  photoDraft = null,
+  activeProject = null
 } = {}) {
   const processing = sourceAwareProcessing || {};
   const effectiveSupplement = processing.effectiveResult?.requiredFields || {};
@@ -94,7 +103,14 @@ export function resolveEffectivePhotoArchiveInfo({
   merged.remarks = merged.remarks || merged.remark || '';
   merged.remark = merged.remark || merged.remarks || '';
   merged.unresolvedFields = getEffectiveUnresolvedFields(merged);
-  return isolateTemplateSpecificFields(cloneCanonical(merged));
+  const effective = isolateTemplateSpecificFields(cloneCanonical(merged));
+  return activeProject
+    ? applyActiveProjectToArchiveInfo(
+        effective,
+        activeProject,
+        photo.projectAssignmentSource || sourceCanonical.projectAssignmentSource
+      )
+    : effective;
 }
 
 export function buildGroupCanonical(members = []) {
@@ -153,7 +169,8 @@ export function buildCanonicalArchiveFormSeed({
   groupCanonical = null,
   activePhotoEffectiveInfo = {},
   groupDraft = null,
-  photoDraft = null
+  photoDraft = null,
+  activeProject = null
 } = {}) {
   const groupFields = groupCanonical && groupCanonical.groupValidity !== 'invalid_group'
     ? groupCanonical.groupCommonFields || {}
@@ -174,7 +191,14 @@ export function buildCanonicalArchiveFormSeed({
   result.location = result.location || result.locationArea || '';
   result.remarks = result.remarks || result.remark || '';
   result.remark = result.remark || result.remarks || '';
-  return isolateTemplateSpecificFields(cloneCanonical(result));
+  const isolated = isolateTemplateSpecificFields(cloneCanonical(result));
+  return activeProject
+    ? applyActiveProjectToArchiveInfo(
+        isolated,
+        activeProject,
+        activePhotoEffectiveInfo.projectAssignmentSource
+      )
+    : isolated;
 }
 
 function getEffectiveUnresolvedFields(value) {

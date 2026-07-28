@@ -78,6 +78,15 @@ async function beginMarkiImportLifecycleBatch(userDataPath, input = {}, options 
       if (JSON.stringify(existingKeys) !== JSON.stringify(nextKeys)) {
         throw createError('marki_import_lifecycle_retry_mismatch', '失败导入只能使用原照片集合重试。');
       }
+      if (
+        existing.projectId
+        && (
+          existing.projectId !== normalized.projectId
+          || existing.projectName !== normalized.projectName
+        )
+      ) {
+        throw createError('batch_project_mismatch', '失败导入批次与当前项目不一致。');
+      }
       existing.status = 'downloading';
       existing.updatedAt = now;
       existing.clearedAt = '';
@@ -92,6 +101,8 @@ async function beginMarkiImportLifecycleBatch(userDataPath, input = {}, options 
     }
     const record = {
       batchId: normalized.batchId,
+      projectId: normalized.projectId,
+      projectName: normalized.projectName,
       status: 'created',
       querySummary: normalized.querySummary,
       items: normalized.items.map((item) => ({
@@ -204,7 +215,10 @@ async function markMarkiImportLifecycleFailed(userDataPath, input = {}, options 
 }
 
 async function completeMarkiImportLifecycleBatch(userDataPath, batchId, options = {}) {
-  const snapshotResult = await resolveDependencies(options).loadSnapshot(userDataPath);
+  const snapshotResult = await resolveDependencies(options).loadSnapshot(
+    userDataPath,
+    snapshotOptions(options)
+  );
   const activeBySourceKey = getWorkspaceSourceState(snapshotResult);
   return mutateBatch(userDataPath, batchId, options, (record, now) => {
     record.items = record.items.map((item) => {
@@ -240,10 +254,11 @@ async function completeMarkiImportLifecycleBatch(userDataPath, batchId, options 
 async function listMarkiImportLifecycleRecords(userDataPath, options = {}) {
   const dependencies = resolveDependencies(options);
   const ledger = await loadLedger(userDataPath, dependencies.fs);
-  const snapshotResult = await dependencies.loadSnapshot(userDataPath);
+  const snapshotResult = await dependencies.loadSnapshot(userDataPath, snapshotOptions(options));
   const activeBySourceKey = getWorkspaceSourceState(snapshotResult);
   const items = Object.values(ledger.batches)
     .filter((record) => record.status !== 'cleared')
+    .filter((record) => recordMatchesActiveProject(record, options.activeProject))
     .map((record) => buildSafeRecord(reconcileRecord(record, activeBySourceKey)))
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
   return {
@@ -276,6 +291,7 @@ async function undoMarkiImportLifecycleBatch(userDataPath, batchId, options = {}
   const ledger = await loadLedger(userDataPath, dependencies.fs);
   const record = ledger.batches[normalizedBatchId];
   if (!record) throw createError('marki_import_record_not_found', '未找到对应的导入记录。');
+  assertLifecycleRecordProject(record, options.activeProject);
   if (record.status === 'cleared') {
     throw createError('marki_import_record_not_undoable', '该导入记录已清除，不能执行撤销。');
   }
@@ -288,7 +304,7 @@ async function undoMarkiImportLifecycleBatch(userDataPath, batchId, options = {}
     throw createError('marki_import_record_not_undoable', '当前导入记录没有可撤销照片。');
   }
 
-  const snapshotResult = await dependencies.loadSnapshot(userDataPath);
+  const snapshotResult = await dependencies.loadSnapshot(userDataPath, snapshotOptions(options));
   if (snapshotResult?.success !== true || !snapshotResult.found) {
     throw createError('marki_import_undo_snapshot_unavailable', '工作台快照不可用，未执行撤销。');
   }
@@ -307,7 +323,11 @@ async function undoMarkiImportLifecycleBatch(userDataPath, batchId, options = {}
     throw createError('marki_import_record_archived_locked', '所选照片已经归档，不能撤销导入。');
   }
   const nextWorkspace = removeSourcesFromWorkspace(workspace, removableSourceKeys);
-  const saveResult = await dependencies.saveSnapshot(userDataPath, nextWorkspace);
+  const saveResult = await dependencies.saveSnapshot(
+    userDataPath,
+    nextWorkspace,
+    snapshotOptions(options)
+  );
   if (saveResult?.success !== true) {
     throw createError('marki_import_undo_snapshot_failed', '工作台保存失败，未执行撤销。');
   }
@@ -348,7 +368,8 @@ async function cleanupMarkiImportLifecycleCache(
   const ledger = await loadLedger(userDataPath, dependencies.fs);
   const record = ledger.batches[normalizedBatchId];
   if (!record) throw createError('marki_import_record_not_found', '未找到对应的导入记录。');
-  const snapshotResult = await dependencies.loadSnapshot(userDataPath);
+  assertLifecycleRecordProject(record, options.activeProject);
+  const snapshotResult = await dependencies.loadSnapshot(userDataPath, snapshotOptions(options));
   const activeBySourceKey = getWorkspaceSourceState(snapshotResult);
   const candidates = record.items.filter((item) => (
     RETRYABLE_ITEM_STATUSES.has(item.status) && !activeBySourceKey.has(item.sourceKey)
@@ -391,13 +412,14 @@ async function cleanupMarkiImportLifecycleCache(
 
 async function recoverMarkiImportLifecycle(userDataPath, options = {}) {
   const dependencies = resolveDependencies(options);
-  const snapshotResult = await dependencies.loadSnapshot(userDataPath);
+  const snapshotResult = await dependencies.loadSnapshot(userDataPath, snapshotOptions(options));
   const activeBySourceKey = getWorkspaceSourceState(snapshotResult);
   const legacyReadyBatches = await loadLegacyReadyBatches(userDataPath, dependencies);
   return updateLedger(userDataPath, options, (ledger, now) => {
     let changedCount = 0;
     for (const batch of legacyReadyBatches) {
       if (ledger.batches[batch.batchId]) continue;
+      if (!recordMatchesActiveProject(batch, options.activeProject)) continue;
       try {
         ledger.batches[batch.batchId] = buildLegacyReadyRecord(batch, now);
         changedCount += 1;
@@ -406,6 +428,7 @@ async function recoverMarkiImportLifecycle(userDataPath, options = {}) {
       }
     }
     for (const record of Object.values(ledger.batches)) {
+      if (!recordMatchesActiveProject(record, options.activeProject)) continue;
       if (record.status === 'cleared') continue;
       const before = JSON.stringify(record);
       record.items = record.items.map((item) => {
@@ -521,22 +544,42 @@ async function resolveMarkiImportSourceStatuses({
   documentsPath,
   userDataPath,
   orgId,
-  sourceKeys
+  sourceKeys,
+  activeProject
 }, options = {}) {
   const dependencies = resolveDependencies(options);
   const manifest = await dependencies.loadManifest(documentsPath, orgId);
   const ledger = await loadLedger(userDataPath, dependencies.fs);
-  const snapshotResult = await dependencies.loadSnapshot(userDataPath);
+  const snapshotResult = await dependencies.loadSnapshot(
+    userDataPath,
+    activeProject ? { activeProject } : undefined
+  );
   const activeBySourceKey = getWorkspaceSourceState(snapshotResult);
   const lifecycleBySourceKey = buildLifecycleStateBySourceKey(ledger);
   const bySourceKey = {};
+  const assignedProjectBySourceKey = {};
   for (const sourceKey of sourceKeys) {
     const active = activeBySourceKey.get(sourceKey);
     if (active) {
       bySourceKey[sourceKey] = active.sourceStatus;
+      if (active.assignedProjectId || active.assignedProjectName) {
+        assignedProjectBySourceKey[sourceKey] = {
+          projectId: active.assignedProjectId,
+          projectName: active.assignedProjectName,
+          projectAssignmentSource: active.projectAssignmentSource
+        };
+      }
       continue;
     }
-    const lifecycleState = lifecycleBySourceKey.get(sourceKey);
+    const lifecycleItem = lifecycleBySourceKey.get(sourceKey);
+    const lifecycleState = lifecycleItem?.status;
+    if (lifecycleItem?.assignedProjectId || lifecycleItem?.assignedProjectName) {
+      assignedProjectBySourceKey[sourceKey] = {
+        projectId: lifecycleItem.assignedProjectId,
+        projectName: lifecycleItem.assignedProjectName,
+        projectAssignmentSource: lifecycleItem.projectAssignmentSource
+      };
+    }
     if (ACTIVE_ITEM_STATUSES.has(lifecycleState)) {
       bySourceKey[sourceKey] = lifecycleState;
       continue;
@@ -566,7 +609,7 @@ async function resolveMarkiImportSourceStatuses({
       bySourceKey[sourceKey] = 'discovered';
     }
   }
-  return { success: true, bySourceKey };
+  return { success: true, bySourceKey, assignedProjectBySourceKey };
 }
 
 function buildLifecycleStateBySourceKey(ledger) {
@@ -576,7 +619,7 @@ function buildLifecycleStateBySourceKey(ledger) {
   const bySourceKey = new Map();
   for (const record of entries) {
     for (const item of record.items) {
-      bySourceKey.set(item.sourceKey, item.status);
+      bySourceKey.set(item.sourceKey, item);
     }
   }
   return bySourceKey;
@@ -645,6 +688,8 @@ function buildSafeRecord(record) {
   const counts = countRecordItems(record.items, record.querySummary);
   return {
     batchId: record.batchId,
+    projectId: record.projectId || '',
+    projectName: record.projectName || '',
     status: record.status,
     querySummary: { ...record.querySummary },
     totalCount: record.items.length,
@@ -654,6 +699,9 @@ function buildSafeRecord(record) {
     items: record.items.map((item) => ({
       displayId: item.displayId,
       markName: item.markName,
+      assignedProjectId: item.assignedProjectId || '',
+      assignedProjectName: item.assignedProjectName || '',
+      projectAssignmentSource: item.projectAssignmentSource || '',
       status: item.status,
       code: item.code,
       message: item.message
@@ -703,6 +751,7 @@ async function mutateBatch(userDataPath, batchId, options, mutate) {
   return updateLedger(userDataPath, options, (ledger, now) => {
     const record = ledger.batches[normalizedBatchId];
     if (!record) throw createError('marki_import_record_not_found', '未找到对应的导入记录。');
+    assertLifecycleRecordProject(record, options.activeProject);
     mutate(record, now);
     record.updatedAt = now;
     if (!BATCH_STATUSES.has(record.status)) {
@@ -770,6 +819,8 @@ function normalizeLedger(input) {
     const items = normalizeStoredItems(value.items);
     batches[normalizedBatchId] = {
       batchId: normalizedBatchId,
+      projectId: normalizeText(value.projectId, 500),
+      projectName: normalizeText(value.projectName, 1000),
       status,
       querySummary: normalizeQuerySummary(value.querySummary),
       items,
@@ -792,11 +843,16 @@ function normalizeBeginInput(input) {
   }
   return {
     batchId: normalizeBatchId(input.batchId),
+    projectId: normalizeText(input.projectId, 500, true),
+    projectName: normalizeText(input.projectName, 1000, true),
     querySummary: normalizeQuerySummary(input.querySummary),
     items: input.items.map((item) => ({
       sourceKey: normalizeSourceKey(item.sourceKey),
       displayId: normalizeDisplayId(item.displayId),
-      markName: normalizeText(item.markName, 300)
+      markName: normalizeText(item.markName, 300),
+      assignedProjectId: normalizeText(item.assignedProjectId, 500, true),
+      assignedProjectName: normalizeText(item.assignedProjectName, 1000, true),
+      projectAssignmentSource: normalizeProjectAssignmentSource(item.projectAssignmentSource)
     }))
   };
 }
@@ -809,6 +865,12 @@ function normalizeStoredItems(input) {
     sourceKey: normalizeSourceKey(item.sourceKey),
     displayId: normalizeDisplayId(item.displayId),
     markName: normalizeText(item.markName, 300),
+    assignedProjectId: normalizeText(item.assignedProjectId, 500),
+    assignedProjectName: normalizeText(item.assignedProjectName, 1000),
+    projectAssignmentSource: normalizeProjectAssignmentSource(
+      item.projectAssignmentSource,
+      false
+    ),
     status: normalizeEnum(item.status, ITEM_STATUSES, '单项状态'),
     photoId: normalizeText(item.photoId, 500),
     code: normalizeCode(item.code),
@@ -904,6 +966,11 @@ function getWorkspaceSourceState(snapshotResult) {
 
 function resolveWorkspaceSourceOccupancy(photo = {}) {
   const photoId = String(photo.id || '');
+  const project = {
+    assignedProjectId: String(photo.projectId || '').trim(),
+    assignedProjectName: String(photo.projectName || '').trim(),
+    projectAssignmentSource: String(photo.projectAssignmentSource || '').trim()
+  };
   if (!photoId || photo.sourceType !== 'marki_api' || !String(photo.sourceKey || '').trim()) {
     return {
       photoId,
@@ -915,14 +982,16 @@ function resolveWorkspaceSourceOccupancy(photo = {}) {
     return {
       photoId,
       occupancy: 'archived_locked',
-      sourceStatus: 'archived_locked'
+      sourceStatus: 'archived_locked',
+      ...project
     };
   }
   if (photo.originalMissing === true || photo.fileHealth?.exists === false) {
     return {
       photoId,
       occupancy: 'repairable_missing',
-      sourceStatus: 'workspace_file_repairable'
+      sourceStatus: 'workspace_file_repairable',
+      ...project
     };
   }
   const healthStatus = String(photo.fileHealth?.healthStatus || '').trim();
@@ -939,7 +1008,8 @@ function resolveWorkspaceSourceOccupancy(photo = {}) {
     return {
       photoId,
       occupancy: healthStatus === 'missing' ? 'repairable_missing' : 'repairable_corrupt',
-      sourceStatus: 'workspace_file_repairable'
+      sourceStatus: 'workspace_file_repairable',
+      ...project
     };
   }
   if (
@@ -949,13 +1019,15 @@ function resolveWorkspaceSourceOccupancy(photo = {}) {
     return {
       photoId,
       occupancy: 'unavailable',
-      sourceStatus: 'unavailable'
+      sourceStatus: 'unavailable',
+      ...project
     };
   }
   return {
     photoId,
     occupancy: 'healthy_active',
-    sourceStatus: 'imported_active'
+    sourceStatus: 'imported_active',
+    ...project
   };
 }
 
@@ -1023,6 +1095,21 @@ function normalizeCode(value, required = false) {
   return text;
 }
 
+function normalizeProjectAssignmentSource(value, required = true) {
+  const text = normalizeText(value, 100, required);
+  if (
+    text
+    && ![
+      'active_project_context',
+      'marki_structured_confirmed',
+      'legacy_workspace_claimed'
+    ].includes(text)
+  ) {
+    throw createError('marki_import_lifecycle_input_invalid', '照片项目归属依据无效。');
+  }
+  return text;
+}
+
 function normalizeText(value, maxLength, required = false) {
   const text = String(value || '').trim();
   if ((required && !text) || text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) {
@@ -1084,6 +1171,24 @@ function withWriteLock(key, action) {
 
 function createError(code, message) {
   return new MarkiImportLifecycleError(code, message);
+}
+
+function snapshotOptions(options = {}) {
+  return options.activeProject ? { activeProject: options.activeProject } : undefined;
+}
+
+function recordMatchesActiveProject(record, activeProject) {
+  if (!activeProject) return true;
+  return (
+    String(record?.projectId || '').trim() === String(activeProject.projectId || '').trim()
+    && String(record?.projectName || '').normalize('NFKC').trim()
+      === String(activeProject.projectName || '').normalize('NFKC').trim()
+  );
+}
+
+function assertLifecycleRecordProject(record, activeProject) {
+  if (!activeProject || recordMatchesActiveProject(record, activeProject)) return;
+  throw createError('batch_project_mismatch', '马克导入记录与当前项目不一致。');
 }
 
 module.exports = {

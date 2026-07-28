@@ -129,6 +129,8 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     normalizeProjectOptions(configs.projects),
     options.projectAliases
   );
+  const activeProject = normalizeActiveProject(options.activeProject, false);
+  const businessProjectName = activeProject?.projectName || projectMatch.value;
   const categoryMatch = matchConfiguredValue(
     normalizedMoment.markName,
     normalizeCategoryOptions(configs.watermarkCategories),
@@ -159,7 +161,12 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
   ]);
 
   const suggestedFields = {
-    project: projectMatch.value,
+    project: businessProjectName,
+    projectId: activeProject?.projectId || '',
+    projectName: businessProjectName,
+    projectAssignmentSource: activeProject
+      ? normalizeProjectAssignmentSource(options.projectAssignmentSource)
+      : '',
     watermarkCategory: categoryMatch.value,
     workContent,
     date: dateInfo.date,
@@ -175,7 +182,9 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     violationType: fields['违停类型'] || ''
   };
   const fieldSources = compactObject({
-    project: projectMatch.value ? projectMatch.source : '',
+    project: activeProject
+      ? normalizeProjectAssignmentSource(options.projectAssignmentSource)
+      : (projectMatch.value ? projectMatch.source : ''),
     watermarkCategory: categoryMatch.value ? categoryMatch.source : '',
     workContent: workContent ? resolveWorkContentSource(fields, normalizedMoment.markName) : '',
     date: dateInfo.date ? dateInfo.dateSource : '',
@@ -190,7 +199,7 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     violationType: fields['违停类型'] ? 'marki.content.violation_type' : ''
   });
   const confidenceByField = compactObject({
-    project: projectMatch.value ? projectMatch.confidence : null,
+    project: activeProject ? 1 : (projectMatch.value ? projectMatch.confidence : null),
     watermarkCategory: categoryMatch.value ? categoryMatch.confidence : null,
     workContent: workContent ? 0.95 : null,
     date: dateInfo.date ? dateInfo.confidence : null,
@@ -228,6 +237,8 @@ function mapMarkiMoment(moment = {}, configs = {}, options = {}) {
     watermarkCategory: suggestedFields.watermarkCategory || null,
     workContent: suggestedFields.workContent || null,
     projectName: suggestedFields.project || null,
+    projectId: suggestedFields.projectId || null,
+    projectAssignmentSource: suggestedFields.projectAssignmentSource || null,
     location: suggestedFields.location || null,
     date: suggestedFields.date || null,
     time: dateInfo.time || null,
@@ -357,7 +368,10 @@ function buildMarkiStructuredImportBundle(input = {}, options = {}) {
     }
     sourceKeyFirstInputIndexes.set(normalized.sourceKey, inputIndex);
 
-    const mapped = mapMarkiMoment(normalized.moment, input.configs || {}, options);
+    const mapped = mapMarkiMoment(normalized.moment, input.configs || {}, {
+      ...options,
+      projectAssignmentSource: normalized.projectAssignmentSource
+    });
     const photoId = buildPhotoId(normalized.sourceKey);
     const sourceMetadataRecord = buildMarkiSourceMetadataRecord({
       sourceMetadataRef: normalized.sourceMetadataRef,
@@ -383,7 +397,13 @@ function buildMarkiStructuredImportBundle(input = {}, options = {}) {
       photoId
     };
     const archiveSuggestion = buildArchiveSuggestion(photoId, mapped, now);
-    photos.push(buildWorkbenchPhoto(photoId, normalized, mapped, archiveSuggestion));
+    photos.push(buildWorkbenchPhoto(
+      photoId,
+      normalized,
+      mapped,
+      archiveSuggestion,
+      options.activeProject
+    ));
     recognitionResultsByPhoto[photoId] = recognitionResult;
     watermarkRecordsByPhoto[photoId] = watermarkRecord;
     archiveSuggestionsByPhoto[photoId] = archiveSuggestion;
@@ -470,8 +490,9 @@ function buildArchiveSuggestion(photoId, mapped, now) {
   };
 }
 
-function buildWorkbenchPhoto(photoId, normalized, mapped, archiveSuggestion) {
+function buildWorkbenchPhoto(photoId, normalized, mapped, archiveSuggestion, activeProjectInput = null) {
   const download = normalized.download;
+  const activeProject = normalizeActiveProject(activeProjectInput, false);
   return {
     id: photoId,
     originalPath: download.localPath,
@@ -493,7 +514,12 @@ function buildWorkbenchPhoto(photoId, normalized, mapped, archiveSuggestion) {
     sourceType: SOURCE_TYPE,
     sourceKey: normalized.sourceKey,
     sourceMetadataRef: normalized.sourceMetadataRef,
-    capturedAt: mapped.capturedAt
+    capturedAt: mapped.capturedAt,
+    ...(activeProject ? {
+      projectId: activeProject.projectId,
+      projectName: activeProject.projectName,
+      projectAssignmentSource: normalized.projectAssignmentSource
+    } : {})
   };
 }
 
@@ -518,8 +544,34 @@ function normalizeImportItem(orgId, item) {
     moment,
     sourceKey,
     sourceMetadataRef: normalizeSourceMetadataRef(item.sourceMetadataRef, sourceMetadataRef),
-    download
+    download,
+    projectAssignmentSource: normalizeProjectAssignmentSource(
+      item.projectAssignmentSource,
+      false
+    )
   };
+}
+
+function normalizeActiveProject(value, required = true) {
+  if (value == null && !required) return null;
+  const projectId = String(value?.projectId || '').trim();
+  const projectName = String(value?.projectName || '').normalize('NFKC').trim();
+  if (!projectId || !projectName) {
+    throw new MarkiStructuredImportError('active_project_invalid', '当前项目无效。');
+  }
+  return { projectId, projectName };
+}
+
+function normalizeProjectAssignmentSource(value, required = true) {
+  const text = String(value || '').trim();
+  if (!text && !required) return '';
+  if (!['active_project_context', 'marki_structured_confirmed'].includes(text)) {
+    throw new MarkiStructuredImportError(
+      'photo_project_unresolved',
+      '马克照片项目归属依据无效。'
+    );
+  }
+  return text;
 }
 
 function normalizeMoment(moment) {

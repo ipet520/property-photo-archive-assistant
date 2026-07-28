@@ -13,6 +13,12 @@ const {
 const { buildPackagePlan, generateArchivePackage } = require('../electron/services/archivePackageService.cjs');
 const { matchArchivedPhotos } = require('../electron/services/archiveFingerprintService.cjs');
 const {
+  assertArchivePlanProject,
+  assertArchivePreviewProject,
+  attachActiveProjectToArchivePreview,
+  normalizeActiveProjectAgainstRuntime
+} = require('../electron/services/activeProjectBoundaryService.cjs');
+const {
   buildArchiveOperationKey,
   buildArchiveSourceIdentity,
   getArchiveTransactionDirectory
@@ -117,7 +123,9 @@ const {
   SNAPSHOT_SCHEMA_VERSION,
   createEmptyWorkspace,
   getSortWorkspaceSnapshotPath,
+  inspectLegacySortWorkspaceSnapshot,
   loadSortWorkspaceSnapshot,
+  migrateLegacySortWorkspaceSnapshot,
   saveSortWorkspaceSnapshot
 } = require('../electron/services/sortWorkspaceSnapshotService.cjs');
 const {
@@ -174,6 +182,7 @@ async function main() {
     await checkCurrentFormContract(path.join(temporaryRoot, 'canonical-form'));
     await checkWatermarkTemplateFormContract(path.join(temporaryRoot, 'watermark-template-form'));
     await checkSmartClassificationBusinessClosure(path.join(temporaryRoot, 'smart-classification-business-closure'));
+    await checkActiveProjectBusinessBoundary(path.join(temporaryRoot, 'active-project-business-boundary'));
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
@@ -401,6 +410,10 @@ async function checkSecondReviewBlockers(root) {
   const snapshotTools = await import(
     `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js')).href}?review=${Date.now()}`
   );
+  const reviewActiveProject = {
+    projectId: 'project-x',
+    projectName: '潇湘新区二期'
+  };
   const oldPhotos = Array.from({ length: 10 }, (_, index) => ({
     id: `old-photo-${index + 1}`,
     sourceType: 'local_file',
@@ -411,6 +424,8 @@ async function checkSecondReviewBlockers(root) {
     sha256: String(index + 1).padStart(64, '0'),
     sortStatus: index === 0 ? 'previewed' : 'assigned',
     smartSortStatus: 'completed',
+    ...reviewActiveProject,
+    projectAssignmentSource: 'active_project_context',
     previewInfo: index === 0 ? { status: '待归档' } : null
   }));
   const oldSmartSortResult = {
@@ -431,6 +446,7 @@ async function checkSecondReviewBlockers(root) {
     items: [{ photoId: oldPhotos[0].id }]
   };
   const oldWorkspace = {
+    ...reviewActiveProject,
     photos: oldPhotos,
     selectedIds: [oldPhotos[0].id],
     activePhotoId: oldPhotos[0].id,
@@ -455,6 +471,9 @@ async function checkSecondReviewBlockers(root) {
     extension: '.jpg',
     size: 500,
     sha256: 'b'.repeat(64)
+    ,
+    ...reviewActiveProject,
+    projectAssignmentSource: 'marki_structured_confirmed'
   };
   const markiMerged = mergeMarkiWorkbenchImportPackage(oldWorkspace, {
     batchId: 'marki-import-review-append',
@@ -462,7 +481,7 @@ async function checkSecondReviewBlockers(root) {
     recognitionResultsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } },
     watermarkRecordsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } },
     archiveSuggestionsByPhoto: { [markiPhoto.id]: { source: 'marki_api' } }
-  });
+  }, { activeProject: reviewActiveProject });
   const markiWorkspace = snapshotTools.prepareWorkspaceAfterPhotoAppend({
     workspace: { ...oldWorkspace, ...markiMerged },
     addedPhotoIds: markiMerged.addedPhotoIds
@@ -492,9 +511,11 @@ async function checkSecondReviewBlockers(root) {
     watermarkRecordsByPhoto: markiWorkspace.watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto: markiWorkspace.archiveSuggestionsByPhoto,
     selectedIds: markiWorkspace.selectedIds,
-    activePhotoId: markiWorkspace.activePhotoId
+    activePhotoId: markiWorkspace.activePhotoId,
+    activeProject: reviewActiveProject
   });
   const localWorkspace = snapshotTools.buildSortWorkspaceSnapshotWorkspace({
+    activeProject: reviewActiveProject,
     ...markiWorkspace,
     ...localMerged
   });
@@ -4276,6 +4297,7 @@ async function checkRapidOcrRuntimeProvisioning(root) {
   const releaseTag = 'rapidocr-runtime-2026.7.2-v3.9.1';
   const installRelativePath = 'vendor/ocr/rapidocr/rapidocr-runner.exe';
   const digest = (buffer) => createHash('sha256').update(buffer).digest('hex');
+  const poolActiveProject = { projectId: 'project-pool', projectName: '测试小区' };
   const buildManifest = (buffer, overrides = {}) => ({
     schemaVersion: 1,
     component: 'rapidocr-runner',
@@ -4927,6 +4949,8 @@ async function checkMarkiImportBatchService(root) {
   });
   const beginInput = (batchId, inputCount = 2) => ({
     batchId,
+    projectId: 'project-batch',
+    projectName: '批次项目',
     inputCount,
     deduplication: deduplication(inputCount)
   });
@@ -4939,6 +4963,9 @@ async function checkMarkiImportBatchService(root) {
       sourceType: 'marki_api',
       sourceKey: `marki_api:12345:${batchId}-moment-1`,
       originalPath: path.join(root, 'downloaded', `${batchId}.jpg`),
+      projectId: 'project-batch',
+      projectName: '批次项目',
+      projectAssignmentSource: 'marki_structured_confirmed',
       label
     }],
     recognitionResultsByPhoto: {
@@ -5015,6 +5042,8 @@ async function checkMarkiImportBatchService(root) {
       [
         'schemaVersion',
         'batchId',
+        'projectId',
+        'projectName',
         'status',
         'inputCount',
         'metadataSavedCount',
@@ -5414,8 +5443,18 @@ async function checkMarkiImportBatchService(root) {
     );
     assert.deepEqual(
       Object.keys(tolerantReadyList.items[0]),
-      ['batchId', 'status', 'inputCount', 'metadataSavedCount', 'createdAt', 'updatedAt', 'expiresAt'],
-      'ready 列表单项仍必须保持七字段安全摘要'
+      [
+        'batchId',
+        'projectId',
+        'projectName',
+        'status',
+        'inputCount',
+        'metadataSavedCount',
+        'createdAt',
+        'updatedAt',
+        'expiresAt'
+      ],
+      'ready 列表单项必须保持九字段项目安全摘要'
     );
     assert.equal(
       (await fs.readdir(readyListDirectory)).includes(path.basename(corruptBatchPath)),
@@ -5504,14 +5543,14 @@ async function checkMarkiImportBatchService(root) {
       '马克成员查询必须继续使用联网安全包装'
     );
     assert.equal(
-      /marki:get-import-batch', async \(_event, batchId\)/.test(getHandler),
+      /marki:get-import-batch', async \(_event, batchId, activeProject\)/.test(getHandler),
       true,
-      '批次查询 IPC 只能接收 batchId'
+      '批次查询 IPC 只能接收 batchId 和 activeProject'
     );
     assert.equal(
-      /marki:consume-import-batch', async \(_event, batchId\)/.test(consumeHandler),
+      /marki:consume-import-batch', async \(_event, batchId, activeProject\)/.test(consumeHandler),
       true,
-      '批次消费 IPC 只能接收 batchId'
+      '批次消费 IPC 只能接收 batchId 和 activeProject'
     );
     assert.equal(
       mainSource.includes("ipcMain.handle('marki:prepare-structured-import'"),
@@ -5522,14 +5561,14 @@ async function checkMarkiImportBatchService(root) {
 
     const markiPreloadBlock = preloadSource.match(/marki: \{([\s\S]*?)\n  \},\n  loadConfigs:/)?.[1] || '';
     assert.equal(
-      markiPreloadBlock.includes("getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId)"),
+      markiPreloadBlock.includes("getImportBatch: (batchId, activeProject) => ipcRenderer.invoke('marki:get-import-batch', batchId, activeProject)"),
       true,
-      'preload marki 分组应暴露 getImportBatch(batchId)'
+      'preload marki 分组应暴露 getImportBatch(batchId, activeProject)'
     );
     assert.equal(
-      markiPreloadBlock.includes("consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)"),
+      markiPreloadBlock.includes("consumeImportBatch: (batchId, activeProject) => ipcRenderer.invoke('marki:consume-import-batch', batchId, activeProject)"),
       true,
-      'preload marki 分组应暴露 consumeImportBatch(batchId)'
+      'preload marki 分组应暴露 consumeImportBatch(batchId, activeProject)'
     );
     assert.deepEqual(
       [...markiPreloadBlock.matchAll(/(\w+ImportBatch):/g)].map((match) => match[1]),
@@ -5561,6 +5600,11 @@ async function checkMarkiTrustedImport(root) {
   const documentsPath = path.join(root, 'documents');
   const userDataPath = path.join(root, 'user-data');
   const credentials = { orgId: '12345', key: 'self-check-key' };
+  const trustedImportProject = { projectId: 'project-trusted', projectName: '潇湘新区二期' };
+  const trustedProjectOptions = [{
+    id: trustedImportProject.projectId,
+    name: trustedImportProject.projectName
+  }];
   const buildMoment = (id, overrides = {}) => ({
     id,
     uid: '20001',
@@ -5641,7 +5685,9 @@ async function checkMarkiTrustedImport(root) {
           id: `photo-${item.moment.id}`,
           sourceType: 'marki_api',
           sourceKey: item.download.sourceKey,
-          originalPath: item.download.localPath
+          originalPath: item.download.localPath,
+          ...trustedImportProject,
+          projectAssignmentSource: 'marki_structured_confirmed'
         })),
         recognitionResultsByPhoto: {},
         watermarkRecordsByPhoto: {},
@@ -5668,11 +5714,14 @@ async function checkMarkiTrustedImport(root) {
     credentials,
     documentsPath,
     userDataPath,
+    projectOptions: trustedProjectOptions,
     request: {
       sessionId: query.sessionId,
       selectionTokens,
       templateFilter: 'all',
-      importStatusFilter: 'all'
+      importStatusFilter: 'all',
+      activeProjectId: trustedImportProject.projectId,
+      activeProjectName: trustedImportProject.projectName
     }
   });
 
@@ -5759,7 +5808,9 @@ async function checkMarkiTrustedImport(root) {
     sessionId: legacyFilterRequest.request.sessionId,
     selectionTokens: legacyFilterRequest.request.selectionTokens,
     watermarkFilter: 'name:工程类专用',
-    importStatusFilter: 'all'
+    importStatusFilter: 'all',
+    activeProjectId: trustedImportProject.projectId,
+    activeProjectName: trustedImportProject.projectName
   };
   const legacyFilterResult = await importMarkiPhotoQuerySelection(
     legacyFilterRequest,
@@ -5877,8 +5928,18 @@ async function checkMarkiTrustedImport(root) {
   assert.equal(readyList.items.some((batch) => batch.batchId === retryResult.batchId), true, 'ready 批次应可发现');
   assert.deepEqual(
     Object.keys(readyList.items.find((batch) => batch.batchId === retryResult.batchId)),
-    ['batchId', 'status', 'inputCount', 'metadataSavedCount', 'createdAt', 'updatedAt', 'expiresAt'],
-    'ready 批次发现结果必须保持七字段安全摘要'
+    [
+      'batchId',
+      'projectId',
+      'projectName',
+      'status',
+      'inputCount',
+      'metadataSavedCount',
+      'createdAt',
+      'updatedAt',
+      'expiresAt'
+    ],
+    'ready 批次发现结果必须保持九字段项目安全摘要'
   );
 
   await assert.rejects(
@@ -5951,11 +6012,14 @@ async function checkMarkiTrustedImport(root) {
       credentials,
       documentsPath,
       userDataPath,
+      projectOptions: trustedProjectOptions,
       request: {
         sessionId: fallbackSessionId,
         selectionTokens: [fallbackSelectionToken],
         templateFilter: 'all',
-        importStatusFilter: 'all'
+        importStatusFilter: 'all',
+        activeProjectId: trustedImportProject.projectId,
+        activeProjectName: trustedImportProject.projectName
       }
     },
     {
@@ -6122,6 +6186,11 @@ async function checkMarkiEndToEndFlow(root) {
   const userDataPath = path.join(root, 'user-data');
   const orgId = '12345';
   const credentials = { orgId, key: 'mock-only-key' };
+  const endToEndProject = { projectId: 'project-e2e', projectName: '潇湘新区二期' };
+  const endToEndProjectOptions = [{
+    id: endToEndProject.projectId,
+    name: endToEndProject.projectName
+  }];
   const jpeg = createTestJpeg(8, 6);
   const moments = Array.from({ length: 5 }, (_, index) => {
     const number = index + 1;
@@ -6208,6 +6277,7 @@ async function checkMarkiEndToEndFlow(root) {
     orchestratorOptions: {
       loadConfigs: async () => ({
         projects: ['潇湘新区二期'],
+        projectOptions: endToEndProjectOptions,
         watermarkCategories: {
           '工程类专用': { items: ['设施巡查'] }
         }
@@ -6218,11 +6288,14 @@ async function checkMarkiEndToEndFlow(root) {
     credentials,
     documentsPath,
     userDataPath,
+    projectOptions: endToEndProjectOptions,
     request: {
       sessionId: secondPage.sessionId,
       selectionTokens: selectedTokens,
       templateFilter: 'all',
-      importStatusFilter: 'all'
+      importStatusFilter: 'all',
+      activeProjectId: endToEndProject.projectId,
+      activeProjectName: endToEndProject.projectName
     }
   };
   const downloadFailed = await importMarkiPhotoQuerySelection(request, importOptions);
@@ -6259,6 +6332,7 @@ async function checkMarkiEndToEndFlow(root) {
     `${moduleUrl}?endtoend=${Date.now()}`
   );
   const emptyState = {
+    ...endToEndProject,
     photos: [],
     recognitionResultsByPhoto: {},
     watermarkRecordsByPhoto: {},
@@ -6266,7 +6340,11 @@ async function checkMarkiEndToEndFlow(root) {
     selectedIds: [],
     activePhotoId: ''
   };
-  const merged = mergeMarkiWorkbenchImportPackage(emptyState, readyBatch.workbenchImportPackage);
+  const merged = mergeMarkiWorkbenchImportPackage(
+    emptyState,
+    readyBatch.workbenchImportPackage,
+    { activeProject: endToEndProject }
+  );
   assert.equal(merged.stats.addedCount, 3, 'ready 批次应追加到现有工作台');
 
   let failFirstConsumeRename = true;
@@ -6304,7 +6382,8 @@ async function checkMarkiEndToEndFlow(root) {
   );
   const duplicateMerge = mergeMarkiWorkbenchImportPackage(
     merged,
-    batchAfterConsumeFailure.workbenchImportPackage
+    batchAfterConsumeFailure.workbenchImportPackage,
+    { activeProject: endToEndProject }
   );
   assert.equal(duplicateMerge.stats.addedCount, 0, '消费失败后再次处理同一 ready 包不得重复追加');
   assert.equal(duplicateMerge.stats.duplicateCount, 3, '消费失败恢复时 sourceKey 全局重复统计应准确');
@@ -6355,11 +6434,14 @@ async function checkMarkiEndToEndFlow(root) {
     credentials,
     documentsPath,
     userDataPath,
+    projectOptions: endToEndProjectOptions,
     request: {
       sessionId: duplicateQuery.sessionId,
       selectionTokens: duplicateQuery.photos.map((photo) => photo.selectionToken),
       templateFilter: 'all',
-      importStatusFilter: 'all'
+      importStatusFilter: 'all',
+      activeProjectId: endToEndProject.projectId,
+      activeProjectName: endToEndProject.projectName
     }
   }, {
     ...importOptions,
@@ -6406,11 +6488,14 @@ async function checkMarkiEndToEndFlow(root) {
     credentials,
     documentsPath,
     userDataPath,
+    projectOptions: endToEndProjectOptions,
     request: {
       sessionId: metadataQuery.sessionId,
       selectionTokens: metadataQuery.photos.map((photo) => photo.selectionToken),
       templateFilter: 'all',
-      importStatusFilter: 'all'
+      importStatusFilter: 'all',
+      activeProjectId: endToEndProject.projectId,
+      activeProjectName: endToEndProject.projectName
     }
   };
   const metadataFailure = await importMarkiPhotoQuerySelection(metadataRequest, metadataImportOptions);
@@ -6847,8 +6932,9 @@ async function checkMarkiWorkbenchImport() {
   scenarioCount += 1;
 
   assert.equal(
-    glueSource.indexOf('getImportBatch(batchId)') < glueSource.indexOf('persistMarkiWorkbenchImport({')
-      && glueSource.indexOf('persistMarkiWorkbenchImport({') < glueSource.indexOf('consumeImportBatch(batchId)'),
+    glueSource.indexOf('getImportBatch(batchId, activeProject)') < glueSource.indexOf('persistMarkiWorkbenchImport({')
+      && glueSource.indexOf('persistMarkiWorkbenchImport({')
+        < glueSource.indexOf('consumeImportBatch(batchId, activeProject)'),
     true,
     '页面粘合层必须先查询，再通过持久化事务合并并消费批次'
   );
@@ -7430,11 +7516,11 @@ async function checkSortWorkspaceSnapshot(root) {
     sourceContractAssertionCount += 1;
     assert.match(mainSource, /sortWorkspaceSnapshot:load[\s\S]*app\.getPath\('userData'\)/);
     sourceContractAssertionCount += 1;
-    assert.match(preloadSource, /saveSortWorkspaceSnapshot: \(workspace\) => ipcRenderer\.invoke\('sortWorkspaceSnapshot:save', workspace\)/);
+    assert.match(preloadSource, /saveSortWorkspaceSnapshot: \(activeProject, workspace\) => \([\s\S]*sortWorkspaceSnapshot:save', activeProject, workspace/);
     sourceContractAssertionCount += 1;
-    assert.match(preloadSource, /loadSortWorkspaceSnapshot: \(\) => ipcRenderer\.invoke\('sortWorkspaceSnapshot:load'\)/);
+    assert.match(preloadSource, /loadSortWorkspaceSnapshot: \(activeProject\) => \([\s\S]*sortWorkspaceSnapshot:load', activeProject/);
     sourceContractAssertionCount += 1;
-    assert.match(pageSource, /loadSortWorkspaceSnapshot\(\)/);
+    assert.match(pageSource, /loadSortWorkspaceSnapshot\(activeProject\)/);
     sourceContractAssertionCount += 1;
     assert.match(pageSource, /persistMarkiWorkbenchImport\(/);
     sourceContractAssertionCount += 1;
@@ -7451,8 +7537,10 @@ async function checkSortWorkspaceSnapshot(root) {
 async function checkMarkiWorkbenchRehydration(root) {
   const documentsPath = path.join(root, 'documents');
   const userDataPath = path.join(root, 'user-data');
+  const rehydrateProject = { projectId: 'project-rehydrate', projectName: '测试小区' };
   const configs = {
     projects: ['测试小区'],
+    projectOptions: [{ id: rehydrateProject.projectId, name: rehydrateProject.projectName }],
     watermarkCategories: {
       工程类专用: {
         items: ['设施巡查']
@@ -7604,6 +7692,7 @@ async function checkMarkiWorkbenchRehydration(root) {
 
   const initialWorkspace = {
     ...createEmptyWorkspace(),
+    ...rehydrateProject,
     photos: [
       {
         id: 'local-existing',
@@ -7664,8 +7753,22 @@ async function checkMarkiWorkbenchRehydration(root) {
       }
     ]
   };
+  initialWorkspace.photos = initialWorkspace.photos.map((photo) => ({
+    ...photo,
+    ...rehydrateProject,
+    projectAssignmentSource: photo.sourceType === 'marki_api'
+      ? 'marki_structured_confirmed'
+      : 'active_project_context'
+  }));
   await fs.writeFile(initialWorkspace.photos[0].originalPath, createTestJpeg(1, 1));
-  check((await saveSortWorkspaceSnapshot(userDataPath, initialWorkspace)).success, '应建立含本地照片的初始自动快照');
+  check(
+    (await saveSortWorkspaceSnapshot(
+      userDataPath,
+      initialWorkspace,
+      { activeProject: rehydrateProject }
+    )).success,
+    '应建立含本地照片的初始自动快照'
+  );
   scenario();
 
   const legacyPackage = buildMarkiStructuredImportBundle({
@@ -7685,6 +7788,7 @@ async function checkMarkiWorkbenchRehydration(root) {
         markName: '工程类专用',
         postTime: 1784340000
       },
+      projectAssignmentSource: 'marki_structured_confirmed',
       sourceMetadataRef: buildMarkiSourceMetadataRef(legacy.orgId, legacy.momentId),
       download: {
         sourceKey: legacy.sourceKey,
@@ -7695,7 +7799,10 @@ async function checkMarkiWorkbenchRehydration(root) {
         completedAt: '2026-07-18T03:00:00.000Z'
       }
     }]
-  }, { batchId: 'legacy-consumed-batch' }).workbenchImportPackage;
+  }, {
+    batchId: 'legacy-consumed-batch',
+    activeProject: rehydrateProject
+  }).workbenchImportPackage;
   const legacyDeduplication = {
     inputCount: 1,
     uniqueCount: 1,
@@ -7704,6 +7811,7 @@ async function checkMarkiWorkbenchRehydration(root) {
   };
   await beginMarkiImportBatch(userDataPath, {
     batchId: 'legacy-consumed-batch',
+    ...rehydrateProject,
     inputCount: 1,
     deduplication: legacyDeduplication
   });
@@ -7730,6 +7838,7 @@ async function checkMarkiWorkbenchRehydration(root) {
   };
   await beginMarkiImportBatch(historyOnlyUserDataPath, {
     batchId: historyOnlyBatchId,
+    ...rehydrateProject,
     inputCount: 1,
     deduplication: legacyDeduplication
   });
@@ -7745,7 +7854,10 @@ async function checkMarkiWorkbenchRehydration(root) {
   });
   await consumeMarkiImportBatch(historyOnlyUserDataPath, historyOnlyBatchId);
   check(
-    (await loadSortWorkspaceSnapshot(historyOnlyUserDataPath)).found === false,
+    (await loadSortWorkspaceSnapshot(
+      historyOnlyUserDataPath,
+      { activeProject: rehydrateProject }
+    )).found === false,
     '修复前历史场景不得预先存在自动工作台快照'
   );
   const historyOnlyService = createMarkiWorkbenchRehydrateService({
@@ -7753,20 +7865,31 @@ async function checkMarkiWorkbenchRehydration(root) {
   });
   const historyOnlyScan = await historyOnlyService.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath: historyOnlyUserDataPath
+    userDataPath: historyOnlyUserDataPath,
+    activeProject: rehydrateProject
   });
+  check(
+    historyOnlyScan.success,
+    `历史无快照扫描应成功：${historyOnlyScan.error?.code || 'unknown'}`
+  );
   const historyOnlyCandidate = historyOnlyScan.items.find((item) => item.status === 'recoverable');
   const historyOnlyRecovery = await historyOnlyService.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath: historyOnlyUserDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [historyOnlyCandidate.recoveryToken]
   });
-  const historyOnlySnapshot = await loadSortWorkspaceSnapshot(historyOnlyUserDataPath);
+  const historyOnlySnapshot = await loadSortWorkspaceSnapshot(
+    historyOnlyUserDataPath,
+    { activeProject: rehydrateProject }
+  );
   check(
     historyOnlyRecovery.success
       && historyOnlySnapshot.found
       && historyOnlySnapshot.snapshot.workspace.photos.length === 1,
-    'consumed 包为空且没有旧快照时应仅依赖 manifest、JPG 和来源元数据恢复'
+    `consumed 包为空且没有旧快照时应仅依赖 manifest、JPG 和来源元数据恢复：${
+      historyOnlyRecovery.error?.code || historyOnlyRecovery.status || 'snapshot_missing'
+    }`
   );
   scenario();
 
@@ -7787,6 +7910,7 @@ async function checkMarkiWorkbenchRehydration(root) {
   let recoveredStatusChecks = 0;
   let recoveredGroupCalls = 0;
   const runRecoveredMarki = (state) => orchestrateRecoveredMarki({
+    activeProject: rehydrateProject,
     photos: state.photos,
     recognitionResultsByPhoto: state.recognitionResultsByPhoto,
     watermarkRecordsByPhoto: state.watermarkRecordsByPhoto,
@@ -7834,7 +7958,8 @@ async function checkMarkiWorkbenchRehydration(root) {
   });
   const scanResult = await service.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath
+    userDataPath,
+    activeProject: rehydrateProject
   });
   check(scanResult.success, '历史 Marki 来源扫描应成功');
   check(scanResult.counts.recoverable === 2, '应识别两张可恢复历史照片');
@@ -7895,13 +8020,17 @@ async function checkMarkiWorkbenchRehydration(root) {
   const recoveryResult = await service.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [legacyCandidate.recoveryToken]
   });
   check(recoveryResult.success && recoveryResult.status === 'recovered', '可恢复候选应成功写入工作台快照');
   check(recoveryResult.recoveredCount === 1, '应恢复一张历史 Marki 照片');
   scenario();
 
-  const recoveredSnapshot = await loadSortWorkspaceSnapshot(userDataPath);
+  const recoveredSnapshot = await loadSortWorkspaceSnapshot(
+    userDataPath,
+    { activeProject: rehydrateProject }
+  );
   check(recoveredSnapshot.success && recoveredSnapshot.found, '恢复后自动快照应可重新加载');
   check(recoveredSnapshot.snapshot.workspace.photos.length === 4, '恢复后应保留三张旧照片并新增一张');
   check(recoveredSnapshot.snapshot.workspace.photos[0].id === 'local-existing', '本地 OCR 照片对象和顺序必须保持');
@@ -7943,7 +8072,10 @@ async function checkMarkiWorkbenchRehydration(root) {
   );
   scenario();
 
-  const freshProcessSnapshot = await loadSortWorkspaceSnapshot(userDataPath);
+  const freshProcessSnapshot = await loadSortWorkspaceSnapshot(
+    userDataPath,
+    { activeProject: rehydrateProject }
+  );
   check(
     freshProcessSnapshot.snapshot.workspace.photos.some((photo) => photo.sourceKey === legacy.sourceKey),
     '模拟重启后仍应从自动快照恢复历史照片'
@@ -7952,7 +8084,8 @@ async function checkMarkiWorkbenchRehydration(root) {
 
   const rescan = await service.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath
+    userDataPath,
+    activeProject: rehydrateProject
   });
   check(
     rescan.items.some((item) => item.status === 'already_in_workbench'),
@@ -7963,11 +8096,15 @@ async function checkMarkiWorkbenchRehydration(root) {
   const repeated = await service.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [legacyCandidate.recoveryToken]
   });
   check(repeated.success === false, '已失效的旧恢复令牌不得再次恢复');
   check(
-    (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace.photos.length === 4,
+    (await loadSortWorkspaceSnapshot(
+      userDataPath,
+      { activeProject: rehydrateProject }
+    )).snapshot.workspace.photos.length === 4,
     '重复恢复不得生成重复照片'
   );
   scenario();
@@ -8010,7 +8147,8 @@ async function checkMarkiWorkbenchRehydration(root) {
   });
   const unavailableScan = await unavailableSnapshotService.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath
+    userDataPath,
+    activeProject: rehydrateProject
   });
   check(
     unavailableScan.success === false
@@ -8022,37 +8160,47 @@ async function checkMarkiWorkbenchRehydration(root) {
   const raceFixture = await createImportedFixture({
     orgId: '6108',
     momentId: 'race-photo',
-    projectName: '竞态测试项目'
+    projectName: rehydrateProject.projectName
   });
   const raceService = createMarkiWorkbenchRehydrateService({
     loadConfigs: async () => configs
   });
   const raceScan = await raceService.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath
+    userDataPath,
+    activeProject: rehydrateProject
   });
-  const raceCandidate = raceScan.items.find((item) => (
-    item.status === 'recoverable' && item.projectName === '竞态测试项目'
-  ));
-  const workspaceBeforeRace = (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace;
+  const raceCandidate = raceScan.items.filter((item) => item.status === 'recoverable').at(-1);
+  const workspaceBeforeRace = (await loadSortWorkspaceSnapshot(
+    userDataPath,
+    { activeProject: rehydrateProject }
+  )).snapshot.workspace;
   const racePhoto = {
     ...restoredMarkiPhoto,
     id: 'race-existing',
     sourceKey: raceFixture.sourceKey,
     sourceMetadataRef: buildMarkiSourceMetadataRef(raceFixture.orgId, raceFixture.momentId)
   };
-  await saveSortWorkspaceSnapshot(userDataPath, {
-    ...workspaceBeforeRace,
-    photos: [...workspaceBeforeRace.photos, racePhoto]
-  });
+  await saveSortWorkspaceSnapshot(
+    userDataPath,
+    {
+      ...workspaceBeforeRace,
+      photos: [...workspaceBeforeRace.photos, racePhoto]
+    },
+    { activeProject: rehydrateProject }
+  );
   const raceResult = await raceService.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [raceCandidate.recoveryToken]
   });
   check(raceResult.success && raceResult.status === 'nothing_to_recover', '恢复前再次发现相同 sourceKey 时应安全跳过');
   check(
-    (await loadSortWorkspaceSnapshot(userDataPath)).snapshot.workspace.photos
+    (await loadSortWorkspaceSnapshot(
+      userDataPath,
+      { activeProject: rehydrateProject }
+    )).snapshot.workspace.photos
       .filter((photo) => photo.sourceKey === raceFixture.sourceKey).length === 1,
     '扫描后竞态不得重复追加 sourceKey'
   );
@@ -8061,9 +8209,11 @@ async function checkMarkiWorkbenchRehydration(root) {
   const saveFailureFixture = await createImportedFixture({
     orgId: '6109',
     momentId: 'snapshot-failure',
-    projectName: '快照失败项目'
+    projectName: rehydrateProject.projectName
   });
-  const stableSnapshotBeforeFailure = await fs.readFile(getSortWorkspaceSnapshotPath(userDataPath));
+  const stableSnapshotBeforeFailure = await fs.readFile(
+    getSortWorkspaceSnapshotPath(userDataPath, rehydrateProject)
+  );
   const manifestBeforeSaveFailure = await fs.readFile(
     getMarkiSourceManifestPath(documentsPath, saveFailureFixture.orgId)
   );
@@ -8079,14 +8229,16 @@ async function checkMarkiWorkbenchRehydration(root) {
   });
   const saveFailureScan = await saveFailureService.scanMarkiWorkbenchRecoveryCandidates({
     documentsPath,
-    userDataPath
+    userDataPath,
+    activeProject: rehydrateProject
   });
-  const saveFailureCandidate = saveFailureScan.items.find((item) => (
-    item.status === 'recoverable' && item.projectName === '快照失败项目'
-  ));
+  const saveFailureCandidate = saveFailureScan.items.filter(
+    (item) => item.status === 'recoverable'
+  ).at(-1);
   const saveFailureResult = await saveFailureService.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [saveFailureCandidate.recoveryToken]
   });
   check(
@@ -8095,7 +8247,9 @@ async function checkMarkiWorkbenchRehydration(root) {
     '自动快照保存失败时恢复必须整体失败'
   );
   check(
-    (await fs.readFile(getSortWorkspaceSnapshotPath(userDataPath))).equals(stableSnapshotBeforeFailure),
+    (await fs.readFile(
+      getSortWorkspaceSnapshotPath(userDataPath, rehydrateProject)
+    )).equals(stableSnapshotBeforeFailure),
     '快照保存失败不得改变原工作台快照'
   );
   check(
@@ -8107,6 +8261,7 @@ async function checkMarkiWorkbenchRehydration(root) {
   const invalidInput = await service.recoverMarkiWorkbenchCandidates({
     documentsPath,
     userDataPath,
+    activeProject: rehydrateProject,
     recoveryTokens: [],
     sourceKey: legacy.sourceKey
   });
@@ -8145,8 +8300,8 @@ async function checkMarkiWorkbenchRehydration(root) {
   );
   counters.sourceContractCount += 1;
   check(
-    /normalizeMarkiWorkbenchRecoveryRequest[\s\S]*Object\.keys\(input\)\.length !== 1/.test(mainSource),
-    '恢复 IPC 必须拒绝 renderer 多余字段'
+    /normalizeMarkiWorkbenchRecoveryRequest[\s\S]*Object\.keys\(input\)\.length !== 2/.test(mainSource),
+    '恢复 IPC 必须严格只接受令牌和 activeProject'
   );
   counters.sourceContractCount += 1;
   check(
@@ -8157,8 +8312,9 @@ async function checkMarkiWorkbenchRehydration(root) {
   counters.sourceContractCount += 1;
   check(
     pageSource.includes('恢复 Marki 照片')
-      && pageSource.includes('recoveryTokens: safeRecoveryTokens'),
-    '工作台应提供历史 Marki 照片恢复入口并只提交令牌'
+      && pageSource.includes('recoveryTokens: safeRecoveryTokens')
+      && pageSource.includes('activeProject'),
+    '工作台应提供历史 Marki 照片恢复入口并只提交令牌和当前项目'
   );
   counters.sourceContractCount += 1;
   check(
@@ -10167,6 +10323,10 @@ async function checkUnifiedPhotoPool(root) {
     assertionCount += 1;
     assert.deepEqual(actual, expected, message);
   };
+  const poolActiveProject = {
+    projectId: 'project-pool',
+    projectName: '测试小区'
+  };
   const digest = (buffer) => createHash('sha256').update(buffer).digest('hex');
   const localDirectoryA = path.join(root, 'local-a');
   const localDirectoryB = path.join(root, 'local-b');
@@ -10203,6 +10363,8 @@ async function checkUnifiedPhotoPool(root) {
     sha256: digest(markiBytes1),
     sortStatus: 'suggestion_ready',
     smartSortStatus: 'completed',
+    ...poolActiveProject,
+    projectAssignmentSource: 'marki_structured_confirmed',
     archiveInfo: { project: '平台项目一' },
     previewInfo: { project: '平台项目一' }
   };
@@ -10217,6 +10379,8 @@ async function checkUnifiedPhotoPool(root) {
     sha256: digest(markiBytes2),
     sortStatus: 'confirmed',
     smartSortStatus: 'completed',
+    ...poolActiveProject,
+    projectAssignmentSource: 'marki_structured_confirmed',
     archiveInfo: { project: '平台项目二' },
     previewInfo: { project: '平台项目二' }
   };
@@ -10271,7 +10435,8 @@ async function checkUnifiedPhotoPool(root) {
     watermarkRecordsByPhoto: watermarkMap,
     archiveSuggestionsByPhoto: suggestionMap,
     selectedIds: [markiPhoto1.id],
-    activePhotoId: markiPhoto2.id
+    activePhotoId: markiPhoto2.id,
+    activeProject: poolActiveProject
   });
   equal(mergedA.photos.length, 4, '两张 Marki 加两张唯一本地照片后统一照片池应有四张');
   equal(mergedA.stats.addedLocalCount, 2, '首次目录应追加两张唯一本地照片');
@@ -10301,7 +10466,8 @@ async function checkUnifiedPhotoPool(root) {
     watermarkRecordsByPhoto: mergedA.watermarkRecordsByPhoto,
     archiveSuggestionsByPhoto: mergedA.archiveSuggestionsByPhoto,
     selectedIds: mergedA.selectedIds,
-    activePhotoId: mergedA.activePhotoId
+    activePhotoId: mergedA.activePhotoId,
+    activeProject: poolActiveProject
   });
   equal(mergedB.photos.length, 5, '切换到目录 B 后必须保留目录 A、Marki 并追加唯一新照片');
   equal(mergedB.stats.addedLocalCount, 1, '目录 B 只应追加一张唯一内容');
@@ -10324,6 +10490,7 @@ async function checkUnifiedPhotoPool(root) {
   let groupCalls = 0;
   const smartSortRoot = path.join(root, 'marki-smart-sort');
   const runMarkiSmartSort = (state) => orchestrateSourceAwareRecognition({
+    activeProject: poolActiveProject,
     photos: [completeMarki],
     recognitionResultsByPhoto: state.recognitionResultsByPhoto,
     watermarkRecordsByPhoto: state.watermarkRecordsByPhoto,
@@ -10382,8 +10549,8 @@ async function checkUnifiedPhotoPool(root) {
   equal(firstPresentation.smartSortViewMode, 'smartSortGroup', '页面提交适配必须切换到可见分组视图');
   equal(firstPresentation.activePhotoId, completeMarki.id, '页面提交适配必须聚焦分组中的 Marki 照片');
   check(
-    buildSourceAwareRecognitionNotice(firstSmartSort.stats).includes('平台数据直用 1 张'),
-    '页面完成 notice 必须显示平台数据直用数量'
+    buildSourceAwareRecognitionNotice(firstSmartSort.stats).includes('平台结构化数据直接使用 1 张'),
+    '页面完成 notice 必须显示平台结构化数据直接使用数量'
   );
   deepEqual(firstSmartSort.recognitionResultsByPhoto[completeMarki.id], platformRecognition, '第一次智拣不得改写平台 recognition');
   deepEqual(firstSmartSort.watermarkRecordsByPhoto[completeMarki.id], platformWatermark, '第一次智拣不得改写平台 watermark');
@@ -10407,6 +10574,7 @@ async function checkUnifiedPhotoPool(root) {
   let mixedOcrCalls = 0;
   let mixedGroupCalls = 0;
   const mixedResult = await orchestrateSourceAwareRecognition({
+    activeProject: poolActiveProject,
     photos: [completeMarki, localPhoto],
     ...completeMaps,
     getOcrAvailability: async () => ({ available: true }),
@@ -10463,6 +10631,7 @@ async function checkUnifiedPhotoPool(root) {
   });
   const snapshotWorkspace = {
     ...createEmptyWorkspace(),
+    ...poolActiveProject,
     photos: mergedB.photos,
     selectedIds: mergedB.selectedIds,
     activePhotoId: presentation.activePhotoId,
@@ -10475,8 +10644,16 @@ async function checkUnifiedPhotoPool(root) {
     searchText: presentation.searchText,
     page: presentation.page
   };
-  equal((await saveSortWorkspaceSnapshot(snapshotRoot, snapshotWorkspace)).success, true, '统一照片池与可见智拣结果必须可立即写入自动快照');
-  const restoredSnapshot = await loadSortWorkspaceSnapshot(snapshotRoot);
+  equal(
+    (await saveSortWorkspaceSnapshot(snapshotRoot, snapshotWorkspace, {
+      activeProject: poolActiveProject
+    })).success,
+    true,
+    '统一照片池与可见智拣结果必须可立即写入自动快照'
+  );
+  const restoredSnapshot = await loadSortWorkspaceSnapshot(snapshotRoot, {
+    activeProject: poolActiveProject
+  });
   equal(restoredSnapshot.found, true, '全新实例必须能恢复统一照片池快照');
   equal(restoredSnapshot.snapshot.workspace.photos.length, mergedB.photos.length, '恢复后目录 A、目录 B 和 Marki 照片必须全部存在');
   equal(restoredSnapshot.snapshot.workspace.smartSortResult.groupCount, firstSmartSort.smartSortResult.groupCount, '恢复后 smartSortResult 必须存在');
@@ -10546,6 +10723,10 @@ async function checkCurrentFormContract(root) {
   } = await import('../src/utils/sortRightPanelState.js');
   const configs = {
     projects: ['潇湘新区二期'],
+    projectOptions: [{
+      id: 'project-xiaoxiang-phase-2',
+      name: '潇湘新区二期'
+    }],
     watermarkCategories: {
       巡查检查: { items: ['秩序巡查'] },
       机动车违规管理: { items: ['随意停放阻碍通行'] }
@@ -10572,6 +10753,9 @@ async function checkCurrentFormContract(root) {
   const validForm = {
     watermarkTemplateType: 'standard_work_record',
     project: '潇湘新区二期',
+    projectId: 'project-xiaoxiang-phase-2',
+    projectName: '潇湘新区二期',
+    projectAssignmentSource: 'config_exact',
     date: '2026-06-12',
     watermarkCategory: '巡查检查',
     workContent: '秩序巡查',
@@ -10586,11 +10770,33 @@ async function checkCurrentFormContract(root) {
     ['项目', '归档分类', '工作内容'],
     '配置尚未加载时工作台校验不得抛错，配置依赖字段应保持未完成'
   );
-  assert.deepEqual(validateSortForm({ ...validForm, project: '' }, configs), ['项目'], '项目为空时应阻止确认和预览');
-  assert.deepEqual(validateSortForm({ ...validForm, project: '   ' }, configs), ['项目'], '项目只有空格时应视为空');
-  assert.deepEqual(validateSortForm({ ...validForm, project: '未配置项目' }, configs), ['项目'], '项目不在当前配置中时应校验失败');
+  assert.deepEqual(
+    validateSortForm({ ...validForm, project: '', projectId: '', projectName: '' }, configs),
+    ['项目'],
+    '项目为空时应阻止确认和预览'
+  );
+  assert.deepEqual(
+    validateSortForm({ ...validForm, project: '   ', projectId: '', projectName: '   ' }, configs),
+    ['项目'],
+    '项目只有空格时应视为空'
+  );
+  assert.deepEqual(
+    validateSortForm({
+      ...validForm,
+      project: '未配置项目',
+      projectId: 'project-unconfigured',
+      projectName: '未配置项目'
+    }, configs),
+    ['项目'],
+    '项目不在当前配置中时应校验失败'
+  );
   const invalidProjectConfirmation = confirmArchiveSuggestion({
-    suggestedFields: { ...validForm, project: '未配置项目' }
+    suggestedFields: {
+      ...validForm,
+      project: '未配置项目',
+      projectId: 'project-unconfigured',
+      projectName: '未配置项目'
+    }
   }, configs);
   assert.equal(invalidProjectConfirmation.ok, false, '无效项目不得通过归档建议确认');
   assert.deepEqual(invalidProjectConfirmation.missingRequiredFields, ['项目'], '无效项目确认失败时应明确提示项目');
@@ -10608,7 +10814,12 @@ async function checkCurrentFormContract(root) {
   assert.deepEqual(validateSortForm({ ...validForm, workContent: '' }, configs), ['工作内容'], '工作内容缺失时应校验失败');
   assert.deepEqual(validateSortForm({ ...validForm, workContent: '不属于当前分类' }, configs), ['工作内容'], '工作内容不属于当前分类时应校验失败');
 
-  const emptyProjectServiceForm = buildCurrentPhotoArchiveServiceForm({ ...validForm, project: '' }, configs);
+  const emptyProjectServiceForm = buildCurrentPhotoArchiveServiceForm({
+    ...validForm,
+    project: '',
+    projectId: '',
+    projectName: ''
+  }, configs);
   assert.equal(emptyProjectServiceForm.project, '', '项目为空时归档服务表单不得使用首项目兜底');
   assert.notEqual(emptyProjectServiceForm.project, configs.projects[0], '空项目不得静默变成第一个配置项目');
   const validProjectServiceForm = buildCurrentPhotoArchiveServiceForm(validForm, configs);
@@ -10617,6 +10828,8 @@ async function checkCurrentFormContract(root) {
   const markiUnmatchedProjectForm = {
     ...validForm,
     project: '',
+    projectId: '',
+    projectName: '',
     projectCandidates: ['马克未匹配项目']
   };
   assert.deepEqual(
@@ -10628,6 +10841,10 @@ async function checkCurrentFormContract(root) {
   await fs.mkdir(root, { recursive: true });
   const canonicalConfigs = {
     projects: ['测试小区'],
+    projectOptions: [{
+      id: 'project-test-community',
+      name: '测试小区'
+    }],
     watermarkCategories: {
       工程: { items: ['电梯故障维修', '消防设施维修'] },
       巡查检查: {
@@ -11670,7 +11887,11 @@ async function checkWatermarkTemplateFormContract(root) {
   };
   sourceCheck(configManagerSource.includes("key: 'constructionUnits'"), '设置页必须提供施工单位配置入口');
   sourceCheck(configManagerSource.includes('projectIds'), '施工单位配置必须按稳定项目 ID 关联');
-  sourceCheck(pageSource.includes('label="项目"'), '右侧表单必须提供项目选择控件');
+  sourceCheck(
+    pageSource.includes('<span>当前项目<b>*</b></span>')
+      && pageSource.includes('<strong>{activeProject.projectName}</strong>'),
+    '右侧表单必须只读展示系统级当前项目'
+  );
   sourceCheck(pageSource.includes('currentIsTimeLocation'), '右侧表单必须按时间地点模板条件显示');
   sourceCheck(pageSource.includes('currentIsVehicleViolation'), '右侧表单必须按机动车模板条件显示');
   sourceCheck(pageSource.includes('currentIsEngineering'), '右侧表单必须按工程分类显示施工单位');
@@ -11839,16 +12060,36 @@ async function checkSmartClassificationBusinessClosure(root) {
   const descriptorCases = [
     ['完整四维键稳定', descriptor('a').groupKey, descriptor('b').groupKey, true],
     ['日期不同拆组', descriptor('a').groupKey, descriptor('b', { date: '2026-07-21' }).groupKey, false],
-    ['项目不同拆组', descriptor('a').groupKey, descriptor('b', { project: '香辰康园', projectName: '香辰康园' }).groupKey, false],
+    ['项目不同拆组', descriptor('a').groupKey, descriptor('b', {
+      project: '香辰康园',
+      projectId: 'project-xiang-chen',
+      projectName: '香辰康园',
+      projectAssignmentSource: 'config_exact'
+    }).groupKey, false],
     ['分类不同拆组', descriptor('a').groupKey, descriptor('b', { archiveCategory: '工程类工作记录', watermarkCategory: '工程类工作记录' }).groupKey, false],
     ['工作内容不同拆组', descriptor('a').groupKey, descriptor('b', { workContent: '其他工作' }).groupKey, false],
     ['缺日期照片级隔离', descriptor('a', { date: '' }).groupKey, descriptor('b', { date: '' }).groupKey, false],
-    ['缺项目照片级隔离', descriptor('a', { project: '', projectName: '' }).groupKey, descriptor('b', { project: '', projectName: '' }).groupKey, false],
+    ['缺项目照片级隔离', descriptor('a', {
+      project: '',
+      projectId: '',
+      projectName: '',
+      projectAssignmentSource: 'unresolved'
+    }).groupKey, descriptor('b', {
+      project: '',
+      projectId: '',
+      projectName: '',
+      projectAssignmentSource: 'unresolved'
+    }).groupKey, false],
     ['缺分类照片级隔离', descriptor('a', { archiveCategory: '', watermarkCategory: '' }).groupKey, descriptor('b', { archiveCategory: '', watermarkCategory: '' }).groupKey, false],
     ['缺工作内容照片级隔离', descriptor('a', { workContent: '' }).groupKey, descriptor('b', { workContent: '' }).groupKey, false],
     ['时间地点不适用键稳定', descriptor('a', { watermarkTemplateType: 'time_location', workContent: '' }).fields.workContent, 'not_applicable', true],
     ['缺日期标识', descriptor('a', { date: '' }).missingFields.includes('date'), true, true],
-    ['缺项目标识', descriptor('a', { project: '', projectName: '' }).missingFields.includes('project'), true, true],
+    ['缺项目标识', descriptor('a', {
+      project: '',
+      projectId: '',
+      projectName: '',
+      projectAssignmentSource: 'unresolved'
+    }).missingFields.includes('project'), true, true],
     ['缺分类标识', descriptor('a', { archiveCategory: '', watermarkCategory: '' }).missingFields.includes('archiveCategory'), true, true],
     ['缺内容标识', descriptor('a', { workContent: '' }).missingFields.includes('workContent'), true, true],
     ['标题包含四维提示', descriptor('a').title.includes('潇湘新区二期｜安全管理工作记录｜治理飞线充电'), true, true]
@@ -11862,7 +12103,12 @@ async function checkSmartClassificationBusinessClosure(root) {
   const groupCases = [
     ['四维一致合法', [member('a'), member('b')], 'groupValidity', 'valid'],
     ['日期冲突非法', [member('a'), member('b', { date: '2026-07-21' })], 'groupValidity', 'invalid_group'],
-    ['项目冲突非法', [member('a'), member('b', { project: '香辰康园', projectName: '香辰康园' })], 'groupValidity', 'invalid_group'],
+    ['项目冲突非法', [member('a'), member('b', {
+      project: '香辰康园',
+      projectId: 'project-xiang-chen',
+      projectName: '香辰康园',
+      projectAssignmentSource: 'config_exact'
+    })], 'groupValidity', 'invalid_group'],
     ['分类冲突非法', [member('a'), member('b', { archiveCategory: '工程类工作记录', watermarkCategory: '工程类工作记录' })], 'groupValidity', 'invalid_group'],
     ['内容冲突非法', [member('a'), member('b', { workContent: '其他工作' })], 'groupValidity', 'invalid_group'],
     ['模板冲突非法', [member('a'), member('b', { watermarkTemplateType: 'time_location' })], 'groupValidity', 'invalid_group'],
@@ -11924,12 +12170,24 @@ async function checkSmartClassificationBusinessClosure(root) {
   const validationCases = [
     ['普通完整通过', baseCanonical, 0],
     ['普通缺日期', { ...baseCanonical, date: '' }, 1],
-    ['普通缺项目', { ...baseCanonical, project: '', projectName: '' }, 1],
+    ['普通缺项目', {
+      ...baseCanonical,
+      project: '',
+      projectId: '',
+      projectName: '',
+      projectAssignmentSource: 'unresolved'
+    }, 1],
     ['普通缺分类', { ...baseCanonical, archiveCategory: '', watermarkCategory: '' }, 2],
     ['普通缺内容', { ...baseCanonical, workContent: '' }, 1],
     ['时间地点完整通过', timeCanonical, 0],
     ['时间地点不要求内容', { ...timeCanonical, workContent: '' }, 0],
-    ['时间地点缺项目只报一项', { ...timeCanonical, project: '', projectName: '' }, 1],
+    ['时间地点缺项目只报一项', {
+      ...timeCanonical,
+      project: '',
+      projectId: '',
+      projectName: '',
+      projectAssignmentSource: 'unresolved'
+    }, 1],
     ['机动车完整通过', vehicleCanonical, 0],
     ['机动车缺车牌', { ...vehicleCanonical, vehiclePlate: '' }, 1],
     ['机动车缺违停类型', { ...vehicleCanonical, violationType: '', workContent: '' }, 1],
@@ -12176,6 +12434,699 @@ async function checkSmartClassificationBusinessClosure(root) {
     `智能分类业务闭环自检通过：${scenarioCount} 个行为场景，${behaviorAssertions} 个行为断言，`
     + `${sourceContractAssertions} 个源码契约断言，${snapshotAssertions} 个快照恢复断言，`
     + `${markiZeroIoAssertions} 个 Marki 零网络/零 OCR 断言。`
+  );
+}
+
+async function checkActiveProjectBusinessBoundary(root) {
+  await fs.mkdir(root, { recursive: true });
+  const activeContext = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/activeProjectContext.js')).href}?active-project=${Date.now()}`
+  );
+  const unifiedPool = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/unifiedPhotoPool.js')).href}?active-project=${Date.now()}`
+  );
+  const sourceAware = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sourceAwareRecognition.js')).href}?active-project=${Date.now()}`
+  );
+  const canonicalModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/photoCanonical.js')).href}?active-project=${Date.now()}`
+  );
+  const groupKeyModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/smartGroupKey.js')).href}?active-project=${Date.now()}`
+  );
+  const formModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortRightPanelState.js')).href}?active-project=${Date.now()}`
+  );
+  const validationModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/archiveFormValidation.js')).href}?active-project=${Date.now()}`
+  );
+  const workbenchModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'electron/services/markiWorkbenchImportCore.js')).href}?active-project=${Date.now()}`
+  );
+
+  const projectA = { projectId: 'project-a', projectName: '潇湘新区二期' };
+  const projectB = { projectId: 'project-b', projectName: '香辰康园' };
+  const runtimeConfiguration = {
+    configs: {
+      projects: [projectA.projectName, projectB.projectName],
+      projectOptions: [
+        { id: projectA.projectId, name: projectA.projectName },
+        { id: projectB.projectId, name: projectB.projectName }
+      ],
+      watermarkCategories: {
+        时间地点水印: { items: ['标题/内容自定义'] },
+        安全管理工作记录: { items: ['治理飞线充电'] }
+      }
+    }
+  };
+  let scenarioCount = 0;
+  let assertionCount = 0;
+  let sourceContractAssertionCount = 0;
+  const ok = (value, message) => {
+    assertionCount += 1;
+    assert.ok(value, message);
+  };
+  const equal = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.equal(actual, expected, message);
+  };
+  const deepEqual = (actual, expected, message) => {
+    assertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const rejects = async (callback, code, message) => {
+    assertionCount += 1;
+    await assert.rejects(callback, (error) => error?.code === code, message);
+  };
+  const sourceCheck = (condition, message) => {
+    sourceContractAssertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const scenario = async (name, callback) => {
+    await callback();
+    scenarioCount += 1;
+    assert.ok(name);
+  };
+  const makePhoto = (id, activeProject, overrides = {}) => ({
+    id,
+    originalPath: path.join(root, `${id}.jpg`),
+    originalName: `${id}.jpg`,
+    extension: '.jpg',
+    size: 4,
+    width: 1,
+    height: 1,
+    sha256: createHash('sha256').update(id).digest('hex'),
+    modifiedAt: '2026-07-28T00:00:00.000Z',
+    selected: false,
+    sortStatus: 'unassigned',
+    smartSortStatus: 'not_run',
+    archiveInfo: null,
+    previewInfo: null,
+    archiveResult: null,
+    originalMissing: false,
+    ...(activeProject || {}),
+    ...(activeProject ? { projectAssignmentSource: 'active_project_context' } : {}),
+    ...overrides
+  });
+  const makeWorkspace = (activeProject, photos = [], overrides = {}) => ({
+    ...createEmptyWorkspace(activeProject),
+    ...(activeProject || {}),
+    photos,
+    selectedIds: photos.map((photo) => photo.id),
+    activePhotoId: photos[0]?.id || '',
+    ...overrides
+  });
+
+  await scenario('启动项目门禁', async () => {
+    equal(activeContext.resolveActiveProject('', runtimeConfiguration), null, '未选择项目时不得自动选择默认项目');
+    equal(activeContext.resolveActiveProject('all', runtimeConfiguration), null, '业务上下文不得提供全部项目');
+    const [routerSource, gateSource, workspaceSource] = await Promise.all([
+      fs.readFile(path.join(process.cwd(), 'src/pages/MainRouter.jsx'), 'utf8'),
+      fs.readFile(path.join(process.cwd(), 'src/components/ActiveProjectGate.jsx'), 'utf8'),
+      fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8')
+    ]);
+    sourceCheck(routerSource.includes('!archiveState?.hasActiveProject'), '业务页面必须受统一项目门禁保护');
+    sourceCheck(gateSource.includes('请选择当前工作项目'), '门禁必须明确要求选择项目');
+    sourceCheck(gateSource.includes('当前没有可用项目，请先前往基础数据配置中维护项目。'), '无项目时必须允许前往配置中心');
+    sourceCheck(!workspaceSource.includes('localStorage') && !workspaceSource.includes('sessionStorage'), '当前项目不得自动恢复上次选择');
+  });
+
+  await scenario('项目上下文稳定 ID', async () => {
+    deepEqual(
+      activeContext.resolveActiveProject(projectA.projectId, runtimeConfiguration),
+      projectA,
+      'activeProject 必须由稳定 ID 解析名称'
+    );
+    const renamedRuntime = structuredClone(runtimeConfiguration);
+    renamedRuntime.configs.projectOptions[0].name = '潇湘新区二期（新名）';
+    deepEqual(
+      activeContext.resolveActiveProject(projectA.projectId, renamedRuntime),
+      { projectId: projectA.projectId, projectName: '潇湘新区二期(新名)' },
+      '项目名称变化后必须按稳定 ID 更新显示名称'
+    );
+    const deletedRuntime = structuredClone(runtimeConfiguration);
+    deletedRuntime.configs.projectOptions = deletedRuntime.configs.projectOptions.slice(1);
+    equal(
+      activeContext.resolveActiveProject(projectA.projectId, deletedRuntime),
+      null,
+      '项目删除后必须退出业务上下文'
+    );
+  });
+
+  await scenario('项目切换保存与恢复', async () => {
+    const switchRoot = path.join(root, 'switch');
+    const photoA = makePhoto('switch-a', projectA);
+    const workspaceA = makeWorkspace(projectA, [photoA], {
+      groupDraftByGroupId: { 'group-a': { remarks: 'A组草稿' } },
+      form: { projectId: projectA.projectId, projectName: projectA.projectName },
+      archivePreviewPlan: { projectId: projectA.projectId, projectName: projectA.projectName }
+    });
+    equal(
+      (await saveSortWorkspaceSnapshot(switchRoot, workspaceA, { activeProject: projectA })).success,
+      true,
+      '项目 A 切换前必须保存成功'
+    );
+    const missingB = await loadSortWorkspaceSnapshot(switchRoot, { activeProject: projectB });
+    equal(missingB.found, false, '切换项目 B 时不得显示项目 A 工作台');
+    equal(
+      (await saveSortWorkspaceSnapshot(
+        switchRoot,
+        makeWorkspace(projectB),
+        { activeProject: projectB }
+      )).success,
+      true,
+      '项目 B 必须拥有独立空工作台'
+    );
+    const restoredA = await loadSortWorkspaceSnapshot(switchRoot, { activeProject: projectA });
+    equal(restoredA.snapshot.workspace.photos[0].id, photoA.id, '切回项目 A 必须恢复 A 的照片');
+    equal(restoredA.snapshot.workspace.groupDraftByGroupId['group-a'].remarks, 'A组草稿', '切回项目 A 必须恢复 A 的草稿');
+    const hookSource = await fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8');
+    const switchSource = hookSource
+      .split('const switchActiveProject = useCallback', 2)[1]
+      ?.split('const clearActiveProject = useCallback', 1)[0] || '';
+    sourceCheck(
+      switchSource.indexOf('const saveResult = await controller?.flush?.(activeProject)')
+        < switchSource.indexOf('setActiveProject(resolved)'),
+      '项目切换必须先 flush 当前项目再切换'
+    );
+    sourceCheck(switchSource.includes('if (saveResult && saveResult.success !== true)'), '快照保存失败必须禁止切换');
+  });
+
+  await scenario('项目级快照隔离', async () => {
+    const snapshotRoot = path.join(root, 'project-snapshots');
+    const photoA = makePhoto('snapshot-a', projectA);
+    const photoB = makePhoto('snapshot-b', projectB);
+    await saveSortWorkspaceSnapshot(snapshotRoot, makeWorkspace(projectA, [photoA]), { activeProject: projectA });
+    await saveSortWorkspaceSnapshot(snapshotRoot, makeWorkspace(projectB, [photoB]), { activeProject: projectB });
+    const pathA = getSortWorkspaceSnapshotPath(snapshotRoot, projectA);
+    const pathB = getSortWorkspaceSnapshotPath(snapshotRoot, projectB);
+    assert.notEqual(pathA, pathB, 'A、B必须写入不同项目快照路径');
+    assertionCount += 1;
+    ok(!pathA.includes(projectA.projectName), '项目快照路径不得直接使用项目名称');
+    equal((await loadSortWorkspaceSnapshot(snapshotRoot, { activeProject: projectA })).snapshot.projectId, projectA.projectId, 'A 快照顶层项目必须正确');
+    equal((await loadSortWorkspaceSnapshot(snapshotRoot, { activeProject: projectB })).snapshot.projectId, projectB.projectId, 'B 快照顶层项目必须正确');
+    const crossSave = await saveSortWorkspaceSnapshot(
+      path.join(root, 'cross-snapshot'),
+      makeWorkspace(projectA, [photoB]),
+      { activeProject: projectA }
+    );
+    equal(crossSave.success, false, '跨项目照片不得写入当前项目快照');
+    equal(crossSave.error.code, 'workspace_project_mismatch', '跨项目快照必须返回稳定错误码');
+  });
+
+  await scenario('旧全局快照确认迁移', async () => {
+    const unassignedRoot = path.join(root, 'legacy-unassigned');
+    const unassignedPhoto = makePhoto('legacy-unassigned', null);
+    const legacyWorkspace = makeWorkspace(null, [unassignedPhoto]);
+    await saveSortWorkspaceSnapshot(unassignedRoot, legacyWorkspace);
+    const inspection = await inspectLegacySortWorkspaceSnapshot(unassignedRoot, projectA);
+    equal(inspection.migrationAvailable, true, '旧全局快照项目为空时必须允许用户确认迁移');
+    equal(inspection.status, 'legacy_project_unassigned', '旧空项目快照必须标记为待确认归属');
+    const migrated = await migrateLegacySortWorkspaceSnapshot(unassignedRoot, projectA);
+    equal(migrated.success, true, '用户确认后旧空项目快照必须迁移成功');
+    const migratedWorkspace = (await loadSortWorkspaceSnapshot(
+      unassignedRoot,
+      { activeProject: projectA }
+    )).snapshot.workspace;
+    equal(migratedWorkspace.photos[0].projectAssignmentSource, 'legacy_workspace_claimed', '迁移照片必须记录确认归属依据');
+    equal((await loadSortWorkspaceSnapshot(unassignedRoot)).found, true, '迁移后旧全局快照必须保持原样可读');
+    equal(migrated.backupCreated, true, '迁移必须创建旧快照备份');
+    equal(migrated.markerCreated, true, '迁移必须写完成标记');
+
+    const sameRoot = path.join(root, 'legacy-same');
+    await saveSortWorkspaceSnapshot(sameRoot, makeWorkspace(null, [
+      makePhoto('legacy-same', projectA)
+    ]));
+    equal(
+      (await inspectLegacySortWorkspaceSnapshot(sameRoot, projectA)).migrationAvailable,
+      true,
+      '旧照片明确项目与当前项目一致时必须允许迁移'
+    );
+
+    const conflictRoot = path.join(root, 'legacy-conflict');
+    await saveSortWorkspaceSnapshot(conflictRoot, makeWorkspace(null, [
+      makePhoto('legacy-other', projectB)
+    ]));
+    const conflictPath = getSortWorkspaceSnapshotPath(conflictRoot);
+    const conflictBefore = await fs.readFile(conflictPath, 'utf8');
+    const conflict = await migrateLegacySortWorkspaceSnapshot(conflictRoot, projectA);
+    equal(conflict.success, false, '旧快照明确属于其他项目时必须整体阻止');
+    equal(conflict.error.code, 'workspace_project_mismatch', '旧快照项目冲突必须返回稳定错误码');
+    equal(await fs.readFile(conflictPath, 'utf8'), conflictBefore, '迁移冲突不得改写原快照');
+
+    const mixedRoot = path.join(root, 'legacy-mixed');
+    await saveSortWorkspaceSnapshot(mixedRoot, makeWorkspace(null, [
+      makePhoto('legacy-mixed-a', projectA),
+      makePhoto('legacy-mixed-b', projectB)
+    ]));
+    const mixed = await inspectLegacySortWorkspaceSnapshot(mixedRoot, projectA);
+    equal(mixed.migrationAvailable, false, '旧快照包含多个项目时不得迁移');
+    equal(mixed.status, 'legacy_mixed_project', '旧多项目快照必须返回 legacy_mixed_project');
+  });
+
+  await scenario('11张时间地点 Marki 使用当前项目且零 OCR', async () => {
+    const photos = [];
+    const recognitionResultsByPhoto = {};
+    const watermarkRecordsByPhoto = {};
+    const archiveSuggestionsByPhoto = {};
+    for (let index = 0; index < 11; index += 1) {
+      const id = `time-location-${index + 1}`;
+      photos.push(makePhoto(id, projectA, {
+        sourceType: 'marki_api',
+        sourceKey: `marki_api:12345:${id}`,
+        sourceMetadataRef: `marki_source_metadata:12345:${id}`,
+        projectAssignmentSource: 'active_project_context'
+      }));
+      recognitionResultsByPhoto[id] = {
+        source: 'marki_api',
+        providerType: 'structured_data',
+        status: 'recognized',
+        watermarkTemplateName: '时间地点',
+        parsedFields: {
+          date: '2026-07-28',
+          watermarkCategory: '时间地点水印'
+        },
+        missingRequiredFields: []
+      };
+      watermarkRecordsByPhoto[id] = {
+        source: 'marki_api',
+        watermarkTemplateName: '时间地点',
+        captureDate: '2026-07-28',
+        projectText: '',
+        watermarkCategoryText: '时间地点水印',
+        workContentText: '',
+        locationText: `位置-${index + 1}`
+      };
+      archiveSuggestionsByPhoto[id] = {
+        source: 'marki_api',
+        status: 'suggestion_ready',
+        suggestedFields: {
+          date: '2026-07-28',
+          project: '',
+          watermarkCategory: '时间地点水印',
+          workContent: 'not_applicable',
+          location: `位置-${index + 1}`
+        },
+        missingRequiredFields: []
+      };
+    }
+    let ocrChecks = 0;
+    let ocrCalls = 0;
+    let groupCalls = 0;
+    const result = await sourceAware.orchestrateSourceAwareRecognition({
+      activeProject: projectA,
+      configs: runtimeConfiguration.configs,
+      photos,
+      recognitionResultsByPhoto,
+      watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto,
+      getOcrAvailability: async () => {
+        ocrChecks += 1;
+        return { available: false };
+      },
+      recognizePhoto: async () => {
+        ocrCalls += 1;
+        throw new Error('时间地点 Marki 不得调用 OCR');
+      },
+      buildOcrArtifacts: () => {
+        throw new Error('时间地点 Marki 不得构建 OCR 结果');
+      },
+      getPhotoSortStatus: () => 'suggestion_ready',
+      generateGroups: async ({
+        photos: groupedPhotos,
+        recognitionResultsByPhoto: nextRecognition,
+        watermarkRecordsByPhoto: nextWatermark,
+        archiveSuggestionsByPhoto: nextSuggestions
+      }) => {
+        groupCalls += 1;
+        const descriptors = groupedPhotos.map((photo) => groupKeyModule.buildSmartGroupDescriptor({
+          photo,
+          canonicalFields: canonicalModule.buildSourceCanonical({
+            photo,
+            recognitionResult: nextRecognition[photo.id],
+            watermarkRecord: nextWatermark[photo.id],
+            archiveSuggestion: nextSuggestions[photo.id],
+            configs: runtimeConfiguration.configs,
+            activeProject: projectA
+          })
+        }));
+        const uniqueKeys = [...new Set(descriptors.map((item) => item.groupKey))];
+        return {
+          status: 'created',
+          groupCount: uniqueKeys.length,
+          photoCount: groupedPhotos.length,
+          groups: uniqueKeys.map((groupKey, index) => ({
+            id: `time-group-${index + 1}`,
+            groupKey,
+            photos: groupedPhotos
+              .filter((_photo, photoIndex) => descriptors[photoIndex].groupKey === groupKey)
+              .map((photo) => ({ photoId: photo.id }))
+          }))
+        };
+      }
+    });
+    equal(ocrCalls, 0, '来源项目为空的完整时间地点 Marki OCR 调用必须为零');
+    equal(ocrChecks, 0, '来源项目为空的完整时间地点 Marki 不得检查 OCR 服务');
+    equal(result.stats.platformOnlyCount, 11, '11 张时间地点 Marki 必须全部使用平台结构化数据');
+    equal(result.stats.localOcrCount, 0, '时间地点 Marki 不得计入本地 OCR');
+    equal(result.stats.markiOcrFallbackCount, 0, '时间地点 Marki 不得进入本机 OCR 补充');
+    equal(result.stats.needsManualCount, 0, '完整时间地点 Marki 不得要求人工补项目');
+    equal(groupCalls, 1, '11 张照片收口后只能统一分组一次');
+    equal(result.smartSortResult.groupCount, 1, '同日同项目时间地点照片必须生成一个四维组');
+    equal(new Set(Object.values(result.watermarkRecordsByPhoto).map((item) => item.locationText)).size, 11, '各照片地点必须分别保留');
+    ok(result.photos.every((photo) => (
+      photo.projectId === projectA.projectId
+      && photo.projectName === projectA.projectName
+    )), '全部照片必须保持当前项目归属');
+    const canonical = canonicalModule.buildSourceCanonical({
+      photo: result.photos[0],
+      recognitionResult: result.recognitionResultsByPhoto[result.photos[0].id],
+      watermarkRecord: result.watermarkRecordsByPhoto[result.photos[0].id],
+      archiveSuggestion: result.archiveSuggestionsByPhoto[result.photos[0].id],
+      configs: runtimeConfiguration.configs,
+      activeProject: projectA
+    });
+    equal(canonical.projectId, projectA.projectId, '时间地点 canonical 必须注入当前项目稳定 ID');
+    equal(canonical.workContent, 'not_applicable', '时间地点工作内容必须使用稳定不适用语义');
+  });
+
+  await scenario('Marki 明确项目一致', async () => {
+    const compatibility = activeContext.classifyPhotoProjectCompatibility({
+      activeProject: projectA,
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      sourceProjectText: `  ${projectA.projectName}  `
+    });
+    equal(compatibility.selectable, true, '来源项目与当前项目精确一致时必须允许选择');
+    equal(compatibility.status, 'current_project', '一致项目必须标记为当前项目');
+    equal(compatibility.projectAssignmentSource, 'marki_structured_confirmed', '一致项目必须记录平台结构化核对');
+  });
+
+  const runTrustedProjectRejection = async ({
+    sourceProjectText = '',
+    assignedProject = null,
+    expectedCode
+  }) => {
+    const sessionId = '11111111-1111-4111-8111-111111111111';
+    const selectionToken = '22222222-2222-4222-8222-222222222222';
+    const sourceKey = 'marki_api:12345:project-boundary-moment';
+    const content = sourceProjectText
+      ? JSON.stringify([['日期', '2026-07-28'], ['小区名称', sourceProjectText]])
+      : JSON.stringify([['日期', '2026-07-28']]);
+    const task = {
+      taskId: '33333333-3333-4333-8333-333333333333',
+      sessionId,
+      orgId: '12345',
+      selectionTokens: [selectionToken],
+      effectiveSelectionTokens: [selectionToken],
+      retry: false,
+      querySummary: {},
+      items: [{
+        selectionToken,
+        displayId: '1',
+        sourceKey,
+        templateKey: 'name:时间地点',
+        templateName: '时间地点',
+        selectedSourceStatus: 'discovered',
+        moment: {
+          id: 'project-boundary-moment',
+          markName: '时间地点',
+          content
+        }
+      }]
+    };
+    let downloadCalls = 0;
+    let batchCalls = 0;
+    let lifecycleCalls = 0;
+    const neverDownload = async () => {
+      downloadCalls += 1;
+      throw new Error('项目冲突不得下载');
+    };
+    const neverBatch = async () => {
+      batchCalls += 1;
+      throw new Error('项目冲突不得创建批次');
+    };
+    const neverLifecycle = async () => {
+      lifecycleCalls += 1;
+      throw new Error('项目冲突不得创建生命周期批次');
+    };
+    await rejects(
+      () => importMarkiPhotoQuerySelection({
+        credentials: { orgId: '12345', key: 'mock-key' },
+        documentsPath: path.join(root, 'trusted-documents'),
+        userDataPath: path.join(root, 'trusted-user-data'),
+        projectOptions: runtimeConfiguration.configs.projectOptions,
+        request: {
+          sessionId,
+          selectionTokens: [selectionToken],
+          templateFilter: 'all',
+          importStatusFilter: 'all',
+          activeProjectId: projectA.projectId,
+          activeProjectName: projectA.projectName
+        }
+      }, {
+        beginSelectionImport: async () => task,
+        settleSelectionImport: async () => ({ success: true }),
+        resolveSourceStatuses: async () => ({
+          success: true,
+          bySourceKey: { [sourceKey]: 'discovered' },
+          assignedProjectBySourceKey: assignedProject
+            ? { [sourceKey]: assignedProject }
+            : {}
+        }),
+        downloadMarkiPhoto: neverDownload,
+        prepareStructuredImport: neverBatch,
+        beginImportBatch: neverBatch,
+        getImportBatch: neverBatch,
+        markBatchFailed: neverBatch,
+        markBatchReady: neverBatch,
+        beginLifecycleBatch: neverLifecycle,
+        markLifecycleDownloading: neverLifecycle,
+        settleLifecycleDownloads: neverLifecycle,
+        markLifecycleFailed: async () => ({ success: true }),
+        markLifecycleReady: neverLifecycle,
+        randomUUID: () => '44444444-4444-4444-8444-444444444444'
+      }),
+      expectedCode,
+      `可信主进程必须返回 ${expectedCode}`
+    );
+    equal(downloadCalls, 0, `${expectedCode} 时不得下载`);
+    equal(batchCalls, 0, `${expectedCode} 时不得创建工作台批次`);
+    equal(lifecycleCalls, 0, `${expectedCode} 时不得创建生命周期批次`);
+  };
+
+  await scenario('Marki 项目冲突', async () => {
+    const compatibility = activeContext.classifyPhotoProjectCompatibility({
+      activeProject: projectA,
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      sourceProjectText: projectB.projectName
+    });
+    equal(compatibility.selectable, false, '其他项目照片前端必须不可选');
+    equal(compatibility.code, 'photo_project_mismatch', '前端必须给出稳定项目冲突码');
+    await runTrustedProjectRejection({
+      sourceProjectText: projectB.projectName,
+      expectedCode: 'photo_project_mismatch'
+    });
+  });
+
+  await scenario('Marki 项目无法确认', async () => {
+    const compatibility = activeContext.classifyPhotoProjectCompatibility({
+      activeProject: projectA,
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      sourceProjectText: '未配置的项目'
+    });
+    equal(compatibility.selectable, false, '无法确认的项目不得选择');
+    equal(compatibility.code, 'photo_project_unresolved', '无法确认项目必须返回稳定错误码');
+    equal(Object.hasOwn(compatibility, 'projectId'), false, '无法确认项目不得自动归入其他');
+    await runTrustedProjectRejection({
+      sourceProjectText: '潇湘新区',
+      expectedCode: 'photo_project_unresolved'
+    });
+  });
+
+  await scenario('sourceKey 跨项目锁定', async () => {
+    const compatibility = activeContext.classifyPhotoProjectCompatibility({
+      activeProject: projectA,
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      assignedProjectName: projectB.projectName
+    });
+    equal(compatibility.selectable, false, '旧来源记录只有明确项目名称时也必须形成项目锁');
+    equal(compatibility.code, 'source_project_locked', '旧来源项目锁必须返回稳定错误码');
+    const assignedProject = {
+      projectId: '',
+      projectName: projectB.projectName,
+      projectAssignmentSource: 'active_project_context'
+    };
+    const before = structuredClone(assignedProject);
+    await runTrustedProjectRejection({
+      assignedProject,
+      expectedCode: 'source_project_locked'
+    });
+    deepEqual(assignedProject, before, '跨项目拒绝不得改写原来源项目记录');
+  });
+
+  await scenario('本地扫描项目归属和内容冲突', async () => {
+    const sha256 = 'a'.repeat(64);
+    const scanned = [{
+      id: 'scan-source',
+      path: path.join(root, 'local-project.jpg'),
+      name: 'local-project.jpg',
+      extension: '.jpg',
+      size: 4,
+      sha256
+    }];
+    await rejects(
+      async () => unifiedPool.mergeScannedLocalPhotoSubpool({ scannedPhotos: scanned }),
+      'active_project_required',
+      '本地扫描无 activeProject 时必须拒绝'
+    );
+    const added = unifiedPool.mergeScannedLocalPhotoSubpool({
+      scannedPhotos: scanned,
+      activeProject: projectA
+    });
+    equal(added.photos[0].projectId, projectA.projectId, '本地新照片必须写当前项目 ID');
+    equal(added.photos[0].projectName, projectA.projectName, '本地新照片必须写当前项目名称');
+    equal(added.photos[0].projectAssignmentSource, 'active_project_context', '本地照片项目只能来自当前上下文');
+    const conflict = unifiedPool.mergeScannedLocalPhotoSubpool({
+      currentPhotos: [makePhoto('other-project-same-hash', projectB, { sha256 })],
+      scannedPhotos: scanned,
+      activeProject: projectA
+    });
+    equal(conflict.stats.addedLocalCount, 0, '跨项目相同内容不得加入当前项目');
+    equal(conflict.stats.projectConflictCount, 1, '跨项目内容指纹冲突必须明确统计');
+  });
+
+  await scenario('表单项目只读和上下文校验', async () => {
+    const form = formModule.buildCurrentPhotoArchiveServiceForm({
+      watermarkTemplateType: 'time_location',
+      date: '2026-07-28',
+      archiveCategory: '时间地点水印',
+      watermarkCategory: '时间地点水印',
+      workContent: 'not_applicable'
+    }, runtimeConfiguration.configs, projectA);
+    equal(form.projectId, projectA.projectId, '表单必须自动使用当前项目 ID');
+    equal(form.projectName, projectA.projectName, '表单必须只读使用当前项目名称');
+    const stripped = activeContext.stripReadonlyProjectPatch({
+      projectId: projectB.projectId,
+      projectName: projectB.projectName,
+      project: projectB.projectName,
+      remarks: '保留可编辑字段'
+    });
+    deepEqual(stripped.patch, { remarks: '保留可编辑字段' }, '普通 patch 必须剥离所有项目字段');
+    equal(stripped.warning.code, 'project_field_readonly', '修改项目必须返回稳定只读警告码');
+    equal(
+      validationModule.validateArchiveFormByTemplate(form, runtimeConfiguration.configs, projectA).length,
+      0,
+      '与 activeProject 完全一致的表单必须通过'
+    );
+    const mismatchErrors = validationModule.validateArchiveFormByTemplate({
+      ...form,
+      projectId: projectB.projectId,
+      projectName: projectB.projectName,
+      project: projectB.projectName
+    }, runtimeConfiguration.configs, projectA);
+    ok(mismatchErrors.includes('项目'), '另一个有效项目也不得通过当前项目校验');
+    equal(
+      validationModule.validateArchiveProjectContext({
+        ...form,
+        projectId: projectB.projectId,
+        projectName: projectB.projectName,
+        project: projectB.projectName
+      }, projectA).code,
+      'project_context_mismatch',
+      '项目上下文校验必须返回稳定错误码'
+    );
+    const pageSource = await fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8');
+    sourceCheck(!pageSource.includes('label="项目"'), '右侧表单不得保留项目选择控件');
+    sourceCheck(pageSource.includes('项目由当前工作上下文确定，不可在表单中修改。'), '右侧必须说明项目只读边界');
+  });
+
+  await scenario('智拣状态文案术语', async () => {
+    const notice = sourceAware.buildSourceAwareRecognitionNotice({
+      platformOnlyCount: 11,
+      localOcrCount: 0,
+      markiOcrFallbackCount: 0,
+      needsManualCount: 0
+    });
+    ok(notice.includes('平台结构化数据直接使用 11 张'), '状态文案必须明确平台结构化数据');
+    ok(notice.includes('本地照片使用 OCR识别 0 张'), '状态文案必须明确本地照片 OCR');
+    ok(notice.includes('Marki照片使用本机 OCR补充 0 张'), '状态文案必须明确 Marki 本机 OCR 补充');
+    ok(notice.includes('仍需人工完善 0 张'), '状态文案必须报告人工完善数量');
+    equal(notice.includes('本地 OCR 0 张'), false, '不得保留歧义旧文案');
+  });
+
+  await scenario('项目冲突下游硬阻断', async () => {
+    const safePhoto = makePhoto('preview-safe', projectA);
+    assertArchivePreviewProject({ photos: [safePhoto] }, projectA);
+    assertionCount += 1;
+    const previewResult = attachActiveProjectToArchivePreview({
+      success: true,
+      previewPlan: {
+        items: [{
+          ledgerRow: { project: projectA.projectName }
+        }]
+      }
+    }, projectA);
+    equal(previewResult.previewPlan.projectId, projectA.projectId, 'PreviewPlan 必须冻结稳定项目 ID');
+    assertArchivePlanProject({ previewPlan: previewResult.previewPlan }, projectA);
+    assertionCount += 1;
+    await rejects(
+      async () => assertArchivePreviewProject({
+        photos: [makePhoto('preview-other', projectB)]
+      }, projectA),
+      'project_context_mismatch',
+      '跨项目照片不得生成预览'
+    );
+    await rejects(
+      async () => assertArchivePlanProject({
+        previewPlan: {
+          projectId: projectB.projectId,
+          projectName: projectB.projectName,
+          items: [{ ledgerRow: { project: projectB.projectName } }]
+        }
+      }, projectA),
+      'project_context_mismatch',
+      '跨项目 PreviewPlan 不得执行归档或写台账'
+    );
+    equal(
+      await isFile(path.join(root, 'forbidden-project-target.jpg')),
+      false,
+      '项目冲突不得产生目标文件'
+    );
+    deepEqual(
+      normalizeActiveProjectAgainstRuntime(projectA, runtimeConfiguration),
+      projectA,
+      '下游 activeProject 必须由 runtime config 重新核验'
+    );
+  });
+
+  await scenario('旧 Marki 批次缺项目字段不得静默归属', async () => {
+    const photoId = 'legacy-batch-photo';
+    const legacyPackage = {
+      batchId: 'legacy-batch-without-project',
+      photos: [{
+        id: photoId,
+        sourceType: 'marki_api',
+        sourceKey: 'marki_api:12345:legacy-batch-photo'
+      }],
+      recognitionResultsByPhoto: { [photoId]: { status: 'recognized' } },
+      watermarkRecordsByPhoto: { [photoId]: { captureDate: '2026-07-28' } },
+      archiveSuggestionsByPhoto: { [photoId]: { status: 'suggestion_ready' } }
+    };
+    await rejects(
+      async () => workbenchModule.mergeMarkiWorkbenchImportPackage(
+        makeWorkspace(projectA),
+        legacyPackage,
+        { activeProject: projectA }
+      ),
+      'photo_project_mismatch',
+      '旧批次照片缺少项目字段时不得静默归属当前项目'
+    );
+  });
+
+  equal(scenarioCount, 15, '系统级项目业务边界必须独立执行 15 个行为场景');
+  console.log(
+    `系统级项目业务边界自检通过：${scenarioCount} 个新增行为场景，`
+    + `${assertionCount} 个新增行为断言，${sourceContractAssertionCount} 个新增源码契约断言。`
   );
 }
 
@@ -13848,8 +14799,15 @@ async function checkMarkiImportLifecycleClosure(root) {
   const batchId = 'marki-import-lifecycle-001';
   const sourceOne = 'marki_api:12345:lifecycle-001';
   const sourceTwo = 'marki_api:12345:lifecycle-002';
+  const lifecycleProject = { projectId: 'project-lifecycle', projectName: '生命周期项目' };
+  const lifecycleItemProject = {
+    assignedProjectId: lifecycleProject.projectId,
+    assignedProjectName: lifecycleProject.projectName,
+    projectAssignmentSource: 'active_project_context'
+  };
   const beginInput = {
     batchId,
+    ...lifecycleProject,
     querySummary: {
       teamId: '10',
       start: '2026-07-20 00:00:00',
@@ -13862,8 +14820,8 @@ async function checkMarkiImportLifecycleClosure(root) {
       duplicateCount: 1
     },
     items: [
-      { sourceKey: sourceOne, displayId: '1', markName: '时间地点' },
-      { sourceKey: sourceTwo, displayId: '2', markName: '工程记录' }
+      { sourceKey: sourceOne, displayId: '1', markName: '时间地点', ...lifecycleItemProject },
+      { sourceKey: sourceTwo, displayId: '2', markName: '工程记录', ...lifecycleItemProject }
     ]
   };
   const created = await beginMarkiImportLifecycleBatch(userDataPath, beginInput, snapshotOptions);
@@ -13879,13 +14837,19 @@ async function checkMarkiImportLifecycleClosure(root) {
     path.join(root, 'legacy-other-filter'),
     {
       batchId: 'legacy-watermark-filter',
+      ...lifecycleProject,
       querySummary: {
         watermarkFilter: 'watermarked',
         importStatusFilter: 'all',
         loadedCount: 1,
         selectedCount: 1
       },
-      items: [{ sourceKey: 'marki_api:12345:legacy-filter', displayId: '1', markName: '' }]
+      items: [{
+        sourceKey: 'marki_api:12345:legacy-filter',
+        displayId: '1',
+        markName: '',
+        ...lifecycleItemProject
+      }]
     },
     snapshotOptions
   );
@@ -14064,8 +15028,14 @@ async function checkMarkiImportLifecycleClosure(root) {
   const interruptedBatchId = 'marki-import-lifecycle-002';
   await beginMarkiImportLifecycleBatch(userDataPath, {
     batchId: interruptedBatchId,
+    ...lifecycleProject,
     querySummary: {},
-    items: [{ sourceKey: 'marki_api:12345:interrupted', displayId: '1', markName: '巡查' }]
+    items: [{
+      sourceKey: 'marki_api:12345:interrupted',
+      displayId: '1',
+      markName: '巡查',
+      ...lifecycleItemProject
+    }]
   }, snapshotOptions);
   await markMarkiImportLifecycleDownloading(userDataPath, interruptedBatchId, snapshotOptions);
   const recovered = await recoverMarkiImportLifecycle(userDataPath, snapshotOptions);
@@ -14085,8 +15055,14 @@ async function checkMarkiImportLifecycleClosure(root) {
   }];
   await beginMarkiImportLifecycleBatch(userDataPath, {
     batchId: clearableBatchId,
+    ...lifecycleProject,
     querySummary: {},
-    items: [{ sourceKey: 'marki_api:12345:clearable', displayId: '1', markName: '巡查' }]
+    items: [{
+      sourceKey: 'marki_api:12345:clearable',
+      displayId: '1',
+      markName: '巡查',
+      ...lifecycleItemProject
+    }]
   }, snapshotOptions);
   await markMarkiImportLifecycleDownloading(userDataPath, clearableBatchId, snapshotOptions);
   await settleMarkiImportLifecycleDownloads(userDataPath, {

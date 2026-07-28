@@ -152,34 +152,34 @@ export async function importMarkiPhotoQuerySelection(input = {}) {
   }
 }
 
-export async function listReadyMarkiImportBatches() {
+export async function listReadyMarkiImportBatches(activeProject) {
   const api = getMarkiApi();
   if (!api?.listReadyImportBatches) return createUnavailableResult('马克待处理批次查询接口不可用。');
   try {
-    return await api.listReadyImportBatches();
+    return await api.listReadyImportBatches(activeProject);
   } catch {
     return createUnavailableResult('马克待处理批次查询失败。');
   }
 }
 
-export async function listMarkiImportRecords() {
-  return callMarkiLocalMethod('listImportRecords', [], '马克导入记录读取失败。');
+export async function listMarkiImportRecords(activeProject) {
+  return callMarkiLocalMethod('listImportRecords', [activeProject], '马克导入记录读取失败。');
 }
 
-export async function recoverMarkiImportLifecycle() {
-  return callMarkiLocalMethod('recoverImportLifecycle', [], '马克导入任务恢复失败。');
+export async function recoverMarkiImportLifecycle(activeProject) {
+  return callMarkiLocalMethod('recoverImportLifecycle', [activeProject], '马克导入任务恢复失败。');
 }
 
-export async function undoMarkiImportBatch(batchId) {
-  return callMarkiLocalMethod('undoImportBatch', [batchId], '马克导入撤销失败。');
+export async function undoMarkiImportBatch(batchId, activeProject) {
+  return callMarkiLocalMethod('undoImportBatch', [batchId, activeProject], '马克导入撤销失败。');
 }
 
-export async function clearMarkiImportRecord(batchId) {
-  return callMarkiLocalMethod('clearImportRecord', [batchId], '马克导入记录清除失败。');
+export async function clearMarkiImportRecord(batchId, activeProject) {
+  return callMarkiLocalMethod('clearImportRecord', [batchId, activeProject], '马克导入记录清除失败。');
 }
 
-export async function cleanupMarkiImportCache(batchId) {
-  return callMarkiLocalMethod('cleanupImportCache', [batchId], '马克下载缓存清理失败。');
+export async function cleanupMarkiImportCache(batchId, activeProject) {
+  return callMarkiLocalMethod('cleanupImportCache', [batchId, activeProject], '马克下载缓存清理失败。');
 }
 
 export function createMarkiReadyBatchRefresh(
@@ -189,10 +189,10 @@ export function createMarkiReadyBatchRefresh(
     throw new TypeError('马克待处理批次刷新函数无效。');
   }
   let pendingRequest = null;
-  return function refreshReadyBatches() {
+  return function refreshReadyBatches(...args) {
     if (pendingRequest) return pendingRequest;
     const request = Promise.resolve()
-      .then(() => requestReadyBatches())
+      .then(() => requestReadyBatches(...args))
       .then(
         (result) => normalizeReadyBatchRefreshResult(result),
         () => createReadyBatchRefreshFailure('马克待处理批次查询失败。')

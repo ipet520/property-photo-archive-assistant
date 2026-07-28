@@ -87,6 +87,11 @@ import {
   resolveEffectivePhotoArchiveInfo
 } from '../utils/photoCanonical.js';
 import {
+  applyActiveProjectToArchiveInfo,
+  stripReadonlyProjectPatch,
+  validatePhotosForActiveProject
+} from '../utils/activeProjectContext.js';
+import {
   migrateGroupDraftsByGroupKey,
   rebuildSmartSortResult
 } from '../utils/smartGroupBuilder.js';
@@ -170,7 +175,7 @@ const pendingOrganizeStatuses = new Set(['recognition_empty', 'recognized', 'sug
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
-let sortWorkspaceSessionCache = null;
+const sortWorkspaceSessionCacheByProject = new Map();
 
 function normalizeStatusFilter(filter) {
   return filter === 'assigned' ? 'unarchived' : (filter || 'all');
@@ -190,9 +195,11 @@ function restoreAutomaticSnapshotPhotos(snapshotPhotos) {
 }
 
 export default function SortWorkspacePage({ archiveState, onNavigate, navigationRequest }) {
+  const activeProject = archiveState?.activeProject;
+  const projectCacheKey = activeProject?.projectId || '';
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
-  const cachedSessionRef = useRef(sortWorkspaceSessionCache);
+  const cachedSessionRef = useRef(sortWorkspaceSessionCacheByProject.get(projectCacheKey) || null);
   const sessionSnapshotRef = useRef(cachedSessionRef.current);
   const hasHydratedSessionRef = useRef(false);
   const recoveredArchiveRootsRef = useRef(new Set());
@@ -217,7 +224,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
               }
             };
           }
-          return await window.archiveAssistant.saveSortWorkspaceSnapshot(workspace);
+          return await window.archiveAssistant.saveSortWorkspaceSnapshot(activeProject, workspace);
         } catch {
           return {
             success: false,
@@ -278,6 +285,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [markiRecoveryNotice, setMarkiRecoveryNotice] = useState({ type: 'idle', text: '' });
 
   markiWorkbenchStateRef.current = buildSortWorkspaceSnapshotWorkspace({
+    activeProject,
     photoFolder,
     archiveRoot,
     photos,
@@ -311,6 +319,26 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     };
   }, []);
 
+  async function loadActiveProjectSnapshot() {
+    const loaded = await window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
+    if (loaded?.success !== true || loaded.found === true) return loaded;
+    if (typeof window.archiveAssistant.inspectLegacySortWorkspaceSnapshot !== 'function') return loaded;
+    const legacy = await window.archiveAssistant.inspectLegacySortWorkspaceSnapshot(activeProject);
+    if (legacy?.success !== true || legacy.found !== true || legacy.canMigrate !== true) {
+      if (legacy?.found && legacy?.error?.message) {
+        setStatus({ type: 'warning', text: legacy.error.message });
+      }
+      return loaded;
+    }
+    const confirmed = window.confirm(
+      `检测到升级前的旧工作台。\n是否将旧工作台归属到当前项目“${activeProject.projectName}”？`
+    );
+    if (!confirmed) return loaded;
+    const migrated = await window.archiveAssistant.migrateLegacySortWorkspaceSnapshot(activeProject);
+    if (migrated?.success !== true) return migrated;
+    return window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
+  }
+
   useEffect(() => {
     const runtimeConfiguration = archiveState?.runtimeConfiguration;
     if (!runtimeConfiguration?.revision) return;
@@ -331,7 +359,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         .then((value) => ({ success: true, value }))
         .catch(() => ({ success: false, value: null })),
       typeof window.archiveAssistant.loadSortWorkspaceSnapshot === 'function'
-        ? window.archiveAssistant.loadSortWorkspaceSnapshot().catch(() => ({
+        ? loadActiveProjectSnapshot().catch(() => ({
             success: false,
             found: true,
             error: {
@@ -370,7 +398,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           recognitionResult: restoredRecognitionMap[photo.id],
           watermarkRecord: restoredWatermarkMap[photo.id],
           sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-          configs: safeConfigs
+          configs: safeConfigs,
+          activeProject
         })
       ]));
       const restoredEffectiveMap = Object.fromEntries(restoredPhotos.map((photo) => [
@@ -379,7 +408,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           photo,
           sourceCanonical: restoredSourceCanonicalMap[photo.id],
           sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-          photoDraft: restoredPhotoDrafts[photo.id]
+          photoDraft: restoredPhotoDrafts[photo.id],
+          activeProject
         })
       ]));
       const restoredSmartSortResult = restoredWorkspace.smartSortResult
@@ -401,7 +431,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         : restoredSmartSortResult?.groups?.[0]?.id || '';
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
-      setForm(reconcileForm(restoredWorkspace.form || defaultForm, safeConfigs));
+      setForm(reconcileForm(restoredWorkspace.form || defaultForm, safeConfigs, activeProject));
       window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
       setPhotoFolder(restoredPhotoFolder);
       setArchiveRoot(restoredArchiveRoot);
@@ -450,7 +480,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }).catch(() => {
       const safeConfigs = withRuntimeConfigFallback(null);
       setConfigs(safeConfigs);
-      setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs));
+      setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs, activeProject));
       setStatus({ type: 'error', text: '配置或工作台状态加载失败，已使用安全默认值。' });
       hasHydratedSessionRef.current = true;
       setIsSessionHydrated(true);
@@ -519,6 +549,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   useEffect(() => {
     if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
     const snapshot = {
+      projectId: activeProject.projectId,
+      projectName: activeProject.projectName,
       photoFolder,
       archiveRoot,
       photos,
@@ -552,7 +584,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       batchPreparationUndo
     };
     sessionSnapshotRef.current = snapshot;
-    sortWorkspaceSessionCache = snapshot;
+    sortWorkspaceSessionCacheByProject.set(projectCacheKey, snapshot);
   }, [
     photoFolder,
     archiveRoot,
@@ -590,13 +622,40 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   useEffect(() => () => {
     if (sessionSnapshotRef.current) {
-      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
     }
   }, []);
+
+  useEffect(() => archiveState?.registerProjectWorkspaceController?.({
+    isBusy: () => Boolean(
+      isBusy
+      || isSmartSortBusy
+      || isRecognitionBusy
+      || isMarkiRecoveryBusy
+    ),
+    flush: async () => {
+      const workspace = markiWorkbenchStateRef.current;
+      if (!workspace) return { success: true };
+      return saveAutomaticSnapshotImmediately(workspace);
+    },
+    clear: () => {
+      sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
+      sessionSnapshotRef.current = null;
+      markiWorkbenchStateRef.current = null;
+    }
+  }), [
+    archiveState?.registerProjectWorkspaceController,
+    isBusy,
+    isMarkiRecoveryBusy,
+    isRecognitionBusy,
+    isSmartSortBusy,
+    projectCacheKey
+  ]);
 
   useEffect(() => {
     if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
     automaticSnapshotSaverRef.current?.schedule(buildSortWorkspaceSnapshotWorkspace({
+      activeProject,
       photoFolder,
       archiveRoot,
       photos,
@@ -667,18 +726,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       recognitionResult: recognitionResultsByPhoto[photo.id],
       watermarkRecord: watermarkRecordsByPhoto[photo.id],
       sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
-      configs: configs || {}
+      configs: configs || {},
+      activeProject
     })
-  ])), [photos, recognitionResultsByPhoto, watermarkRecordsByPhoto, configs]);
+  ])), [activeProject, photos, recognitionResultsByPhoto, watermarkRecordsByPhoto, configs]);
   const effectiveArchiveInfoByPhotoId = useMemo(() => Object.fromEntries(photos.map((photo) => [
     photo.id,
     resolveEffectivePhotoArchiveInfo({
       photo,
       sourceCanonical: sourceCanonicalByPhotoId[photo.id],
       sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
-      photoDraft: photoDraftByPhotoId[photo.id]
+      photoDraft: photoDraftByPhotoId[photo.id],
+      activeProject
     })
-  ])), [photos, recognitionResultsByPhoto, sourceCanonicalByPhotoId, photoDraftByPhotoId]);
+  ])), [activeProject, photos, recognitionResultsByPhoto, sourceCanonicalByPhotoId, photoDraftByPhotoId]);
   const smartSortGroupMembershipByPhotoId = useMemo(
     () => buildSmartSortGroupMembershipByPhotoId(smartSortResult),
     [smartSortResult]
@@ -753,7 +814,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const selectedIgnoredCount = selectedPhotos.filter(isIgnoredPhoto).length;
   const selectedSuggestionReadyCount = selectedEditablePhotos.filter((photo) => {
     const suggestion = archiveSuggestionsByPhoto[photo.id];
-    return suggestion?.suggestedFields && validateRequiredArchiveFields(suggestion.suggestedFields, configs).length === 0;
+    return suggestion?.suggestedFields && validateRequiredArchiveFields(
+      suggestion.suggestedFields,
+      configs,
+      activeProject
+    ).length === 0;
   }).length;
   const currentPanelPhoto = primaryPhoto;
   const currentPanelSmartGroup = currentPanelPhoto
@@ -803,7 +868,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     : (hasRecognitionEvidence || hasArchiveSuggestion || hasConfirmedArchiveInfo || hasPreviewInfo || hasArchiveResult || hasExplicitWorkflowState)
       ? 'smart'
       : 'scanned';
-  const currentMissingRequiredFields = validateRequiredArchiveFields(form, configs);
+  const currentMissingRequiredFields = validateRequiredArchiveFields(form, configs, activeProject);
   const currentRequiredFieldsComplete = currentMissingRequiredFields.length === 0;
   const currentTemplateType = form.watermarkTemplateType;
   const currentIsTimeLocation = currentTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION;
@@ -811,8 +876,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const currentIsEngineering = currentTemplateType === WATERMARK_TEMPLATE_TYPES.STANDARD_WORK_RECORD
     && form.watermarkCategory === ENGINEERING_ARCHIVE_CATEGORY;
   const safeRuntimeConfigs = configs || {};
-  const projectOptions = safeRuntimeConfigs.projectOptions
-    || (safeRuntimeConfigs.projects || []).map((name) => ({ id: '', name }));
   const currentConstructionUnits = getAvailableConstructionUnits(
     safeRuntimeConfigs,
     form.projectId,
@@ -921,7 +984,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
       let batchResult;
       try {
-        batchResult = await markiApi.getImportBatch(batchId);
+        batchResult = await markiApi.getImportBatch(batchId, activeProject);
       } catch {
         if (isSortWorkspaceMountedRef.current) {
           setStatus({ type: 'error', text: '读取马克导入批次失败，请重试。' });
@@ -959,7 +1022,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         transactionResult = await persistMarkiWorkbenchImport({
           currentWorkspace: repairPreparation.workspace,
           workbenchImportPackage: batchResult.workbenchImportPackage,
-          mergeWorkbenchImport: mergeMarkiWorkbenchImportPackage,
+          mergeWorkbenchImport: (workspace, importPackage) => (
+            mergeMarkiWorkbenchImportPackage(workspace, importPackage, { activeProject })
+          ),
           prepareWorkspace: ({ merged, workspace }) => (
             prepareWorkspaceAfterPhotoAppend({
               workspace,
@@ -968,7 +1033,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             })
           ),
           saveSnapshot: (workspace) => saveAutomaticSnapshotImmediately(workspace),
-          consumeBatch: () => markiApi.consumeImportBatch(batchId),
+          consumeBatch: () => markiApi.consumeImportBatch(batchId, activeProject),
           commitWorkspace: (merged, workspace) => {
             if (!isSortWorkspaceMountedRef.current) return;
             markiWorkbenchStateRef.current = workspace;
@@ -980,7 +1045,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                 : Boolean(sessionSnapshotRef.current?.hasUnsavedChanges)
             };
             sessionSnapshotRef.current = nextSession;
-            sortWorkspaceSessionCache = nextSession;
+            sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
             if (
               merged.stats.addedCount > 0
               && workspace.smartSortViewMode !== 'smartSortGroup'
@@ -1112,7 +1177,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   useEffect(() => {
     if (!configs) return;
     if (!currentPanelPhoto) {
-      setForm(reconcileForm(defaultForm, configs));
+      setForm(reconcileForm(defaultForm, configs, activeProject));
       setRightPanelMode('form');
       return;
     }
@@ -1128,7 +1193,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ? groupDraftByGroupId[currentPanelSmartGroup.id]
         : null,
       photoDraft: photoDraftByPhotoId[currentPanelPhoto.id],
-      configs
+      configs,
+      activeProject
     }));
   }, [
     currentPanelPhoto,
@@ -1140,7 +1206,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     archiveSuggestionsByPhoto,
     sourceCanonicalByPhotoId,
     groupDraftByGroupId,
-    photoDraftByPhotoId
+    photoDraftByPhotoId,
+    activeProject
   ]);
 
   useEffect(() => {
@@ -1182,7 +1249,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         recognitionResult: restoredRecognitionMap[photo.id],
         watermarkRecord: restoredWatermarkMap[photo.id],
         sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-        configs: configs || {}
+        configs: configs || {},
+        activeProject
       })
     ]));
     const restoredEffectiveMap = Object.fromEntries(restoredPhotos.map((photo) => [
@@ -1191,7 +1259,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         photo,
         sourceCanonical: restoredSourceCanonicalMap[photo.id],
         sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-        photoDraft: restoredPhotoDrafts[photo.id]
+        photoDraft: restoredPhotoDrafts[photo.id],
+        activeProject
       })
     ]));
     const restoredSmartSortResult = workspace?.smartSortResult
@@ -1226,7 +1295,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       hasUnsavedChanges: true
     };
     sessionSnapshotRef.current = nextSession;
-    sortWorkspaceSessionCache = nextSession;
+    sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
     if (restoredActivePhotoId) pendingMarkiFocusPhotoIdRef.current = restoredActivePhotoId;
     setPhotos(restoredPhotos);
     setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
@@ -1253,7 +1322,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setRightPanelMode(['form', 'recognition'].includes(restoredWorkspace.rightPanelMode)
       ? restoredWorkspace.rightPanelMode
       : 'form');
-    setForm(reconcileForm(restoredWorkspace.form || defaultForm, configs));
+    setForm(reconcileForm(restoredWorkspace.form || defaultForm, configs, activeProject));
     setViewMode(restoredWorkspace.viewMode || 'grid');
     setPage(Math.max(1, Number(restoredWorkspace.page) || 1));
     setHasUnsavedChanges(true);
@@ -1289,7 +1358,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         });
         return;
       }
-      const result = await markiApi.scanWorkbenchRecoveryCandidates();
+      const result = await markiApi.scanWorkbenchRecoveryCandidates(activeProject);
       if (result?.success !== true) {
         setMarkiRecoveryCandidates([]);
         setSelectedMarkiRecoveryTokens([]);
@@ -1363,7 +1432,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     try {
       const markiApi = window.archiveAssistant?.marki;
       const result = await markiApi?.recoverWorkbenchCandidates?.({
-        recoveryTokens: safeRecoveryTokens
+        recoveryTokens: safeRecoveryTokens,
+        activeProject
       });
       if (result?.success !== true) {
         setMarkiRecoveryNotice({
@@ -1388,7 +1458,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         setStatus({ type: 'success', text: '所选马克照片已在当前工作台中，未重复恢复。' });
         return;
       }
-      const snapshotResult = await window.archiveAssistant.loadSortWorkspaceSnapshot();
+      const snapshotResult = await window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
       if (
         snapshotResult?.success !== true
         || snapshotResult?.found !== true
@@ -1603,25 +1673,29 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     return selectedPhotos.filter((photo) => !isArchivedPhoto(photo) && !isIgnoredPhoto(photo) && !photo.originalMissing);
   }
 
+  function blockProjectMismatch(targetPhotos, operationLabel) {
+    const validation = validatePhotosForActiveProject(targetPhotos, activeProject);
+    if (validation.valid) return false;
+    setStatus({
+      type: 'error',
+      text: `${operationLabel}已停止（${validation.code}）：${validation.message}`
+    });
+    return true;
+  }
+
   function updateForm(patch, options = {}) {
+    const readonlyResult = stripReadonlyProjectPatch(patch);
+    if (readonlyResult.warning) {
+      setStatus({ type: 'warning', text: readonlyResult.warning.message });
+    }
+    patch = readonlyResult.patch;
+    if (Object.keys(patch).length === 0) return;
     invalidateBatchPreparationUndo();
     Object.keys(patch || {}).forEach((field) => {
       editedArchiveFormFieldsRef.current.add(field);
     });
     setForm((current) => {
       let normalizedPatch = { ...patch };
-      if (Object.hasOwn(patch, 'project')) {
-        const projectOption = (configs.projectOptions || [])
-          .find((item) => item.name === patch.project);
-        normalizedPatch = {
-          ...normalizedPatch,
-          project: projectOption?.name || '',
-          projectName: projectOption?.name || '',
-          projectId: projectOption?.id || '',
-          projectConfirmed: Boolean(projectOption),
-          projectSource: projectOption ? 'manual' : ''
-        };
-      }
       if (Object.hasOwn(patch, 'watermarkCategory')) {
         normalizedPatch.archiveCategory = patch.watermarkCategory;
       }
@@ -1657,42 +1731,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           next.constructionUnitSource = '';
         }
       }
-      if (
-        Object.hasOwn(patch, 'project')
-        && next.constructionUnitId
-        && !(configs.constructionUnits || []).some((item) => (
-          item.id === next.constructionUnitId
-          && item.enabled !== false
-          && (
-            !Array.isArray(item.projectIds)
-            || item.projectIds.length === 0
-            || item.projectIds.includes(next.projectId)
-          )
-        ))
-      ) {
-        next.constructionUnitId = '';
-        next.constructionUnitName = '';
-        next.constructionUnitConfirmed = false;
-        next.constructionUnitSource = '';
-      }
       if (!options.preserveKeywords && (patch.watermarkCategory || patch.workContent || patch.location)) {
         next.keywords = getSuggestedKeywords(toArchiveForm(next), configs);
       }
       if (currentPanelPhoto) {
-        const sanitized = sanitizeDraftFields(next, configs);
+        const sanitized = sanitizeDraftFields(next, configs, activeProject);
         setPhotoDraftByPhotoId((currentDrafts) => {
           const nextDrafts = {
             ...currentDrafts,
             [currentPanelPhoto.id]: sanitized
           };
-          if (smartSortResult && ['date', 'project', 'watermarkCategory', 'workContent', 'watermarkTemplateType'].some((key) => Object.hasOwn(normalizedPatch, key))) {
+          if (smartSortResult && ['date', 'watermarkCategory', 'workContent', 'watermarkTemplateType'].some((key) => Object.hasOwn(normalizedPatch, key))) {
             const nextEffectiveMap = Object.fromEntries(photos.map((photo) => [
               photo.id,
               resolveEffectivePhotoArchiveInfo({
                 photo,
                 sourceCanonical: sourceCanonicalByPhotoId[photo.id],
                 sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
-                photoDraft: nextDrafts[photo.id]
+                photoDraft: nextDrafts[photo.id],
+                activeProject
               })
             ]));
             const rebuilt = rebuildSmartSortResult({
@@ -1787,7 +1844,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         watermarkRecordsByPhoto,
         archiveSuggestionsByPhoto,
         selectedIds,
-        activePhotoId
+        activePhotoId,
+        activeProject
       });
       const nextSmartSortResult = smartSortResult;
       const nextSmartSortViewMode = smartSortViewMode;
@@ -1796,6 +1854,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         photo.sourceType === 'local_file' && hasArchivedPhotoState(photo)
       )).length;
       const scannedWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         ...markiWorkbenchStateRef.current,
         photos: mergedPool.photos,
         selectedIds: mergedPool.selectedIds,
@@ -1834,20 +1893,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ...scannedWorkspace,
         hasUnsavedChanges: true
       };
-      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
       markChanged();
       const {
         retainedMarkiCount,
         addedLocalCount,
         retainedLocalCount,
         duplicateCount,
+        projectConflictCount,
         rejectedCount
       } = mergedPool.stats;
       setStatus({
-        type: archiveMatchWarning || rejectedCount || scanResult.failures?.length ? 'warning' : 'success',
+        type: archiveMatchWarning || projectConflictCount || rejectedCount || scanResult.failures?.length ? 'warning' : 'success',
         text: archiveMatchWarning
           ? `本地照片扫描完成；已保留 ${retainedMarkiCount} 张马克照片。内容指纹核对失败，“未归档”状态可能不完整。`
-          : `本地照片扫描完成：新增 ${addedLocalCount} 张、跳过重复 ${duplicateCount} 张；保留原有 ${retainedLocalCount} 张本地照片和 ${retainedMarkiCount} 张马克照片，其中 ${archivedCount} 张本地照片已有归档记录。${rejectedCount ? `另有 ${rejectedCount} 条缺少有效内容指纹或来源异常的扫描结果未加入照片池。` : ''}${scanResult.failures?.length ? `另有 ${scanResult.failures.length} 个文件未通过健康检查。` : ''}`
+          : `本次扫描照片已归属当前项目“${activeProject.projectName}”：新增 ${addedLocalCount} 张、跳过重复 ${duplicateCount} 张；保留原有 ${retainedLocalCount} 张本地照片和 ${retainedMarkiCount} 张马克照片，其中 ${archivedCount} 张本地照片已有归档记录。${projectConflictCount ? `另有 ${projectConflictCount} 张内容指纹已归属其他项目，未加入当前项目。` : ''}${rejectedCount ? `另有 ${rejectedCount} 条缺少有效内容指纹或来源异常的扫描结果未加入照片池。` : ''}${scanResult.failures?.length ? `另有 ${scanResult.failures.length} 个文件未通过健康检查。` : ''}`
       });
     } catch (error) {
       recordRuntimeLog({ page: '照片分拣工作台', operation: '扫描照片', errorType: '扫描照片失败', summary: error.message, error });
@@ -1869,6 +1929,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (photos.length === 0) return;
     if (!window.confirm('仅清空当前分拣列表和分拣状态，不会删除原始照片。确定清空吗？')) return;
     const emptyWorkspace = getEmptySortWorkspaceSnapshotWorkspace({
+      activeProject,
       archiveRoot,
       form,
       sortMode,
@@ -1881,7 +1942,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: '工作台未清空：自动快照保存失败，请重试。' });
       return;
     }
-    sortWorkspaceSessionCache = null;
+    sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
     sessionSnapshotRef.current = null;
     setPhotos([]);
     setSelectedIds([]);
@@ -1919,6 +1980,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setRecognitionMessage({ type: 'warning', text: '请先选择需要处理的照片。' });
       return;
     }
+    if (blockProjectMismatch(targets, '智拣')) return;
     const rerunCount = targets.filter((photo) => (
       hasPhotoSmartSortResult(photo, smartSortGroupPhotoIds.has(photo.id))
     )).length;
@@ -1943,6 +2005,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         watermarkRecordsByPhoto,
         archiveSuggestionsByPhoto,
         configs,
+        activeProject,
         getOcrAvailability: async () => {
           const latestServiceStatus = await getRecognitionStatus();
           setRecognitionServiceStatus(latestServiceStatus);
@@ -2001,7 +2064,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             recognitionResultsByPhoto: orchestration.recognitionResultsByPhoto,
             watermarkRecordsByPhoto: orchestration.watermarkRecordsByPhoto,
             photoDraftByPhotoId,
-            configs
+            configs,
+            activeProject
           });
           nextSmartSortResult = rebuildSmartSortResult({
             photos: processedWorkspacePhotos,
@@ -2069,7 +2133,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           watermarkRecord: orchestration.watermarkRecordsByPhoto[panelPhoto.id],
           archiveSuggestion: orchestration.archiveSuggestionsByPhoto[panelPhoto.id],
           group: panelGroup,
-          configs
+          configs,
+          activeProject
         });
         setForm(nextForm);
       }
@@ -2116,6 +2181,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         resetSmartSortState({ type: 'warning', text: '识别结果已更新，原智能分组已失效；可重新智拣生成分组。' });
       }
       const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         ...markiWorkbenchStateRef.current,
         photos: nextPhotos,
         recognitionResultsByPhoto: orchestration.recognitionResultsByPhoto,
@@ -2135,7 +2201,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ...nextWorkspace,
         hasUnsavedChanges: true
       };
-      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
       const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
       if (snapshotResult?.success !== true) {
         setStatus({ type: 'warning', text: '智拣结果已保留在当前工作台，但自动快照保存失败，请稍后重试。' });
@@ -2152,7 +2218,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           recognitionResultsByPhoto,
           watermarkRecordsByPhoto,
           photoDraftByPhotoId,
-          configs
+          configs,
+          activeProject
         });
         const failedSmartSortResult = rebuildSmartSortResult({
           photos: failedPhotos,
@@ -2203,7 +2270,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         watermarkRecord: resetResult.watermarkRecordsByPhoto[currentPanelPhoto.id],
         archiveSuggestion: resetResult.archiveSuggestionsByPhoto[currentPanelPhoto.id],
         group: null,
-        configs
+        configs,
+        activeProject
       });
     }
 
@@ -2218,6 +2286,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       ? smartSortViewMode
       : 'statusFilter';
     const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+      activeProject,
       ...markiWorkbenchStateRef.current,
       photos: resetResult.photos,
       recognitionResultsByPhoto: resetResult.recognitionResultsByPhoto,
@@ -2250,7 +2319,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       ...nextWorkspace,
       hasUnsavedChanges: true
     };
-    sortWorkspaceSessionCache = sessionSnapshotRef.current;
+    sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
     setSmartSortMessage({ type: 'idle', text: '已选照片的智拣结果已重置；未选中照片及其分组保持不变。' });
     setRecognitionMessage({
       type: 'success',
@@ -2602,6 +2671,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ? activeSmartSortGroupId
         : '';
       const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         photoFolder,
         archiveRoot,
         photos: transition.photos,
@@ -2702,6 +2772,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       }
       const nextSelectedIds = selectedIds.filter((photoId) => !restoredIdSet.has(photoId));
       const nextWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         photoFolder,
         archiveRoot,
         photos: transition.photos,
@@ -2772,7 +2843,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       archiveSuggestionsByPhoto[target.id]
     );
     setArchiveSuggestionsByPhoto((current) => ({ ...current, [target.id]: nextSuggestion }));
-    setForm(sanitizeDraftFields(nextSuggestion.suggestedFields, configs));
+    setForm(sanitizeDraftFields(nextSuggestion.suggestedFields, configs, activeProject));
     setRightPanelMode('form');
     invalidateBatchPreparationUndo();
     markChanged();
@@ -2791,7 +2862,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
     const currentSuggestion = updateArchiveSuggestion(
       archiveSuggestionsByPhoto[target.id],
-      sanitizeDraftFields(form, configs),
+      sanitizeDraftFields(form, configs, activeProject),
       { configs, photoId: target.id }
     );
     const result = confirmArchiveSuggestion(currentSuggestion, configs);
@@ -2803,7 +2874,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         missingRequiredFields: result.missingRequiredFields || currentSuggestion.missingRequiredFields
       }
     }));
-    setForm(sanitizeDraftFields(currentSuggestion.suggestedFields, configs));
+    setForm(sanitizeDraftFields(currentSuggestion.suggestedFields, configs, activeProject));
     if (!result.ok) {
       setStatus({ type: 'error', text: `请补全归档建议字段：${(result.missingRequiredFields || []).join('、')}` });
       return;
@@ -2831,11 +2902,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
     const nextSuggestion = updateArchiveSuggestion(
       archiveSuggestionsByPhoto[target.id],
-      sanitizeDraftFields(form, configs),
+      sanitizeDraftFields(form, configs, activeProject),
       { configs, photoId: target.id }
     );
     setArchiveSuggestionsByPhoto((current) => ({ ...current, [target.id]: nextSuggestion }));
-    setForm(sanitizeDraftFields(nextSuggestion.suggestedFields, configs));
+    setForm(sanitizeDraftFields(nextSuggestion.suggestedFields, configs, activeProject));
     invalidateBatchPreparationUndo();
     markChanged();
     setStatus({ type: nextSuggestion.missingRequiredFields.length ? 'warning' : 'success', text: nextSuggestion.missingRequiredFields.length ? `归档建议已保存，仍待补充：${nextSuggestion.missingRequiredFields.join('、')}` : '归档建议已保存，请确认后预览。' });
@@ -2872,7 +2943,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       }
       return invalidTip ? clearGeneratedPreview(photo) : photo;
     }));
-    setForm(reconcileForm(defaultForm, configs));
+    setForm(reconcileForm(defaultForm, configs, activeProject));
     invalidateBatchPreparationUndo();
     markChanged();
     setStatus({ type: invalidTip ? 'warning' : 'success', text: `已清除当前照片归档建议，OCR 结果未受影响。${invalidTip}` });
@@ -2886,7 +2957,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       ...primaryPhoto.archiveInfo,
       workContent: primaryPhoto.archiveInfo.workContent || '',
       location: primaryPhoto.archiveInfo.location || ''
-    }, configs));
+    }, configs, activeProject));
     setStatus({ type: 'idle', text: `已载入当前照片的归档信息，可修改后保存到当前照片。` });
   }
 
@@ -2895,13 +2966,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: '请先选择已套用归档信息的待预览照片。' });
       return;
     }
-    const missing = validateSortForm(form, configs);
+    const missing = validateSortForm(form, configs, activeProject);
     if (missing.length) {
       setStatus({ type: 'error', text: `请补全必填项：${missing.join('、')}` });
       return;
     }
     const invalidTip = invalidatePreviewMessage();
-    const archiveInfo = normalizeArchiveInfo(form);
+    const archiveInfo = normalizeArchiveInfo(form, activeProject);
     setPhotos((current) => current.map((photo) => {
       if (photo.id === editingPhoto.id) return { ...photo, sortStatus: 'assigned', archiveInfo, previewInfo: null, archiveResult: null };
       return invalidTip ? clearGeneratedPreview(photo) : photo;
@@ -2968,6 +3039,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           sortStatus: photo.missingSortStatus || photo.sortStatus || 'unassigned'
         };
       }));
+      if (
+        draftWorkspace.projectId !== activeProject.projectId
+        || draftWorkspace.projectName !== activeProject.projectName
+      ) {
+        throw Object.assign(new Error('所选草稿属于其他项目，未恢复。'), {
+          code: 'workspace_project_mismatch'
+        });
+      }
+      const draftProjectValidation = validatePhotosForActiveProject(loadedPhotos, activeProject);
+      if (!draftProjectValidation.valid) {
+        throw Object.assign(new Error(draftProjectValidation.message), {
+          code: draftProjectValidation.code
+        });
+      }
       const restoredPhotoIds = new Set(loadedPhotos.map((photo) => photo.id));
       if (restoredPhotoIds.size !== loadedPhotos.length) {
         throw new TypeError('分拣草稿包含重复照片');
@@ -2995,7 +3080,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           recognitionResult: restoredRecognitionMap[photo.id],
           watermarkRecord: restoredWatermarkMap[photo.id],
           sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-          configs
+          configs,
+          activeProject
         })
       ]));
       const restoredEffectiveMap = Object.fromEntries(loadedPhotos.map((photo) => [
@@ -3004,7 +3090,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           photo,
           sourceCanonical: restoredSourceCanonicalMap[photo.id],
           sourceAwareProcessing: restoredRecognitionMap[photo.id]?.sourceAwareProcessing,
-          photoDraft: restoredPhotoDrafts[photo.id]
+          photoDraft: restoredPhotoDrafts[photo.id],
+          activeProject
         })
       ]));
       const restoredSmartSortResult = draftWorkspace.smartSortResult
@@ -3027,6 +3114,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         draftWorkspace.groupDraftByGroupId || {}
       );
       const restoredWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         ...draftWorkspace,
         photos: loadedPhotos,
         selectedIds: restoredSelectedIds,
@@ -3045,7 +3133,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           : 'statusFilter',
         activeSmartSortGroupId: restoredActiveGroupId,
         filter: normalizeStatusFilter(draftWorkspace.filter),
-        form: reconcileForm(draftWorkspace.form || defaultForm, configs)
+        form: reconcileForm(draftWorkspace.form || defaultForm, configs, activeProject)
       });
       const snapshotResult = await saveAutomaticSnapshotImmediately(restoredWorkspace);
       if (snapshotResult?.success !== true) {
@@ -3065,7 +3153,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ...restoredWorkspace,
         hasUnsavedChanges: false
       };
-      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
       const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
       setStatus({
         type: missingCount ? 'warning' : 'success',
@@ -3150,7 +3238,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         ...relocatedWorkspace,
         hasUnsavedChanges: true
       };
-      sortWorkspaceSessionCache = sessionSnapshotRef.current;
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
       invalidateBatchPreparationUndo();
       markChanged();
       const remainingLocalCount = missingLocalPhotos.length - restoredCount;
@@ -3182,6 +3270,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'warning', text: '当前选择中没有可更新的照片。' });
       return;
     }
+    if (blockProjectMismatch(targets, '生成预览')) return;
     if (!archiveRoot) {
       setStatus({ type: 'warning', text: '请先选择归档根目录。' });
       return;
@@ -3190,7 +3279,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (!confirmed) return;
 
     const batchPatch = buildBatchArchiveFormPatch(
-      normalizeArchiveInfo(form),
+      normalizeArchiveInfo(form, activeProject),
       { editedFields: [...editedArchiveFormFieldsRef.current] }
     );
     const perPhotoInputs = buildPerPhotoArchivePreviewInputs({
@@ -3198,7 +3287,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       effectiveArchiveInfoByPhotoId,
       photoDraftByPhotoId,
       batchPatch,
-      configs
+      configs,
+      activeProject
     });
     const invalidInputs = perPhotoInputs.filter((item) => item.missingFields.length > 0);
     if (invalidInputs.length > 0) {
@@ -3228,6 +3318,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
       const appliedInputs = appliedTargets.map((photo) => perPhotoInputById.get(photo.id));
       const previewResult = await window.archiveAssistant.buildArchivePreview({
+        activeProject,
         form: appliedInputs[0].serviceForm,
         photos: appliedInputs.map(({ photo, serviceForm }) => ({
           ...serviceForm,
@@ -3244,6 +3335,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           processingMode: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing?.strategy
         }))
       });
+      assertSuccessfulBusinessResult(previewResult, '生成归档预览失败。');
       const previewItems = previewResult.items || [];
       const previewMap = new Map(previewItems.map((item) => [item.id, item]));
       const previewTargets = appliedTargets.filter((photo) => previewMap.has(photo.id));
@@ -3258,7 +3350,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         const next = { ...current };
         previewTargets.forEach((photo) => {
           const serviceForm = perPhotoInputById.get(photo.id).serviceForm;
-          const suggestion = updateArchiveSuggestion(current[photo.id], sanitizeDraftFields(serviceForm, configs), {
+          const suggestion = updateArchiveSuggestion(current[photo.id], sanitizeDraftFields(serviceForm, configs, activeProject), {
             configs,
             photoId: photo.id
           });
@@ -3320,11 +3412,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: `存在 ${missingAssigned.length} 张原图缺失的待预览照片，无法生成归档预览。请重新定位照片文件夹或清除相关记录。` });
       return;
     }
+    if (blockProjectMismatch(assigned, '生成预览')) return;
     const normalizedAssigned = assigned.map((photo) => ({
       photo,
-      serviceForm: buildCurrentPhotoArchiveServiceForm(photo.archiveInfo, configs)
+      serviceForm: buildCurrentPhotoArchiveServiceForm(photo.archiveInfo, configs, activeProject)
     }));
-    const invalidPhotos = normalizedAssigned.filter(({ serviceForm }) => validateRequiredArchiveFields(serviceForm, configs).length > 0);
+    const invalidPhotos = normalizedAssigned.filter(({ serviceForm }) => (
+      validateRequiredArchiveFields(serviceForm, configs, activeProject).length > 0
+    ));
     if (invalidPhotos.length > 0) {
       setStatus({ type: 'error', text: `有 ${invalidPhotos.length} 张待预览照片缺少必填字段，请编辑补全后再生成预览。` });
       return;
@@ -3332,6 +3427,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setIsBusy(true);
     try {
       const previewResult = await window.archiveAssistant.buildArchivePreview({
+        activeProject,
         form: normalizedAssigned[0].serviceForm,
         photos: normalizedAssigned.map(({ photo, serviceForm }) => ({
           ...serviceForm,
@@ -3348,6 +3444,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           processingMode: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing?.strategy
         }))
       });
+      assertSuccessfulBusinessResult(previewResult, '生成归档预览失败。');
       const previewItems = previewResult.items || [];
       const previewMap = new Map(previewItems.map((item) => [item.id, item]));
       if (previewItems.length === 0) {
@@ -3448,6 +3545,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: `存在 ${missingPreview.length} 张原图缺失照片，无法确认归档。请重新定位照片文件夹后再操作。` });
       return;
     }
+    if (blockProjectMismatch(previewPhotos, '归档')) return;
     setShowConfirm(true);
   }
 
@@ -3460,8 +3558,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         return;
       }
       const result = await window.archiveAssistant.archivePhotos({
+        activeProject,
         previewPlan: archivePreviewPlan
       });
+      assertSuccessfulBusinessResult(result, '执行归档失败。');
       const resultMap = new Map(result.items.map((item) => [item.photoId || item.id, item]));
       const archivedAt = new Date().toISOString();
       const archivedPhotos = photos.map((photo) => {
@@ -3483,6 +3583,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const nextFilter = firstCommittedItem ? 'archived' : 'previewed';
       const nextActivePhotoId = firstCommittedItem?.photoId || firstPendingItem?.photoId || firstFailedItem?.photoId || '';
       const archivedWorkspace = buildSortWorkspaceSnapshotWorkspace({
+        activeProject,
         ...markiWorkbenchStateRef.current,
         photos: archivedPhotos,
         selectedIds: [],
@@ -3903,7 +4004,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                         </label>
                       )}
                       <InputField label="日期" type="date" value={form.date} onChange={(date) => updateForm({ date })} required disabled={currentFormLocked} />
-                      <SelectField label="项目" value={form.projectName || form.project} options={projectOptions.map((item) => item.name)} onChange={(project) => updateForm({ project })} required disabled={currentFormLocked} />
+                      <div className="field">
+                        <span>当前项目<b>*</b></span>
+                        <strong>{activeProject.projectName}</strong>
+                        <small>项目由当前工作上下文确定，不可在表单中修改。</small>
+                      </div>
                       <SelectField
                         label="归档分类"
                         value={form.watermarkCategory}
@@ -4472,24 +4577,18 @@ function StatusBadge({ photo, recognitionResult, smartSortGroupMember = false })
   );
 }
 
-function reconcileForm(current, configs) {
+function reconcileForm(current, configs, activeProject) {
   const categories = Object.keys(configs.watermarkCategories || {});
   const watermarkCategory = categories.includes(current.watermarkCategory) ? current.watermarkCategory : '';
-  return {
+  return applyActiveProjectToArchiveInfo({
     ...defaultForm,
     ...current,
-    project: (configs.projects || []).includes(current.projectName || current.project)
-      ? (current.projectName || current.project)
-      : '',
-    projectName: (configs.projects || []).includes(current.projectName || current.project)
-      ? (current.projectName || current.project)
-      : '',
     watermarkCategory,
     archiveCategory: watermarkCategory,
     workContent: current.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
       ? NOT_APPLICABLE_WORK_CONTENT
       : String(current.workContent || '').trim()
-  };
+  }, activeProject, current.projectAssignmentSource || current.projectSource);
 }
 
 function includeCurrentFormOption(options, currentValue) {
@@ -4499,11 +4598,9 @@ function includeCurrentFormOption(options, currentValue) {
   return values;
 }
 
-function normalizeArchiveInfo(form) {
-  return {
+function normalizeArchiveInfo(form, activeProject) {
+  return applyActiveProjectToArchiveInfo({
     ...form,
-    project: form.projectName || form.project,
-    projectName: form.projectName || form.project,
     watermarkCategory: form.watermarkCategory,
     archiveCategory: form.watermarkCategory,
     workContent: form.watermarkTemplateType === WATERMARK_TEMPLATE_TYPES.TIME_LOCATION
@@ -4517,7 +4614,7 @@ function normalizeArchiveInfo(form) {
     keywords: form.keywords,
     remark: form.remarks || form.remark,
     remarks: form.remarks || form.remark
-  };
+  }, activeProject, form.projectAssignmentSource || form.projectSource);
 }
 
 function buildSmartSortCanonicalMaps({
@@ -4525,7 +4622,8 @@ function buildSmartSortCanonicalMaps({
   recognitionResultsByPhoto = {},
   watermarkRecordsByPhoto = {},
   photoDraftByPhotoId = {},
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   const sourceCanonicalByPhotoId = Object.fromEntries(photos.map((photo) => [
     photo.id,
@@ -4534,7 +4632,8 @@ function buildSmartSortCanonicalMaps({
       recognitionResult: recognitionResultsByPhoto[photo.id],
       watermarkRecord: watermarkRecordsByPhoto[photo.id],
       sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
-      configs
+      configs,
+      activeProject
     })
   ]));
   const effectiveArchiveInfoByPhotoId = Object.fromEntries(photos.map((photo) => [
@@ -4543,7 +4642,8 @@ function buildSmartSortCanonicalMaps({
       photo,
       sourceCanonical: sourceCanonicalByPhotoId[photo.id],
       sourceAwareProcessing: recognitionResultsByPhoto[photo.id]?.sourceAwareProcessing,
-      photoDraft: photoDraftByPhotoId[photo.id]
+      photoDraft: photoDraftByPhotoId[photo.id],
+      activeProject
     })
   ]));
   return { sourceCanonicalByPhotoId, effectiveArchiveInfoByPhotoId };
@@ -4994,6 +5094,13 @@ function normalizeOcrDate(value = '') {
 
 function formatDisplayDate(value = '') {
   return String(value || '').replaceAll('-', '/');
+}
+
+function assertSuccessfulBusinessResult(result, fallbackMessage) {
+  if (result?.success !== false) return result;
+  const error = new Error(String(result?.message || result?.error?.message || fallbackMessage).trim());
+  error.code = String(result?.errorCode || result?.error?.code || 'business_operation_failed').trim();
+  throw error;
 }
 
 function getSafeMarkiImportMessage(result, fallback) {

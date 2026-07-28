@@ -1,4 +1,6 @@
 const SNAPSHOT_WORKSPACE_DEFAULTS = Object.freeze({
+  projectId: '',
+  projectName: '',
   photos: [],
   selectedIds: [],
   activePhotoId: '',
@@ -49,6 +51,8 @@ const MANUAL_DRAFT_FORBIDDEN_KEYS = new Set([
 
 export function buildSortWorkspaceSnapshotWorkspace(state = {}) {
   return {
+    projectId: String(state.projectId || state.activeProject?.projectId || '').trim(),
+    projectName: String(state.projectName || state.activeProject?.projectName || '').trim(),
     photos: Array.isArray(state.photos) ? state.photos : [],
     selectedIds: Array.isArray(state.selectedIds) ? state.selectedIds : [],
     activePhotoId: state.activePhotoId || '',

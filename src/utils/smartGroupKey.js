@@ -86,6 +86,7 @@ export function buildSmartGroupDescriptor({
 
   const fields = {
     date,
+    projectId: cleanSmartGroupValue(canonicalFields.projectId),
     project: cleanSmartGroupValue(canonicalFields.project),
     watermarkCategory: cleanSmartGroupValue(canonicalFields.watermarkCategory),
     workContent: cleanSmartGroupValue(canonicalFields.workContent),
@@ -110,13 +111,14 @@ export function buildSmartGroupDescriptor({
 
 export function buildSmartGroupKey({
   date = '',
+  projectId = '',
   project = '',
   watermarkCategory = '',
   workContent = ''
 } = {}) {
   return JSON.stringify([
     normalizeSmartGroupKeyPart(date),
-    normalizeSmartGroupKeyPart(project),
+    normalizeSmartGroupKeyPart(projectId || project),
     normalizeSmartGroupKeyPart(watermarkCategory),
     normalizeSmartGroupKeyPart(workContent)
   ]);
@@ -126,7 +128,8 @@ export function buildPhotoIsolatedSmartGroupKey(fields = {}, photoId = '') {
   const safePhotoId = cleanSmartGroupValue(photoId) || 'missing_photo_id';
   return buildSmartGroupKey({
     date: cleanSmartGroupValue(fields.date) || `missing_date:${safePhotoId}`,
-    project: cleanSmartGroupValue(fields.project) || `missing_project:${safePhotoId}`,
+    projectId: cleanSmartGroupValue(fields.projectId),
+    project: cleanSmartGroupValue(fields.projectId || fields.project) || `missing_project:${safePhotoId}`,
     watermarkCategory: cleanSmartGroupValue(fields.watermarkCategory) || `missing_category:${safePhotoId}`,
     workContent: cleanSmartGroupValue(fields.workContent) || `missing_work_content:${safePhotoId}`
   });
@@ -146,6 +149,7 @@ export function buildSmartGroupTitle(fields = {}) {
 export function normalizeSmartGroupDescriptor(value = {}, photoId = '') {
   const fields = {
     date: normalizeSmartGroupDate(value?.fields?.date || value?.date),
+    projectId: cleanSmartGroupValue(value?.fields?.projectId),
     project: cleanSmartGroupValue(value?.fields?.project),
     watermarkCategory: cleanSmartGroupValue(value?.fields?.watermarkCategory),
     workContent: cleanSmartGroupValue(value?.fields?.workContent),
@@ -168,7 +172,7 @@ export function normalizeSmartGroupDescriptor(value = {}, photoId = '') {
 function getMissingGroupFields(fields = {}) {
   return [
     ['date', fields.date],
-    ['project', fields.project],
+    ['project', fields.projectId || fields.project],
     ['archiveCategory', fields.watermarkCategory],
     ['workContent', fields.workContent]
   ].filter(([, value]) => !cleanSmartGroupValue(value)).map(([key]) => key);

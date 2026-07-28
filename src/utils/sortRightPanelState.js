@@ -1,4 +1,5 @@
 import { validateArchiveFormByTemplate } from './archiveFormValidation.js';
+import { applyActiveProjectToArchiveInfo } from './activeProjectContext.js';
 import {
   buildTemplateDrivenCanonical,
   isolateTemplateSpecificFields,
@@ -298,13 +299,13 @@ export function getPreviewDisabledReason({ isBusy, selectedIds, selectedHasIgnor
   return '请先确认归档建议。';
 }
 
-export function validateSortForm(form = {}, configs = {}) {
-  return validateArchiveFormByTemplate(form, configs);
+export function validateSortForm(form = {}, configs = {}, activeProject = null) {
+  return validateArchiveFormByTemplate(form, configs, activeProject);
 }
 
 export const validateRequiredArchiveFields = validateSortForm;
 
-export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = {}) {
+export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = {}, activeProject = null) {
   return sanitizeArchiveFields({
     ...archiveInfo,
     project: pickIfValid(archiveInfo.projectName || archiveInfo.project, configs.projects || []),
@@ -315,17 +316,11 @@ export function buildCurrentPhotoArchiveServiceForm(archiveInfo = {}, configs = 
     locationArea: archiveInfo.locationArea ?? archiveInfo.location ?? '',
     remark: archiveInfo.remark ?? archiveInfo.remarks ?? '',
     remarks: archiveInfo.remarks ?? archiveInfo.remark ?? ''
-  }, configs);
+  }, configs, activeProject);
 }
 
 const BATCH_COMMON_FIELDS = Object.freeze([
   'date',
-  'projectId',
-  'projectName',
-  'project',
-  'projectOriginalText',
-  'projectConfirmed',
-  'projectSource',
   'archiveCategory',
   'watermarkCategory'
 ]);
@@ -347,11 +342,6 @@ export function buildBatchArchiveFormPatch(form = {}, options = {}) {
   );
   const patch = {};
   if (editedFields.has('date')) patch.date = cloneFieldValue(form.date);
-  if (editedFields.has('project')) {
-    for (const field of BATCH_COMMON_FIELDS.filter((key) => key.startsWith('project'))) {
-      patch[field] = cloneFieldValue(form[field]);
-    }
-  }
   if (editedFields.has('watermarkCategory') || editedFields.has('archiveCategory')) {
     patch.archiveCategory = cloneFieldValue(form.archiveCategory);
     patch.watermarkCategory = cloneFieldValue(form.watermarkCategory);
@@ -384,7 +374,8 @@ export function buildPerPhotoArchiveServiceForm({
   effectiveArchiveInfo = {},
   photoDraft = null,
   batchPatch = {},
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   const base = {
     ...effectiveArchiveInfo,
@@ -425,7 +416,8 @@ export function buildPerPhotoArchiveServiceForm({
   }
   return buildCurrentPhotoArchiveServiceForm(
     isolateTemplateSpecificFields(merged),
-    configs
+    configs,
+    activeProject
   );
 }
 
@@ -434,43 +426,53 @@ export function buildPerPhotoArchivePreviewInputs({
   effectiveArchiveInfoByPhotoId = {},
   photoDraftByPhotoId = {},
   batchPatch = {},
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   return (Array.isArray(photos) ? photos : []).map((photo) => {
     const serviceForm = buildPerPhotoArchiveServiceForm({
       effectiveArchiveInfo: effectiveArchiveInfoByPhotoId[photo.id] || photo.archiveInfo || {},
       photoDraft: photoDraftByPhotoId[photo.id],
       batchPatch,
-      configs
+      configs,
+      activeProject
     });
     return {
       photo,
       serviceForm,
       archiveInfo: normalizeConfirmedArchiveInfo(serviceForm),
-      missingFields: validateArchiveFormByTemplate(serviceForm, configs)
+      missingFields: validateArchiveFormByTemplate(serviceForm, configs, activeProject)
     };
   });
 }
 
-export function sanitizeArchiveFields(fields = {}, configs = {}) {
+export function sanitizeArchiveFields(fields = {}, configs = {}, activeProject = null) {
   const categories = Object.keys(configs.watermarkCategories || {});
   const watermarkCategory = categories.includes(fields.watermarkCategory) ? fields.watermarkCategory : normalizeValue(fields.watermarkCategory);
   const workOptions = configs.watermarkCategories?.[watermarkCategory]?.items || [];
   const workContent = workOptions.includes(fields.workContent) ? fields.workContent : normalizeValue(fields.workContent);
-  const project = pickIfValid(fields.projectName || fields.project, configs.projects || []);
-  const projectOption = (configs.projectOptions || [])
-    .find((item) => item.name === project);
-  const projectId = projectOption && (!fields.projectId || fields.projectId === projectOption.id)
-    ? projectOption.id
-    : '';
-  return isolateTemplateSpecificFields({
+  const configuredProject = activeProject
+    ? {
+        id: normalizeValue(activeProject.projectId),
+        name: normalizeValue(activeProject.projectName)
+      }
+    : (configs.projectOptions || [])
+        .find((item) => item.name === pickIfValid(fields.projectName || fields.project, configs.projects || []));
+  const project = configuredProject?.name || '';
+  const projectId = configuredProject?.id || '';
+  const isolated = isolateTemplateSpecificFields({
     ...defaultArchiveFields,
     ...fields,
     project,
     projectId,
     projectName: project,
     projectConfirmed: Boolean(projectId),
-    projectSource: fields.projectSource || (projectId ? 'config_exact' : ''),
+    projectSource: fields.projectAssignmentSource
+      || fields.projectSource
+      || (activeProject ? 'active_project_context' : (projectId ? 'config_exact' : '')),
+    projectAssignmentSource: fields.projectAssignmentSource
+      || fields.projectSource
+      || (activeProject ? 'active_project_context' : ''),
     watermarkCategory,
     archiveCategory: watermarkCategory,
     workContent,
@@ -485,6 +487,13 @@ export function sanitizeArchiveFields(fields = {}, configs = {}) {
       ? [...fields.unresolvedFields]
       : []
   });
+  return activeProject
+    ? applyActiveProjectToArchiveInfo(
+        isolated,
+        activeProject,
+        isolated.projectAssignmentSource
+      )
+    : isolated;
 }
 
 function cloneFieldValue(value) {
@@ -501,7 +510,8 @@ export function resolveCanonicalPhotoResult({
   group = null,
   sourceCanonical = null,
   photoDraft = null,
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   void group;
   const templateCanonical = sourceCanonical || buildSourceCanonical({
@@ -509,14 +519,16 @@ export function resolveCanonicalPhotoResult({
     recognitionResult,
     watermarkRecord,
     sourceAwareProcessing,
-    configs
+    configs,
+    activeProject
   });
   const processing = sourceAwareProcessing || recognitionResult?.sourceAwareProcessing || null;
   const effective = resolveEffectivePhotoArchiveInfo({
     photo,
     sourceCanonical: templateCanonical,
     sourceAwareProcessing: processing,
-    photoDraft: photoDraft || getManualDraftFields(archiveSuggestion)
+    photoDraft: photoDraft || getManualDraftFields(archiveSuggestion),
+    activeProject
   });
   return {
     ...effective,
@@ -539,13 +551,14 @@ export function buildArchiveFormSeed({
   sourceCanonical = null,
   groupDraft = null,
   photoDraft = null,
-  configs = {}
+  configs = {},
+  activeProject = null
 } = {}) {
   if (photo?.archiveInfo) {
     return sanitizeArchiveFields({
       ...photo.archiveInfo,
       location: photo.archiveInfo.location ?? ''
-    }, configs);
+    }, configs, activeProject);
   }
   const canonical = resolveCanonicalPhotoResult({
     photo,
@@ -556,16 +569,19 @@ export function buildArchiveFormSeed({
     group,
     sourceCanonical,
     photoDraft,
-    configs
+    configs,
+    activeProject
   });
   return sanitizeArchiveFields(
     buildCanonicalArchiveFormSeed({
       groupCanonical,
       activePhotoEffectiveInfo: canonical,
-      groupDraft,
-      photoDraft: photoDraft || getManualDraftFields(archiveSuggestion)
+    groupDraft,
+      photoDraft: photoDraft || getManualDraftFields(archiveSuggestion),
+      activeProject
     }),
-    configs
+    configs,
+    activeProject
   );
 }
 

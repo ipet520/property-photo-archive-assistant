@@ -19,6 +19,7 @@ const {
 const {
   prepareMarkiStructuredImport
 } = require('./markiImportOrchestratorService.cjs');
+const { parseMarkiContent } = require('./markiStructuredImportService.cjs');
 const {
   beginMarkiImportBatch,
   getMarkiImportBatch,
@@ -31,15 +32,25 @@ const REQUEST_KEYS = new Set([
   'sessionId',
   'selectionTokens',
   'templateFilter',
-  'importStatusFilter'
+  'importStatusFilter',
+  'activeProjectId',
+  'activeProjectName'
 ]);
 const LEGACY_REQUEST_KEYS = new Set([
   'sessionId',
   'selectionTokens',
   'watermarkFilter',
-  'importStatusFilter'
+  'importStatusFilter',
+  'activeProjectId',
+  'activeProjectName'
 ]);
-const INPUT_KEYS = new Set(['credentials', 'documentsPath', 'userDataPath', 'request']);
+const INPUT_KEYS = new Set([
+  'credentials',
+  'documentsPath',
+  'userDataPath',
+  'projectOptions',
+  'request'
+]);
 const sourceReservations = new Map();
 
 class MarkiTrustedImportError extends MarkiApiError {
@@ -91,10 +102,15 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
           importStatusFilter: normalized.request.importStatusFilter,
           duplicateCount: task.selectionTokens.length - effectiveItems.length
         },
+        projectId: normalized.activeProject.projectId,
+        projectName: normalized.activeProject.projectName,
         items: effectiveItems.map((item) => ({
           sourceKey: item.sourceKey,
           displayId: resolveSafeDisplayId(item, task.items),
-          markName: item.templateName || item.moment?.markName || ''
+          markName: item.templateName || item.moment?.markName || '',
+          assignedProjectId: normalized.activeProject.projectId,
+          assignedProjectName: normalized.activeProject.projectName,
+          projectAssignmentSource: item.projectAssignmentSource
         }))
       },
       options.lifecycleOptions || {}
@@ -199,7 +215,8 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
 
     const importItems = downloadAttempts.map(({ item, download }) => ({
       moment: item.moment,
-      download
+      download,
+      projectAssignmentSource: item.projectAssignmentSource
     }));
     const deduplication = buildDeduplication(importItems.length);
 
@@ -252,7 +269,9 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
           {
             batchId,
             inputCount: importItems.length,
-            deduplication
+            deduplication,
+            projectId: normalized.activeProject.projectId,
+            projectName: normalized.activeProject.projectName
           },
           options.batchOptions || {}
         );
@@ -305,7 +324,8 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
         },
         {
           ...(options.orchestratorOptions || {}),
-          batchId
+          batchId,
+          activeProject: normalized.activeProject
         }
       );
     } catch (error) {
@@ -460,24 +480,90 @@ async function importMarkiPhotoQuerySelection(input = {}, options = {}) {
 async function resolveEffectiveItems(task, input, dependencies) {
   if (task.retry) {
     const retryTokens = new Set(task.effectiveSelectionTokens);
-    return task.items.filter((item) => retryTokens.has(item.selectionToken));
+    return task.items
+      .filter((item) => retryTokens.has(item.selectionToken))
+      .map((item) => ({
+        ...item,
+        ...resolveTrustedItemProject(item, input)
+      }));
   }
   const statusResult = await dependencies.resolveSourceStatuses({
     documentsPath: input.documentsPath,
     userDataPath: input.userDataPath,
     orgId: task.orgId,
-    sourceKeys: task.items.map((item) => item.sourceKey)
+    sourceKeys: task.items.map((item) => item.sourceKey),
+    activeProject: input.activeProject
   });
   const statusBySourceKey = statusResult?.bySourceKey || {};
+  const assignedProjectBySourceKey = statusResult?.assignedProjectBySourceKey || {};
   return task.items.flatMap((item) => {
     const selectedSourceStatus = statusBySourceKey[item.sourceKey] || 'discovered';
     const currentItem = { ...item, selectedSourceStatus };
     if (!matchesTrustedImportFilters(currentItem, input.request)) return [];
+    const assignedProject = assignedProjectBySourceKey[item.sourceKey];
+    if (
+      assignedProject
+      && (
+        (
+          assignedProject.projectId
+          && assignedProject.projectId !== input.activeProject.projectId
+        )
+        || (
+          assignedProject.projectName
+          && normalizeProjectText(assignedProject.projectName)
+            !== normalizeProjectText(input.activeProject.projectName)
+        )
+      )
+    ) {
+      throw new MarkiTrustedImportError(
+        'source_project_locked',
+        `该照片已归属“${assignedProject.projectName || '其他项目'}”，不能加入当前项目“${input.activeProject.projectName}”。`
+      );
+    }
+    const projectAssignment = resolveTrustedItemProject(currentItem, input);
     return ['discovered', 'removed_reimportable', 'failed_retryable', 'workspace_file_repairable']
       .includes(selectedSourceStatus)
-      ? [currentItem]
+      ? [{ ...currentItem, ...projectAssignment }]
       : [];
   });
+}
+
+function resolveTrustedItemProject(item, input) {
+  const sourceProjectText = getMomentProjectText(item?.moment);
+  if (!sourceProjectText) {
+    return {
+      projectId: input.activeProject.projectId,
+      projectName: input.activeProject.projectName,
+      projectAssignmentSource: 'active_project_context',
+      projectOriginalText: ''
+    };
+  }
+  const match = input.projectOptions.find((project) => project.name === normalizeProjectText(sourceProjectText));
+  if (!match) {
+    throw new MarkiTrustedImportError(
+      'photo_project_unresolved',
+      '照片项目无法确认，请检查项目配置或切换到正确项目。'
+    );
+  }
+  if (match.id !== input.activeProject.projectId) {
+    throw new MarkiTrustedImportError(
+      'photo_project_mismatch',
+      `项目不匹配：照片属于“${match.name}”，当前项目为“${input.activeProject.projectName}”。`
+    );
+  }
+  return {
+    projectId: input.activeProject.projectId,
+    projectName: input.activeProject.projectName,
+    projectAssignmentSource: 'marki_structured_confirmed',
+    projectOriginalText: sourceProjectText
+  };
+}
+
+function getMomentProjectText(moment = {}) {
+  const parsed = parseMarkiContent(moment.content);
+  return parsed?.success
+    ? normalizeProjectText(parsed.fields?.['小区名称'])
+    : '';
 }
 
 function matchesTrustedImportFilters(item, request) {
@@ -667,6 +753,7 @@ function normalizeInput(input) {
   const credentials = normalizeCredentials(input.credentials);
   const documentsPath = normalizeAbsolutePath(input.documentsPath);
   const userDataPath = normalizeAbsolutePath(input.userDataPath);
+  const projectOptions = normalizeProjectOptions(input.projectOptions);
   const legacyRequest = isExactObject(input.request, LEGACY_REQUEST_KEYS);
   if (!legacyRequest) {
     assertExactObject(input.request, REQUEST_KEYS, 'marki_photo_import_invalid_request');
@@ -682,8 +769,45 @@ function normalizeInput(input) {
         ? migrateLegacyWatermarkFilter(input.request.watermarkFilter)
         : normalizeTemplateFilter(input.request.templateFilter),
       importStatusFilter: normalizeImportStatusFilter(input.request.importStatusFilter)
-    }
+    },
+    projectOptions,
+    activeProject: normalizeActiveProject(
+      input.request.activeProjectId,
+      input.request.activeProjectName,
+      projectOptions
+    )
   };
+}
+
+function normalizeProjectOptions(value) {
+  if (!Array.isArray(value)) {
+    throw new MarkiTrustedImportError('active_project_invalid', '当前项目配置无效。');
+  }
+  return value.map((item) => ({
+    id: String(item?.id || '').trim(),
+    name: normalizeProjectText(item?.name)
+  })).filter((item) => item.id && item.name);
+}
+
+function normalizeActiveProject(projectIdValue, projectNameValue, projectOptions) {
+  const projectId = String(projectIdValue || '').trim();
+  const projectName = normalizeProjectText(projectNameValue);
+  if (!projectId || !projectName) {
+    throw new MarkiTrustedImportError('active_project_required', '请选择当前工作项目。');
+  }
+  const match = projectOptions.find((item) => item.id === projectId);
+  if (!match || match.name !== projectName) {
+    throw new MarkiTrustedImportError('active_project_invalid', '当前项目已失效，请重新选择。');
+  }
+  return { projectId, projectName };
+}
+
+function normalizeProjectText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function normalizeTemplateFilter(value) {

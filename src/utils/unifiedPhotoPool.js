@@ -1,5 +1,6 @@
 const MARKI_SOURCE_TYPE = 'marki_api';
 const LOCAL_SOURCE_TYPE = 'local_file';
+const ACTIVE_CONTEXT_SOURCE = 'active_project_context';
 
 export function mergeScannedLocalPhotoSubpool({
   currentPhotos = [],
@@ -9,8 +10,16 @@ export function mergeScannedLocalPhotoSubpool({
   watermarkRecordsByPhoto = {},
   archiveSuggestionsByPhoto = {},
   selectedIds = [],
-  activePhotoId = ''
+  activePhotoId = '',
+  activeProject = null
 } = {}) {
+  const projectId = cleanId(activeProject?.projectId);
+  const projectName = cleanId(activeProject?.projectName);
+  if (!projectId || !projectName) {
+    const error = new Error('请选择当前工作项目。');
+    error.code = 'active_project_required';
+    throw error;
+  }
   const safeCurrentPhotos = Array.isArray(currentPhotos) ? currentPhotos : [];
   const safeScannedPhotos = Array.isArray(scannedPhotos) ? scannedPhotos : [];
   const retainedPhotoIds = new Set(
@@ -22,15 +31,22 @@ export function mergeScannedLocalPhotoSubpool({
   let nextPhotos = [...safeCurrentPhotos];
   const addedPhotoIds = [];
   let duplicateCount = 0;
+  let projectConflictCount = 0;
   let rejectedCount = 0;
 
   for (const rawPhoto of safeScannedPhotos) {
-    const normalized = createScannedLocalPhoto(rawPhoto);
+    const normalized = createScannedLocalPhoto(rawPhoto, { projectId, projectName });
     if (!normalized) {
       rejectedCount += 1;
       continue;
     }
     if (knownContentHashes.has(normalized.sha256)) {
+      const existing = safeCurrentPhotos.find(
+        (photo) => normalizeSha256(photo?.sha256) === normalized.sha256
+      );
+      if (existing?.projectId && cleanId(existing.projectId) !== projectId) {
+        projectConflictCount += 1;
+      }
       duplicateCount += 1;
       continue;
     }
@@ -63,12 +79,13 @@ export function mergeScannedLocalPhotoSubpool({
       retainedLocalCount: safeCurrentPhotos.filter(isLocalPhoto).length,
       addedLocalCount: addedPhotoIds.length,
       duplicateCount,
+      projectConflictCount,
       rejectedCount
     }
   };
 }
 
-function createScannedLocalPhoto(photo = {}) {
+function createScannedLocalPhoto(photo = {}, activeProject = {}) {
   const sourceType = cleanId(photo?.sourceType);
   if (
     (sourceType && sourceType !== LOCAL_SOURCE_TYPE)
@@ -96,6 +113,9 @@ function createScannedLocalPhoto(photo = {}) {
     selected: false,
     sortStatus: 'unassigned',
     smartSortStatus: 'not_run',
+    projectId: activeProject.projectId,
+    projectName: activeProject.projectName,
+    projectAssignmentSource: ACTIVE_CONTEXT_SOURCE,
     archiveInfo: null,
     previewInfo: null,
     archiveResult: null,

@@ -20,9 +20,14 @@ export class MarkiWorkbenchImportError extends Error {
   }
 }
 
-export function mergeMarkiWorkbenchImportPackage(currentState, workbenchImportPackage) {
+export function mergeMarkiWorkbenchImportPackage(
+  currentState,
+  workbenchImportPackage,
+  options = {}
+) {
   const current = normalizeCurrentState(currentState);
   const incoming = validateWorkbenchImportPackage(workbenchImportPackage);
+  validateProjectBoundary(current.photos, incoming.photos, options.activeProject);
   const existingPhotoIds = new Set();
   const existingSourceKeys = new Map();
 
@@ -127,6 +132,30 @@ export function mergeMarkiWorkbenchImportPackage(currentState, workbenchImportPa
     addedPhotoIds,
     stats
   };
+}
+
+function validateProjectBoundary(currentPhotos, incomingPhotos, activeProject) {
+  const projectId = normalizeRequiredString(activeProject?.projectId);
+  const projectName = normalizeRequiredString(activeProject?.projectName);
+  if (!projectId && !projectName) return;
+  if (!projectId || !projectName) {
+    throw new MarkiWorkbenchImportError('active_project_invalid', '当前项目无效，请重新选择。');
+  }
+  const mismatch = [...currentPhotos, ...incomingPhotos].some((photo) => (
+    normalizeRequiredString(photo?.projectId) !== projectId
+    || normalizeRequiredString(photo?.projectName) !== projectName
+    || ![
+      'active_project_context',
+      'marki_structured_confirmed',
+      'legacy_workspace_claimed'
+    ].includes(normalizeRequiredString(photo?.projectAssignmentSource))
+  ));
+  if (mismatch) {
+    throw new MarkiWorkbenchImportError(
+      'photo_project_mismatch',
+      '照片项目归属与当前项目不一致，已停止追加。'
+    );
+  }
 }
 
 function normalizeCurrentState(currentState) {

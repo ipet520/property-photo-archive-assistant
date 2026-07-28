@@ -175,6 +175,7 @@ function buildBundleOptions(options) {
   const bundleOptions = {};
   if (Object.hasOwn(options, 'batchId')) bundleOptions.batchId = options.batchId;
   if (Object.hasOwn(options, 'now')) bundleOptions.now = options.now;
+  if (Object.hasOwn(options, 'activeProject')) bundleOptions.activeProject = options.activeProject;
   return bundleOptions;
 }
 

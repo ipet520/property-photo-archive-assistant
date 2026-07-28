@@ -1,4 +1,5 @@
 import { PAGE_KEYS } from '../constants/app.js';
+import ActiveProjectGate from '../components/ActiveProjectGate.jsx';
 import ArchiveRecordsPage from './ArchiveRecordsPage.jsx';
 import DashboardPage from './DashboardPage.jsx';
 import DataMaintenancePage from './DataMaintenancePage.jsx';
@@ -10,18 +11,32 @@ import SortWorkspacePage from './SortWorkspacePage.jsx';
 import SummaryCenterPage from './SummaryCenterPage.jsx';
 
 export default function MainRouter({ currentPage, onNavigate, navigationRequest, archiveState }) {
+  const globalManagementPages = new Set([
+    PAGE_KEYS.configCenter,
+    PAGE_KEYS.settings,
+    PAGE_KEYS.dataMaintenance
+  ]);
+  if (!archiveState?.hasActiveProject && !globalManagementPages.has(currentPage)) {
+    return (
+      <ActiveProjectGate
+        projectOptions={archiveState?.projectOptions || []}
+        onSelectProject={archiveState?.selectActiveProject}
+        onNavigate={onNavigate}
+      />
+    );
+  }
   if (currentPage === PAGE_KEYS.dashboard) {
     return <DashboardPage archiveState={archiveState} onNavigate={onNavigate} />;
   }
   if (currentPage === PAGE_KEYS.quickArchive) {
     // 旧的独立快归入口已取消；历史导航请求统一回到照片分拣工作台。
-    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
+    return <SortWorkspacePage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.markiImport) {
-    return <MarkiPhotoImportPage onNavigate={onNavigate} navigationRequest={navigationRequest} />;
+    return <MarkiPhotoImportPage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
-    return <SortWorkspacePage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
+    return <SortWorkspacePage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
       return <ArchiveRecordsPage archiveState={archiveState} navigationRequest={navigationRequest} />;

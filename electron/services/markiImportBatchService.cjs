@@ -26,6 +26,8 @@ const WORKBENCH_IMPORT_PACKAGE_KEYS = Object.freeze([
 const BATCH_RECORD_KEYS = new Set([
   'schemaVersion',
   'batchId',
+  'projectId',
+  'projectName',
   'status',
   'inputCount',
   'metadataSavedCount',
@@ -38,6 +40,9 @@ const BATCH_RECORD_KEYS = new Set([
   'expiresAt',
   'consumedAt'
 ]);
+const LEGACY_BATCH_RECORD_KEYS = new Set(
+  [...BATCH_RECORD_KEYS].filter((key) => !['projectId', 'projectName'].includes(key))
+);
 const FAILURE_KEYS = new Set([
   'sourceMetadataRef',
   'sourceKey',
@@ -118,6 +123,8 @@ async function beginMarkiImportBatch(userDataPath, input = {}, options = {}) {
     const record = {
       schemaVersion: BATCH_SCHEMA_VERSION,
       batchId: normalized.batchId,
+      projectId: normalized.projectId,
+      projectName: normalized.projectName,
       status: BATCH_STATUSES.PREPARING,
       inputCount: normalized.inputCount,
       metadataSavedCount: 0,
@@ -267,6 +274,8 @@ async function listReadyMarkiImportBatches(userDataPath, options = {}) {
         if (!record || isExpired(record, now) || record.status !== BATCH_STATUSES.READY) return;
         items.push({
           batchId: record.batchId,
+          projectId: record.projectId,
+          projectName: record.projectName,
           status: record.status,
           inputCount: record.inputCount,
           metadataSavedCount: record.metadataSavedCount,
@@ -350,11 +359,23 @@ function getMarkiImportBatchPath(userDataPath, batchId) {
 }
 
 function normalizeBeginInput(input) {
-  assertPlainInput(input, new Set(['batchId', 'inputCount', 'deduplication']));
+  assertPlainInput(input, new Set([
+    'batchId',
+    'inputCount',
+    'deduplication',
+    'projectId',
+    'projectName'
+  ]));
   const batchId = normalizeBatchId(input.batchId);
   const inputCount = normalizeCount(input.inputCount, '照片数量');
   const deduplication = normalizeDeduplication(input.deduplication, inputCount);
-  return { batchId, inputCount, deduplication };
+  return {
+    batchId,
+    inputCount,
+    deduplication,
+    projectId: normalizeSafeText(input.projectId, 500),
+    projectName: normalizeSafeText(input.projectName, 1000)
+  };
 }
 
 function normalizeCompletionInput(input, targetStatus) {
@@ -427,7 +448,10 @@ function normalizeCompletionInput(input, targetStatus) {
 }
 
 function normalizeStoredBatch(input) {
-  if (!isPlainObject(input) || !hasExactKeys(input, BATCH_RECORD_KEYS)) {
+  if (
+    !isPlainObject(input)
+    || (!hasExactKeys(input, BATCH_RECORD_KEYS) && !hasExactKeys(input, LEGACY_BATCH_RECORD_KEYS))
+  ) {
     throw createBatchError(
       'marki_import_batch_invalid',
       '马克导入批次文件损坏，已停止处理以保护现有数据。'
@@ -440,6 +464,11 @@ function normalizeStoredBatch(input) {
     );
   }
   const batchId = normalizeBatchId(input.batchId);
+  const projectId = normalizeSafeText(input.projectId, 500);
+  const projectName = normalizeSafeText(input.projectName, 1000);
+  if (Boolean(projectId) !== Boolean(projectName)) {
+    throw createBatchError('marki_import_batch_invalid', '马克导入批次项目归属无效。');
+  }
   const status = normalizeStatus(input.status);
   const inputCount = normalizeCount(input.inputCount, '照片数量');
   const metadataSavedCount = normalizeCount(input.metadataSavedCount, '元数据保存数量');
@@ -505,6 +534,8 @@ function normalizeStoredBatch(input) {
   return {
     schemaVersion: BATCH_SCHEMA_VERSION,
     batchId,
+    projectId,
+    projectName,
     status,
     inputCount,
     metadataSavedCount,
@@ -693,6 +724,8 @@ function toPublicBatch(record) {
   return cloneJson({
     success: true,
     batchId: record.batchId,
+    projectId: record.projectId,
+    projectName: record.projectName,
     status: record.status,
     inputCount: record.inputCount,
     metadataSavedCount: record.metadataSavedCount,
@@ -713,6 +746,8 @@ function assertRetryIdentity(existing, input) {
   if (
     existing.inputCount !== input.inputCount
     || JSON.stringify(existing.deduplication) !== JSON.stringify(input.deduplication)
+    || (existing.projectId && existing.projectId !== input.projectId)
+    || (existing.projectName && existing.projectName !== input.projectName)
   ) {
     throw createBatchError(
       'marki_import_batch_retry_mismatch',

@@ -75,16 +75,34 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
     loadNextPhotoQueryPage: (sessionId) => ipcRenderer.invoke('marki:load-next-photo-query-page', sessionId),
     destroyPhotoQuerySession: (sessionId) => ipcRenderer.invoke('marki:destroy-photo-query-session', sessionId),
     importPhotoQuerySelection: (input) => ipcRenderer.invoke('marki:import-photo-query-selection', input),
-    listReadyImportBatches: () => ipcRenderer.invoke('marki:list-ready-import-batches'),
-    listImportRecords: () => ipcRenderer.invoke('marki:list-import-records'),
-    recoverImportLifecycle: () => ipcRenderer.invoke('marki:recover-import-lifecycle'),
-    undoImportBatch: (batchId) => ipcRenderer.invoke('marki:undo-import-batch', batchId),
-    clearImportRecord: (batchId) => ipcRenderer.invoke('marki:clear-import-record', batchId),
-    cleanupImportCache: (batchId) => ipcRenderer.invoke('marki:cleanup-import-cache', batchId),
-    scanWorkbenchRecoveryCandidates: () => ipcRenderer.invoke('marki:scan-workbench-recovery-candidates'),
+    listReadyImportBatches: (activeProject) => ipcRenderer.invoke('marki:list-ready-import-batches', activeProject),
+    listImportRecords: (activeProject) => ipcRenderer.invoke('marki:list-import-records', activeProject),
+    recoverImportLifecycle: (activeProject) => ipcRenderer.invoke(
+      'marki:recover-import-lifecycle',
+      activeProject
+    ),
+    undoImportBatch: (batchId, activeProject) => ipcRenderer.invoke(
+      'marki:undo-import-batch',
+      batchId,
+      activeProject
+    ),
+    clearImportRecord: (batchId, activeProject) => ipcRenderer.invoke(
+      'marki:clear-import-record',
+      batchId,
+      activeProject
+    ),
+    cleanupImportCache: (batchId, activeProject) => ipcRenderer.invoke(
+      'marki:cleanup-import-cache',
+      batchId,
+      activeProject
+    ),
+    scanWorkbenchRecoveryCandidates: (activeProject) => ipcRenderer.invoke(
+      'marki:scan-workbench-recovery-candidates',
+      activeProject
+    ),
     recoverWorkbenchCandidates: (input) => ipcRenderer.invoke('marki:recover-workbench-candidates', input),
-    getImportBatch: (batchId) => ipcRenderer.invoke('marki:get-import-batch', batchId),
-    consumeImportBatch: (batchId) => ipcRenderer.invoke('marki:consume-import-batch', batchId)
+    getImportBatch: (batchId, activeProject) => ipcRenderer.invoke('marki:get-import-batch', batchId, activeProject),
+    consumeImportBatch: (batchId, activeProject) => ipcRenderer.invoke('marki:consume-import-batch', batchId, activeProject)
   },
   loadConfigs: () => ipcRenderer.invoke('configs:load'),
   loadUserConfigs: () => ipcRenderer.invoke('configs:loadUserConfigs'),
@@ -157,7 +175,17 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   },
   saveSortDraft: (draft) => ipcRenderer.invoke('sortDraft:save', draft),
   loadSortDraft: () => ipcRenderer.invoke('sortDraft:load'),
-  saveSortWorkspaceSnapshot: (workspace) => ipcRenderer.invoke('sortWorkspaceSnapshot:save', workspace),
-  loadSortWorkspaceSnapshot: () => ipcRenderer.invoke('sortWorkspaceSnapshot:load'),
+  saveSortWorkspaceSnapshot: (activeProject, workspace) => (
+    ipcRenderer.invoke('sortWorkspaceSnapshot:save', activeProject, workspace)
+  ),
+  loadSortWorkspaceSnapshot: (activeProject) => (
+    ipcRenderer.invoke('sortWorkspaceSnapshot:load', activeProject)
+  ),
+  inspectLegacySortWorkspaceSnapshot: (activeProject) => (
+    ipcRenderer.invoke('sortWorkspaceSnapshot:inspectLegacy', activeProject)
+  ),
+  migrateLegacySortWorkspaceSnapshot: (activeProject) => (
+    ipcRenderer.invoke('sortWorkspaceSnapshot:migrateLegacy', activeProject)
+  ),
   getAppPaths: () => ipcRenderer.invoke('app:getPaths')
 });

@@ -1,10 +1,12 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { inspectPhotoSourceFile } = require('./photoFileHealthService.cjs');
 
 const SNAPSHOT_DIRECTORY_NAME = 'sort-workspace';
 const SNAPSHOT_FILE_NAME = 'active-workbench.json';
 const SNAPSHOT_SCHEMA_VERSION = 1;
+const PROJECT_SNAPSHOT_SCHEMA_VERSION = 2;
 const MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024;
 const MAX_PHOTO_COUNT = 10000;
 const MAX_NESTING_DEPTH = 16;
@@ -33,6 +35,9 @@ const WORKSPACE_KEYS = new Set([
   'searchText',
   'page',
   'viewMode'
+  ,
+  'projectId',
+  'projectName'
 ]);
 
 const PHOTO_KEYS = new Set([
@@ -66,6 +71,10 @@ const PHOTO_KEYS = new Set([
   'sourceKey',
   'sourceMetadataRef',
   'fileHealth'
+  ,
+  'projectId',
+  'projectName',
+  'projectAssignmentSource'
 ]);
 
 const FORBIDDEN_KEYS = new Set([
@@ -101,8 +110,19 @@ class SortWorkspaceSnapshotError extends Error {
   }
 }
 
-function getSortWorkspaceSnapshotPath(userDataPath) {
+function getSortWorkspaceSnapshotPath(userDataPath, activeProject = null) {
   const root = normalizeUserDataPath(userDataPath);
+  const project = normalizeActiveProject(activeProject, false);
+  if (project) {
+    const projectKey = crypto.createHash('sha256').update(project.projectId).digest('hex').slice(0, 32);
+    return path.join(
+      root,
+      SNAPSHOT_DIRECTORY_NAME,
+      'projects',
+      projectKey,
+      SNAPSHOT_FILE_NAME
+    );
+  }
   return path.join(root, SNAPSHOT_DIRECTORY_NAME, SNAPSHOT_FILE_NAME);
 }
 
@@ -110,15 +130,35 @@ function validateSortWorkspaceSnapshot(input, options = {}) {
   if (!isPlainObject(input)) {
     throw createSnapshotError('sort_workspace_snapshot_invalid', '工作台快照格式无效。');
   }
-  assertExactKeys(input, ['schemaVersion', 'savedAt', 'workspace']);
-  if (input.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
+  const activeProject = normalizeActiveProject(options.activeProject, false);
+  const expectedVersion = activeProject ? PROJECT_SNAPSHOT_SCHEMA_VERSION : SNAPSHOT_SCHEMA_VERSION;
+  assertExactKeys(
+    input,
+    activeProject
+      ? ['schemaVersion', 'savedAt', 'projectId', 'projectName', 'workspace']
+      : ['schemaVersion', 'savedAt', 'workspace']
+  );
+  if (input.schemaVersion !== expectedVersion) {
     throw createSnapshotError('sort_workspace_snapshot_incompatible', '工作台快照版本不兼容。');
+  }
+  if (
+    activeProject
+    && (
+      normalizeText(input.projectId, 500) !== activeProject.projectId
+      || normalizeText(input.projectName, 1000) !== activeProject.projectName
+    )
+  ) {
+    throw createSnapshotError('workspace_project_mismatch', '工作台快照与当前项目不一致。');
   }
   const savedAt = normalizeIsoDate(input.savedAt);
   const workspace = normalizeWorkspace(input.workspace, options);
   const snapshot = {
-    schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+    schemaVersion: expectedVersion,
     savedAt,
+    ...(activeProject ? {
+      projectId: activeProject.projectId,
+      projectName: activeProject.projectName
+    } : {}),
     workspace
   };
   assertSnapshotSize(snapshot);
@@ -126,20 +166,25 @@ function validateSortWorkspaceSnapshot(input, options = {}) {
 }
 
 async function saveSortWorkspaceSnapshot(userDataPath, workspace, options = {}) {
-  const snapshotPath = getSortWorkspaceSnapshotPath(userDataPath);
+  const activeProject = normalizeActiveProject(options.activeProject, false);
+  const snapshotPath = getSortWorkspaceSnapshotPath(userDataPath, activeProject);
   const fileSystem = resolveFileSystem(options);
   return withSnapshotWriteLock(snapshotPath, async () => {
     try {
       const snapshot = validateSortWorkspaceSnapshot({
-        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        schemaVersion: activeProject ? PROJECT_SNAPSHOT_SCHEMA_VERSION : SNAPSHOT_SCHEMA_VERSION,
         savedAt: resolveNow(options).toISOString(),
+        ...(activeProject ? {
+          projectId: activeProject.projectId,
+          projectName: activeProject.projectName
+        } : {}),
         workspace
-      });
-      await assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath);
+      }, { ...options, activeProject });
+      await assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath, { activeProject });
       await writeSnapshotAtomically(fileSystem, snapshotPath, snapshot);
       return {
         success: true,
-        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        schemaVersion: snapshot.schemaVersion,
         savedAt: snapshot.savedAt,
         photoCount: snapshot.workspace.photos.length
       };
@@ -150,7 +195,8 @@ async function saveSortWorkspaceSnapshot(userDataPath, workspace, options = {}) 
 }
 
 async function loadSortWorkspaceSnapshot(userDataPath, options = {}) {
-  const snapshotPath = getSortWorkspaceSnapshotPath(userDataPath);
+  const activeProject = normalizeActiveProject(options.activeProject, false);
+  const snapshotPath = getSortWorkspaceSnapshotPath(userDataPath, activeProject);
   const fileSystem = resolveFileSystem(options);
   try {
     const text = await fileSystem.readFile(snapshotPath, 'utf8');
@@ -160,7 +206,7 @@ async function loadSortWorkspaceSnapshot(userDataPath, options = {}) {
     } catch {
       throw createSnapshotError('sort_workspace_snapshot_corrupt', '工作台快照已损坏，未自动恢复。');
     }
-    const snapshot = validateSortWorkspaceSnapshot(parsed);
+    const snapshot = validateSortWorkspaceSnapshot(parsed, { ...options, activeProject });
     const workspace = await markMissingOriginalPhotos(snapshot.workspace, fileSystem, options);
     return {
       success: true,
@@ -187,12 +233,181 @@ async function loadSortWorkspaceSnapshot(userDataPath, options = {}) {
   }
 }
 
-async function clearSortWorkspaceSnapshot(userDataPath, options = {}) {
-  return saveSortWorkspaceSnapshot(userDataPath, createEmptyWorkspace(), options);
+async function inspectLegacySortWorkspaceSnapshot(userDataPath, activeProject, options = {}) {
+  const project = normalizeActiveProject(activeProject);
+  const projectSnapshot = await loadSortWorkspaceSnapshot(userDataPath, {
+    ...options,
+    activeProject: project
+  });
+  if (projectSnapshot.success && projectSnapshot.found) {
+    return { success: true, found: false, migrationAvailable: false, reason: 'project_snapshot_exists' };
+  }
+  const legacy = await loadSortWorkspaceSnapshot(userDataPath, {
+    ...options,
+    activeProject: null
+  });
+  if (!legacy.success || !legacy.found) {
+    return {
+      success: legacy.success,
+      found: legacy.found,
+      migrationAvailable: false,
+      ...(legacy.error ? { error: legacy.error } : {})
+    };
+  }
+  const assessment = assessLegacyWorkspaceProject(legacy.snapshot.workspace, project);
+  return {
+    success: true,
+    found: true,
+    migrationAvailable: assessment.allowed,
+    status: assessment.status,
+    photoCount: legacy.snapshot.workspace.photos.length,
+    message: assessment.message
+  };
 }
 
-function createEmptyWorkspace() {
+async function migrateLegacySortWorkspaceSnapshot(userDataPath, activeProject, options = {}) {
+  const project = normalizeActiveProject(activeProject);
+  const fileSystem = resolveFileSystem(options);
+  const projectSnapshotPath = getSortWorkspaceSnapshotPath(userDataPath, project);
+  const existingProjectSnapshot = await loadSortWorkspaceSnapshot(userDataPath, {
+    ...options,
+    activeProject: project
+  });
+  if (existingProjectSnapshot.success && existingProjectSnapshot.found) {
+    return toSafeSnapshotFailure(
+      createSnapshotError('legacy_workspace_already_migrated', '当前项目已经存在独立工作台。'),
+      'legacy_workspace_migration_failed',
+      '旧工作台迁移失败。'
+    );
+  }
+  const legacy = await loadSortWorkspaceSnapshot(userDataPath, {
+    ...options,
+    activeProject: null
+  });
+  if (!legacy.success || !legacy.found) {
+    return legacy.success
+      ? { success: false, error: { code: 'legacy_workspace_not_found', message: '未检测到旧工作台。' } }
+      : legacy;
+  }
+  const assessment = assessLegacyWorkspaceProject(legacy.snapshot.workspace, project);
+  if (!assessment.allowed) {
+    return {
+      success: false,
+      error: {
+        code: assessment.status,
+        message: assessment.message
+      }
+    };
+  }
+  const migratedWorkspace = {
+    ...legacy.snapshot.workspace,
+    projectId: project.projectId,
+    projectName: project.projectName,
+    photos: legacy.snapshot.workspace.photos.map((photo) => ({
+      ...photo,
+      projectId: project.projectId,
+      projectName: project.projectName,
+      projectAssignmentSource: 'legacy_workspace_claimed'
+    }))
+  };
+  const saveResult = await saveSortWorkspaceSnapshot(userDataPath, migratedWorkspace, {
+    ...options,
+    activeProject: project
+  });
+  if (!saveResult.success) return saveResult;
+  const verified = await loadSortWorkspaceSnapshot(userDataPath, {
+    ...options,
+    activeProject: project
+  });
+  if (!verified.success || !verified.found) {
+    return {
+      success: false,
+      error: {
+        code: 'legacy_workspace_migration_verify_failed',
+        message: '旧工作台迁移结果复验失败，原工作台保持不变。'
+      }
+    };
+  }
+  const legacyPath = getSortWorkspaceSnapshotPath(userDataPath);
+  const projectDirectory = path.dirname(projectSnapshotPath);
+  const backupPath = path.join(projectDirectory, 'legacy-active-workbench.backup.json');
+  const markerPath = path.join(projectDirectory, 'legacy-migration-complete.json');
+  await fileSystem.mkdir(projectDirectory, { recursive: true });
+  await fileSystem.copyFile(legacyPath, backupPath);
+  await writeJsonAtomically(fileSystem, markerPath, {
+    schemaVersion: 1,
+    migratedAt: resolveNow(options).toISOString(),
+    projectId: project.projectId,
+    projectName: project.projectName,
+    photoCount: migratedWorkspace.photos.length
+  });
   return {
+    success: true,
+    migrated: true,
+    photoCount: migratedWorkspace.photos.length,
+    projectId: project.projectId,
+    projectName: project.projectName,
+    backupCreated: true,
+    markerCreated: true
+  };
+}
+
+async function clearSortWorkspaceSnapshot(userDataPath, options = {}) {
+  return saveSortWorkspaceSnapshot(
+    userDataPath,
+    createEmptyWorkspace(options.activeProject),
+    options
+  );
+}
+
+function assessLegacyWorkspaceProject(workspace, activeProject) {
+  const explicitProjects = new Map();
+  for (const photo of Array.isArray(workspace?.photos) ? workspace.photos : []) {
+    const projectId = normalizeText(photo?.projectId, 500);
+    const projectName = normalizeText(
+      photo?.projectName || photo?.archiveInfo?.projectName || photo?.archiveInfo?.project,
+      1000
+    );
+    if (!projectId && !projectName) continue;
+    explicitProjects.set(`${projectId}|${projectName}`, { projectId, projectName });
+  }
+  if (explicitProjects.size > 1) {
+    return {
+      allowed: false,
+      status: 'legacy_mixed_project',
+      message: '旧工作台包含多个明确项目，已停止迁移。'
+    };
+  }
+  const explicit = [...explicitProjects.values()][0];
+  if (
+    explicit
+    && (
+      (explicit.projectId && explicit.projectId !== activeProject.projectId)
+      || (explicit.projectName && explicit.projectName !== activeProject.projectName)
+    )
+  ) {
+    return {
+      allowed: false,
+      status: 'workspace_project_mismatch',
+      message: '旧工作台明确归属于其他项目，已停止迁移。'
+    };
+  }
+  return {
+    allowed: true,
+    status: explicit ? 'legacy_project_confirmed' : 'legacy_project_unassigned',
+    message: explicit
+      ? '旧工作台项目与当前项目一致，可确认迁移。'
+      : '旧工作台没有明确项目归属，可确认归属当前项目。'
+  };
+}
+
+function createEmptyWorkspace(activeProject = null) {
+  const project = normalizeActiveProject(activeProject, false);
+  return {
+    ...(project ? {
+      projectId: project.projectId,
+      projectName: project.projectName
+    } : {}),
     photos: [],
     selectedIds: [],
     activePhotoId: '',
@@ -221,7 +436,31 @@ function normalizeWorkspace(input, options = {}) {
     throw createSnapshotError('sort_workspace_snapshot_invalid', '工作台快照内容无效。');
   }
   assertAllowedKeys(input, WORKSPACE_KEYS);
+  const activeProject = normalizeActiveProject(options.activeProject, false);
+  if (
+    activeProject
+    && (
+      normalizeText(input.projectId, 500) !== activeProject.projectId
+      || normalizeText(input.projectName, 1000) !== activeProject.projectName
+    )
+  ) {
+    throw createSnapshotError('workspace_project_mismatch', '工作台内容与当前项目不一致。');
+  }
   const photos = normalizePhotos(input.photos);
+  if (activeProject) {
+    const mismatched = photos.some((photo) => (
+      photo.projectId !== activeProject.projectId
+      || photo.projectName !== activeProject.projectName
+      || ![
+        'active_project_context',
+        'marki_structured_confirmed',
+        'legacy_workspace_claimed'
+      ].includes(photo.projectAssignmentSource)
+    ));
+    if (mismatched) {
+      throw createSnapshotError('workspace_project_mismatch', '工作台包含其他项目或未归属照片。');
+    }
+  }
   const photoIds = new Set(photos.map((photo) => photo.id));
   const selectedIds = normalizeStringArray(input.selectedIds, 'selectedIds')
     .filter((photoId) => photoIds.has(photoId));
@@ -230,6 +469,10 @@ function normalizeWorkspace(input, options = {}) {
     ? activePhotoId
     : selectedIds[0] || photos[0]?.id || '';
   return {
+    ...(activeProject ? {
+      projectId: activeProject.projectId,
+      projectName: activeProject.projectName
+    } : {}),
     photos,
     selectedIds,
     activePhotoId: safeActivePhotoId,
@@ -310,6 +553,18 @@ function normalizePhotos(input) {
       sourceKey: normalizeText(photo.sourceKey, 2000),
       sourceMetadataRef: normalizeText(photo.sourceMetadataRef, 2000),
       fileHealth: sanitizeJsonValue(photo.fileHealth ?? null, 'fileHealth')
+      ,
+      projectId: normalizeText(photo.projectId, 500),
+      projectName: normalizeText(photo.projectName, 1000),
+      projectAssignmentSource: normalizeEnum(
+        photo.projectAssignmentSource,
+        [
+          'active_project_context',
+          'marki_structured_confirmed',
+          'legacy_workspace_claimed'
+        ],
+        ''
+      )
     };
     return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== ''));
   });
@@ -417,7 +672,7 @@ async function markMissingOriginalPhotos(workspace, fileSystem, options = {}) {
   };
 }
 
-async function assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath) {
+async function assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath, options = {}) {
   let text;
   try {
     text = await fileSystem.readFile(snapshotPath, 'utf8');
@@ -426,7 +681,7 @@ async function assertExistingSnapshotCanBeReplaced(fileSystem, snapshotPath) {
     throw error;
   }
   try {
-    validateSortWorkspaceSnapshot(JSON.parse(text));
+    validateSortWorkspaceSnapshot(JSON.parse(text), options);
   } catch {
     throw createSnapshotError(
       'sort_workspace_snapshot_existing_invalid',
@@ -447,6 +702,24 @@ async function writeSnapshotAtomically(fileSystem, snapshotPath, snapshot) {
     await handle.close();
     handle = null;
     await fileSystem.rename(temporaryPath, snapshotPath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await fileSystem.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function writeJsonAtomically(fileSystem, targetPath, value) {
+  await fileSystem.mkdir(path.dirname(targetPath), { recursive: true });
+  const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+  let handle;
+  try {
+    handle = await fileSystem.open(temporaryPath, 'wx');
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fileSystem.rename(temporaryPath, targetPath);
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
     await fileSystem.rm(temporaryPath, { force: true }).catch(() => {});
@@ -592,6 +865,19 @@ function normalizeUserDataPath(value) {
   return path.resolve(text);
 }
 
+function normalizeActiveProject(value, required = true) {
+  if (value == null && !required) return null;
+  if (!isPlainObject(value)) {
+    throw createSnapshotError('active_project_required', '请选择当前工作项目。');
+  }
+  const projectId = normalizeText(value.projectId, 500);
+  const projectName = normalizeText(value.projectName, 1000);
+  if (!projectId || !projectName) {
+    throw createSnapshotError('active_project_invalid', '当前项目无效，请重新选择。');
+  }
+  return { projectId, projectName };
+}
+
 function isPlainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -624,12 +910,15 @@ function toSafeSnapshotFailure(error, fallbackCode, fallbackMessage) {
 
 module.exports = {
   MAX_SNAPSHOT_BYTES,
+  PROJECT_SNAPSHOT_SCHEMA_VERSION,
   SNAPSHOT_SCHEMA_VERSION,
   SortWorkspaceSnapshotError,
   clearSortWorkspaceSnapshot,
   createEmptyWorkspace,
   getSortWorkspaceSnapshotPath,
+  inspectLegacySortWorkspaceSnapshot,
   loadSortWorkspaceSnapshot,
+  migrateLegacySortWorkspaceSnapshot,
   saveSortWorkspaceSnapshot,
   validateSortWorkspaceSnapshot
 };

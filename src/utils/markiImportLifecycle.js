@@ -57,6 +57,12 @@ export function filterMarkiQueryPhotos(photos = [], filters = {}) {
 }
 
 export function isMarkiQueryPhotoSelectable(photo) {
+  if (
+    photo?.projectCompatibility
+    && photo.projectCompatibility.selectable !== true
+  ) {
+    return false;
+  }
   return SELECTABLE_STATUSES.has(String(photo.selectedSourceStatus || ''));
 }
 
@@ -69,11 +75,27 @@ export function selectMarkiFilteredTokens(photos = []) {
 
 export function summarizeMarkiQueryResults(rawPhotos = [], filteredPhotos = [], selectedTokens = []) {
   const selected = new Set(selectedTokens.map(String));
+  const projectCounts = rawPhotos.reduce((counts, photo) => {
+    const status = String(photo?.projectCompatibility?.status || '');
+    if (status === 'current_project') counts.currentProjectCount += 1;
+    if (status === 'assign_current_project') counts.assignToCurrentCount += 1;
+    if (status === 'project_mismatch') counts.projectMismatchCount += 1;
+    if (status === 'project_unresolved') counts.projectUnresolvedCount += 1;
+    if (status === 'source_project_locked') counts.sourceProjectLockedCount += 1;
+    return counts;
+  }, {
+    currentProjectCount: 0,
+    assignToCurrentCount: 0,
+    projectMismatchCount: 0,
+    projectUnresolvedCount: 0,
+    sourceProjectLockedCount: 0
+  });
   return {
     loadedCount: rawPhotos.length,
     filteredCount: filteredPhotos.length,
     selectedCount: filteredPhotos.filter((photo) => selected.has(String(photo.selectionToken))).length,
-    selectableCount: filteredPhotos.filter(isMarkiQueryPhotoSelectable).length
+    selectableCount: filteredPhotos.filter(isMarkiQueryPhotoSelectable).length,
+    ...projectCounts
   };
 }
 
