@@ -158,6 +158,7 @@ async function main() {
     await checkRecognitionModelCompatibility();
     await checkRuntimeConfigurationFoundation(path.join(temporaryRoot, 'runtime-configuration'));
     await checkLocalPhotoEntryDualState(path.join(temporaryRoot, 'project-local-photo-source'));
+    await checkLocalPhotoSourceManagement(path.join(temporaryRoot, 'project-local-photo-management'));
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkMarkiPhotoQuerySessions(path.join(temporaryRoot, 'marki-photo-query'));
     await checkMarkiImportTimeHelpers();
@@ -1846,6 +1847,254 @@ async function checkLocalPhotoEntryDualState(root) {
   check(behaviorAssertionCount >= 25, '项目级本地照片来源必须保留完整行为断言');
   console.log(
     `项目级本地照片来源自检通过：${scenarioCount} 个行为场景，`
+    + `${behaviorAssertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
+  );
+}
+
+async function checkLocalPhotoSourceManagement(root) {
+  await fs.mkdir(root, { recursive: true });
+  const runtimeConfigModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'runtimeConfig.js')
+  ).href;
+  const snapshotModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sortWorkspaceSnapshot.js')
+  ).href;
+  const {
+    getLocalPhotoEntryPresentation,
+    getLocalPhotoSourceManagementPresentation
+  } = await import(`${runtimeConfigModuleUrl}?local-photo-management=${Date.now()}`);
+  const {
+    getEmptySortWorkspaceSnapshotWorkspace,
+    persistProjectPhotoFolder
+  } = await import(`${snapshotModuleUrl}?local-photo-management=${Date.now()}`);
+  let scenarioCount = 0;
+  let behaviorAssertionCount = 0;
+  let sourceContractAssertionCount = 0;
+  const equal = (actual, expected, message) => {
+    behaviorAssertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const check = (condition, message) => {
+    behaviorAssertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const sourceCheck = (condition, message) => {
+    sourceContractAssertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const scenario = (name) => {
+    scenarioCount += 1;
+    assert.ok(name);
+  };
+  const projectA = { projectId: 'source-management-a', projectName: '项目A' };
+  const projectB = { projectId: 'source-management-b', projectName: '项目B' };
+  const directoryA = path.join(root, 'source-a');
+  const directoryB = path.join(root, 'source-b');
+  const globalRecentDirectory = path.join(root, 'global-recent');
+  const missingDirectory = path.join(root, 'missing');
+  await Promise.all([
+    fs.mkdir(directoryA, { recursive: true }),
+    fs.mkdir(directoryB, { recursive: true }),
+    fs.mkdir(globalRecentDirectory, { recursive: true })
+  ]);
+  const inspect = async (folderPath) => {
+    const health = await inspectDirectoryHealth(folderPath, {
+      readable: true,
+      writable: false,
+      allowCreate: false,
+      checkOnly: true
+    });
+    return {
+      success: health.healthStatus === 'healthy',
+      directoryKind: 'photoSource',
+      health
+    };
+  };
+  const healthyA = await inspect(directoryA);
+  const healthyB = await inspect(directoryB);
+  const invalid = await inspect(missingDirectory);
+
+  const emptyPresentation = getLocalPhotoSourceManagementPresentation('', null);
+  equal(emptyPresentation.canOpenSource, false, '场景 1：无来源时打开来源目录必须禁用');
+  scenario('无来源禁用打开');
+
+  equal(emptyPresentation.selectSourceLabel, '选择来源目录', '场景 2：无来源时必须显示选择来源目录');
+  equal(emptyPresentation.canClearSource, false, '场景 2：无来源时清除来源目录必须禁用');
+  scenario('无来源选择文案');
+
+  const healthyPresentation = getLocalPhotoSourceManagementPresentation(directoryA, healthyA);
+  equal(healthyPresentation.selectSourceLabel, '更换来源目录', '场景 3：健康来源必须显示更换来源目录');
+  equal(healthyPresentation.canOpenSource, true, '场景 3：健康来源允许打开');
+  equal(healthyPresentation.canClearSource, true, '场景 3：健康来源允许清除');
+  scenario('健康来源菜单状态');
+
+  const invalidPresentation = getLocalPhotoSourceManagementPresentation(missingDirectory, invalid);
+  equal(invalidPresentation.selectSourceLabel, '重新选择来源目录', '场景 4：失效来源必须显示重新选择');
+  equal(invalidPresentation.canOpenSource, false, '场景 4：失效来源不得打开');
+  equal(invalidPresentation.canClearSource, true, '场景 4：失效来源仍允许清除');
+  scenario('失效来源菜单状态');
+
+  equal(healthyPresentation.photoFolder, directoryA, '场景 5：打开来源目录只能取得当前项目 photoFolder');
+  check(healthyPresentation.photoFolder !== directoryB, '场景 5：不得取得其他项目目录');
+  scenario('打开当前项目来源');
+
+  const noSourceWithGlobalRecent = getLocalPhotoSourceManagementPresentation('', healthyB);
+  equal(noSourceWithGlobalRecent.canOpenSource, false, '场景 6：无项目来源时全局健康目录也不得打开');
+  equal(noSourceWithGlobalRecent.photoFolder, '', '场景 6：全局 lastPhotoFolder 不得成为打开目标');
+  scenario('不打开全局最近目录');
+
+  const preservedWorkspace = {
+    ...createEmptyWorkspace(projectA),
+    ...projectA,
+    photoFolder: directoryA,
+    photos: [{ id: 'marki-1', sourceType: 'marki_api' }],
+    recognitionResultsByPhoto: { 'marki-1': { source: 'marki_api' } },
+    watermarkRecordsByPhoto: { 'marki-1': { project: '项目A' } },
+    archiveSuggestionsByPhoto: { 'marki-1': { suggestedFields: { remarks: '保留' } } },
+    groupDraftByGroupId: { 'group-1': { remarks: '组草稿' } },
+    smartSortResult: { groups: [{ id: 'group-1', photoIds: ['marki-1'] }] }
+  };
+  let changedWorkspace = null;
+  await persistProjectPhotoFolder({
+    currentWorkspace: preservedWorkspace,
+    photoFolder: directoryB,
+    saveSnapshot: async () => ({ success: true }),
+    commitWorkspace: (workspace) => {
+      changedWorkspace = workspace;
+    }
+  });
+  equal(changedWorkspace.photoFolder, directoryB, '场景 7：更换来源只更新 photoFolder');
+  equal(changedWorkspace.photos, preservedWorkspace.photos, '场景 7：更换来源不得清空照片池或 Marki 照片');
+  equal(changedWorkspace.recognitionResultsByPhoto, preservedWorkspace.recognitionResultsByPhoto, '场景 7：更换来源不得清空识别结果');
+  equal(changedWorkspace.smartSortResult, preservedWorkspace.smartSortResult, '场景 7：更换来源不得清空智拣分组');
+  equal(changedWorkspace.groupDraftByGroupId, preservedWorkspace.groupDraftByGroupId, '场景 7：更换来源不得清空草稿');
+  scenario('更换来源保留工作台');
+
+  let clearedWorkspace = null;
+  await persistProjectPhotoFolder({
+    currentWorkspace: preservedWorkspace,
+    photoFolder: '',
+    saveSnapshot: async () => ({ success: true }),
+    commitWorkspace: (workspace) => {
+      clearedWorkspace = workspace;
+    }
+  });
+  equal(clearedWorkspace.photoFolder, '', '场景 8：清除来源只清空 photoFolder');
+  equal(clearedWorkspace.photos, preservedWorkspace.photos, '场景 8：清除来源不得删除照片');
+  equal(clearedWorkspace.watermarkRecordsByPhoto, preservedWorkspace.watermarkRecordsByPhoto, '场景 8：清除来源不得删除水印记录');
+  equal(clearedWorkspace.archiveSuggestionsByPhoto, preservedWorkspace.archiveSuggestionsByPhoto, '场景 8：清除来源不得删除建议');
+  scenario('清除来源保留业务数据');
+
+  equal(
+    getLocalPhotoEntryPresentation(clearedWorkspace.photoFolder).buttonLabel,
+    '导入照片',
+    '场景 9：清除来源后主按钮必须显示导入照片'
+  );
+  scenario('清除后导入状态');
+
+  const clearedPhotoPool = getEmptySortWorkspaceSnapshotWorkspace({
+    activeProject: projectA,
+    photoFolder: directoryA
+  });
+  equal(clearedPhotoPool.photoFolder, directoryA, '场景 10：清空照片池必须保留当前项目来源目录');
+  equal(
+    getLocalPhotoSourceManagementPresentation(directoryA, healthyA).buttonLabel,
+    '扫描',
+    '场景 10：清空照片池后主按钮仍显示扫描'
+  );
+  scenario('清空照片池保留来源');
+
+  const isolatedRoot = path.join(root, 'isolated-projects');
+  await saveSortWorkspaceSnapshot(
+    isolatedRoot,
+    { ...createEmptyWorkspace(projectA), ...projectA, photoFolder: directoryA },
+    { activeProject: projectA }
+  );
+  await saveSortWorkspaceSnapshot(
+    isolatedRoot,
+    { ...createEmptyWorkspace(projectB), ...projectB, photoFolder: directoryB },
+    { activeProject: projectB }
+  );
+  await persistProjectPhotoFolder({
+    currentWorkspace: { ...createEmptyWorkspace(projectA), ...projectA, photoFolder: directoryA },
+    photoFolder: '',
+    saveSnapshot: (workspace) => saveSortWorkspaceSnapshot(
+      isolatedRoot,
+      workspace,
+      { activeProject: projectA }
+    ),
+    commitWorkspace: () => {}
+  });
+  equal(
+    (await loadSortWorkspaceSnapshot(isolatedRoot, { activeProject: projectA })).snapshot.workspace.photoFolder,
+    '',
+    '场景 11：项目 A 清除后自身来源为空'
+  );
+  equal(
+    (await loadSortWorkspaceSnapshot(isolatedRoot, { activeProject: projectB })).snapshot.workspace.photoFolder,
+    directoryB,
+    '场景 11：项目 A 操作不得影响项目 B 来源'
+  );
+  scenario('项目来源操作隔离');
+
+  const canceledRoot = path.join(root, 'canceled-selection');
+  const beforeCanceledLoad = await loadSortWorkspaceSnapshot(canceledRoot, { activeProject: projectA });
+  equal(beforeCanceledLoad.found, false, '场景 12：取消选择前项目快照不存在');
+  const afterCanceledLoad = await loadSortWorkspaceSnapshot(canceledRoot, { activeProject: projectA });
+  equal(afterCanceledLoad.found, false, '场景 12：取消选择不得修改项目快照');
+  scenario('取消选择无副作用');
+
+  const pageSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const selectHandler = pageSource
+    .split('async function selectPhotoFolder', 2)[1]
+    ?.split('async function selectPhotoFolderFromMenu', 1)[0] || '';
+  const openHandler = pageSource
+    .split('async function openPhotoDirectory', 2)[1]
+    ?.split('async function openArchiveDirectory', 1)[0] || '';
+  const clearHandler = pageSource
+    .split('async function clearProjectPhotoFolder', 2)[1]
+    ?.split('async function scanPhotos', 1)[0] || '';
+  const clearListHandler = pageSource
+    .split('async function clearList', 2)[1]
+    ?.split('async function generateSmartGroups', 1)[0] || '';
+  sourceCheck(
+    pageSource.includes('本地照片来源')
+      && pageSource.includes('打开来源目录')
+      && pageSource.includes('{localPhotoEntryState.selectSourceLabel}')
+      && pageSource.includes('清除来源目录')
+      && pageSource.includes('归档目录'),
+    '更多菜单必须按本地照片来源和归档目录分区'
+  );
+  sourceCheck(
+    openHandler.includes('window.archiveAssistant.openPath(effectivePhotoFolder)')
+      && !openHandler.includes('lastPhotoFolder')
+      && !openHandler.includes("openConfiguredDirectory('photoSource')"),
+    '打开来源目录只能使用当前项目健康 photoFolder'
+  );
+  sourceCheck(
+    clearHandler.includes("photoFolder: ''")
+      && !clearHandler.includes('setPhotos(')
+      && !clearHandler.includes('setRecognitionResultsByPhoto(')
+      && !clearHandler.includes('saveRuntimeDirectory'),
+    '清除来源只能原子清空当前项目 photoFolder'
+  );
+  sourceCheck(
+    clearListHandler.includes('photoFolder,'),
+    '清空照片池必须把当前项目 photoFolder 保留到空工作台快照'
+  );
+  sourceCheck(
+    selectHandler.indexOf('if (!selected) return false;')
+      < selectHandler.indexOf('persistProjectPhotoFolder'),
+    '用户取消来源选择必须在项目快照写入前退出'
+  );
+
+  equal(scenarioCount, 12, '项目本地来源目录管理必须执行十二个行为场景');
+  check(behaviorAssertionCount >= 30, '项目本地来源目录管理必须保留充分行为断言');
+  console.log(
+    `项目本地来源目录管理自检通过：${scenarioCount} 个行为场景，`
     + `${behaviorAssertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
   );
 }

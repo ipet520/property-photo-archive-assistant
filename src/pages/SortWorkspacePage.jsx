@@ -11,6 +11,7 @@ import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import {
   getLocalPhotoPickerInitialPath,
+  getLocalPhotoSourceManagementPresentation,
   resolveLocalPhotoEntryState,
   withRuntimeConfigFallback
 } from '../utils/runtimeConfig.js';
@@ -805,7 +806,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
-  const localPhotoEntryState = resolveLocalPhotoEntryState(
+  const localPhotoEntryState = getLocalPhotoSourceManagementPresentation(
     photoFolder,
     localPhotoSourceInspection
   );
@@ -1418,8 +1419,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
   }
 
-  function openMarkiRecoveryDialog() {
+  function closeMoreMenu() {
     if (moreMenuRef.current) moreMenuRef.current.open = false;
+  }
+
+  function openMarkiRecoveryDialog() {
+    closeMoreMenu();
     if (showMarkiRecovery) return;
     setShowMarkiRecovery(true);
     setMarkiRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
@@ -1867,6 +1872,60 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'idle', text: '照片来源目录已选择，请点击扫描。' });
     }
     return true;
+  }
+
+  async function selectPhotoFolderFromMenu() {
+    closeMoreMenu();
+    await selectPhotoFolder({ scanAfterSelect: true });
+  }
+
+  async function clearProjectPhotoFolder() {
+    closeMoreMenu();
+    if (!photoFolder) {
+      setStatus({ type: 'warning', text: '当前项目尚未设置本地照片来源目录。' });
+      return;
+    }
+    if (!window.confirm(
+      '确定清除当前项目的本地来源文件夹吗？\n\n'
+      + '此操作不会删除已导入照片，也不会删除原文件。\n'
+      + '清除后需要重新选择文件夹才能继续导入本地照片。'
+    )) {
+      return;
+    }
+    setIsBusy(true);
+    try {
+      let persistedWorkspace = null;
+      const persistResult = await persistProjectPhotoFolder({
+        currentWorkspace: markiWorkbenchStateRef.current,
+        photoFolder: '',
+        saveSnapshot: saveAutomaticSnapshotImmediately,
+        commitWorkspace: (workspace) => {
+          persistedWorkspace = workspace;
+        }
+      });
+      if (!persistResult.success) {
+        setStatus({ type: 'error', text: '来源目录未清除：项目工作台快照写入失败，请重试。' });
+        return;
+      }
+      setPhotoFolder('');
+      setLocalPhotoSourceInspection(null);
+      markiWorkbenchStateRef.current = persistedWorkspace;
+      sessionSnapshotRef.current = {
+        ...(sessionSnapshotRef.current || {}),
+        ...persistedWorkspace,
+        hasUnsavedChanges: true
+      };
+      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      markChanged();
+      setStatus({
+        type: 'success',
+        text: '已清除当前项目的本地照片来源目录；已导入照片和原文件均未删除。'
+      });
+    } catch {
+      setStatus({ type: 'error', text: '来源目录未清除：项目工作台快照写入失败，请重试。' });
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   async function scanPhotos(force = false, folder = effectivePhotoFolder) {
@@ -3735,6 +3794,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function openPhotoDirectory() {
+    closeMoreMenu();
     if (!effectivePhotoFolder) {
       setStatus({ type: 'warning', text: '当前项目尚未选择可用的照片来源目录。' });
       return;
@@ -3753,6 +3813,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function openArchiveDirectory() {
+    closeMoreMenu();
     try {
       const result = await window.archiveAssistant.openConfiguredDirectory('archiveRoot');
       setStatus({
@@ -3821,8 +3882,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
               <details ref={moreMenuRef} className="sort-toolbar-more">
                 <summary>更多</summary>
                 <div className="sort-toolbar-more-menu">
-                  <span className="sort-toolbar-more-label">目录</span>
-                  <button type="button" className="wide" title="打开当前照片目录" onClick={openPhotoDirectory} disabled={batchActionsBusy}>打开照片目录</button>
+                  <span className="sort-toolbar-more-label">本地照片来源</span>
+                  <button type="button" className="wide" title="打开当前项目的本地照片来源目录" onClick={openPhotoDirectory} disabled={batchActionsBusy || !isSessionHydrated || !localPhotoEntryState.canOpenSource}>打开来源目录</button>
+                  <button type="button" className="wide" title={localPhotoEntryState.selectSourceLabel} onClick={selectPhotoFolderFromMenu} disabled={batchActionsBusy || !isSessionHydrated}>{localPhotoEntryState.selectSourceLabel}</button>
+                  <button type="button" className="wide" title="清除当前项目的本地照片来源目录" onClick={clearProjectPhotoFolder} disabled={batchActionsBusy || !isSessionHydrated || !localPhotoEntryState.canClearSource}>清除来源目录</button>
+                  <span className="sort-toolbar-more-label">归档目录</span>
                   <button type="button" className="wide" title="打开当前归档目录" onClick={openArchiveDirectory} disabled={batchActionsBusy}>打开归档目录</button>
                   <span className="sort-toolbar-more-label">归档进度</span>
                   <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || batchActionsBusy}>保存</button>

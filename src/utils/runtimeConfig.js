@@ -133,6 +133,21 @@ export function getLocalPhotoPickerInitialPath(projectPhotoFolder, runtimeConfig
   return String(runtimeConfiguration?.settings?.lastPhotoFolder || '').trim();
 }
 
+export function getLocalPhotoSourceManagementPresentation(projectPhotoFolder, directoryInspection) {
+  const entryState = resolveLocalPhotoEntryState(projectPhotoFolder, directoryInspection);
+  const hasSavedSource = Boolean(String(projectPhotoFolder || '').trim());
+  return {
+    ...entryState,
+    canOpenSource: entryState.mode === 'scan',
+    canClearSource: hasSavedSource,
+    selectSourceLabel: !hasSavedSource
+      ? '选择来源目录'
+      : entryState.mode === 'scan'
+        ? '更换来源目录'
+        : '重新选择来源目录'
+  };
+}
+
 export function getLocalPhotoEntryPresentation(photoFolder) {
   const normalizedPhotoFolder = String(photoFolder || '').trim();
   return {
