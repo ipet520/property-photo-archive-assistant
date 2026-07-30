@@ -177,7 +177,6 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   copyText: (text) => ipcRenderer.invoke('system:copyText', text),
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
   loadLedgerRecords: (archiveRoot) => ipcRenderer.invoke('ledger:loadRecords', archiveRoot),
-  deleteLedgerRecords: (archiveRoot, selections, options) => ipcRenderer.invoke('ledger:deleteRecords', archiveRoot, selections, options),
   loadProjectLedgerRecords: (activeProject) => (
     ipcRenderer.invoke('ledger:loadProjectRecords', activeProject)
   ),

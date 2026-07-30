@@ -3,7 +3,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { scanImages, scanImagesWithHealth } = require('./services/fileService.cjs');
-const { buildArchivePreview, archivePhotos, recoverPendingArchiveTransactions } = require('./services/archiveService.cjs');
+const {
+  buildArchivePreview,
+  archivePhotos,
+  recoverPendingArchiveTransactionsAcrossRoots
+} = require('./services/archiveService.cjs');
 const {
   assertArchivePlanProject,
   assertArchivePreviewProject,
@@ -509,7 +513,7 @@ async function safeProjectDirectoryCall(action) {
   try {
     return await action();
   } catch (error) {
-    const safeCode = /^(active_project|project_directory|project_archive|project_package)_/.test(
+    const safeCode = /^(active_project|project_context|project_directory|project_archive|project_package)_/.test(
       String(error?.code || '')
     )
       ? String(error.code)
@@ -613,7 +617,10 @@ async function deleteCurrentProjectLedgerRecords(
   }
   const results = [];
   for (const [archiveRoot, groupSelections] of groups) {
-    results.push(await deleteLedgerRecords(archiveRoot, groupSelections, options));
+    results.push(await deleteLedgerRecords(archiveRoot, groupSelections, {
+      ...options,
+      expectedProject: activeProject
+    }));
   }
   return results.reduce((summary, result) => ({
     success: summary.success && result.success !== false,
@@ -1394,8 +1401,8 @@ ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchi
 ipcMain.handle('archive:recoverPendingTransactions', async (_event, activeProjectInput) => safeArchiveCall(
   async () => {
     const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
-    const directory = await requireHealthyProjectDirectory(activeProject, 'archive_root');
-    return recoverPendingArchiveTransactions(directory.health.normalizedPath);
+    const archiveRoots = await listProjectArchiveRoots(app.getPath('userData'), activeProject);
+    return recoverPendingArchiveTransactionsAcrossRoots(archiveRoots);
   },
   createArchiveRecoveryIpcError
 ));
@@ -1674,7 +1681,6 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
 
 ipcMain.handle('ledger:loadRecords', async (_event, archiveRoot) => loadLedgerRecords(archiveRoot));
 
-ipcMain.handle('ledger:deleteRecords', async (_event, archiveRoot, selections, options) => deleteLedgerRecords(archiveRoot, selections, options));
 ipcMain.handle('ledger:loadProjectRecords', async (_event, activeProject) => safeProjectDirectoryCall(
   () => loadCurrentProjectLedger(activeProject)
 ));

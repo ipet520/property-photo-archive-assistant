@@ -70,6 +70,14 @@ const SAFE_ARCHIVE_IMAGE_EXTENSIONS = new Set([
   '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff', '.heic'
 ]);
 
+class LedgerQueryError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.name = 'LedgerQueryError';
+    this.code = code;
+  }
+}
+
 async function loadLedgerRecords(archiveRoot) {
   if (!archiveRoot) {
     throw new Error('请先选择归档根目录');
@@ -263,6 +271,7 @@ async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
 
   const current = await loadLedgerRecords(archiveRoot);
   const selectedRecords = validateSelections(current.records, selections);
+  assertRecordsBelongToExpectedProject(selectedRecords, options.expectedProject);
   const workbook = XLSX.readFile(ledgerPath, { cellDates: true });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error('照片归档台账中没有可用工作表');
@@ -308,6 +317,29 @@ async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
     backupPath,
     ...fileResult
   };
+}
+
+function assertRecordsBelongToExpectedProject(records, expectedProject) {
+  if (!expectedProject) return;
+  const projectId = String(expectedProject?.projectId || '').trim();
+  const projectName = normalizeProjectName(expectedProject?.projectName);
+  if (!projectId || !projectName) {
+    throw new LedgerQueryError(
+      'project_context_mismatch',
+      '当前项目上下文无效，已拒绝删除归档记录。'
+    );
+  }
+  const mismatch = records.some((record) => (
+    record.projectId
+      ? String(record.projectId).trim() !== projectId
+      : normalizeProjectName(record.project) !== projectName
+  ));
+  if (mismatch) {
+    throw new LedgerQueryError(
+      'project_context_mismatch',
+      '所选归档记录与当前项目不一致，已拒绝删除。'
+    );
+  }
 }
 
 function validateSelections(records, selections) {
@@ -407,6 +439,7 @@ function formatTimestamp(date) {
 }
 
 module.exports = {
+  LedgerQueryError,
   deleteLedgerRecords,
   exportLedgerRecords,
   loadLedgerRecords,

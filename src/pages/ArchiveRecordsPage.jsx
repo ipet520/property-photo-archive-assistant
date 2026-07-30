@@ -27,6 +27,9 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const activeProject = archiveState?.activeProject;
   const handledNavigationRef = useRef(0);
   const packageButtonRef = useRef(null);
+  const mountedRef = useRef(true);
+  const executionGenerationRef = useRef(0);
+  const busyStateRef = useRef(false);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveRootHealth, setArchiveRootHealth] = useState(null);
   const [packageExportDirectory, setPackageExportDirectory] = useState('');
@@ -51,16 +54,63 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const [deleteFilesConfirmed, setDeleteFilesConfirmed] = useState(false);
   const [deleteResult, setDeleteResult] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDirectorySaving, setIsDirectorySaving] = useState(false);
+  const [isPackagePlanning, setIsPackagePlanning] = useState(false);
+
+  const isExecutionCurrent = (executionToken) => (
+    mountedRef.current && executionToken === executionGenerationRef.current
+  );
+  busyStateRef.current = (
+    isLoading
+    || isPackageGenerating
+    || isDeleting
+    || isDirectorySaving
+    || isPackagePlanning
+  );
 
   useEffect(() => {
-    window.archiveAssistant.loadSettings().then(setSystemSettings).catch(() => {});
-    void refreshProjectDirectories();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      executionGenerationRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => archiveState?.registerProjectWorkspaceController?.({
+    isBusy: () => busyStateRef.current,
+    flush: async () => ({ success: true }),
+    clear: async () => {
+      executionGenerationRef.current += 1;
+      setRecords([]);
+      setLedgerPath('');
+      setSelectedId('');
+      setSelectedPackageIds(new Set());
+      setPackagePlan(null);
+      setPackageResult(null);
+      setArchiveRoot('');
+      setArchiveRootHealth(null);
+      setPackageExportDirectory('');
+      setPackageExportHealth(null);
+      setDeleteDialogOpen(false);
+      setDeleteResult(null);
+      return { success: true };
+    }
+  }), [archiveState?.registerProjectWorkspaceController]);
+
+  useEffect(() => {
+    const executionToken = executionGenerationRef.current;
     setRecords([]);
     setLedgerPath('');
     setSelectedId('');
     setSelectedPackageIds(new Set());
     setPackagePlan(null);
     setPackageResult(null);
+    window.archiveAssistant.loadSettings()
+      .then((value) => {
+        if (isExecutionCurrent(executionToken)) setSystemSettings(value);
+      })
+      .catch(() => {});
+    void refreshProjectDirectories(executionToken);
   }, [activeProject?.projectId]);
 
   useEffect(() => {
@@ -68,7 +118,9 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     handledNavigationRef.current = navigationRequest.nonce;
     const action = navigationRequest.action;
     if (!['load-ledger', 'select-record', 'missing-files', 'package'].includes(action)) return;
-    loadLedger().then((result) => {
+    const executionToken = executionGenerationRef.current;
+    loadLedger(executionToken).then((result) => {
+      if (!isExecutionCurrent(executionToken)) return;
       const loadedRecords = result?.records || [];
       if (action === 'missing-files') {
         setFilters((current) => ({ ...current, fileStatus: 'missing' }));
@@ -89,10 +141,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     });
   }, [activeProject?.projectId, navigationRequest?.nonce]);
 
-  async function refreshProjectDirectories() {
+  async function refreshProjectDirectories(executionToken = executionGenerationRef.current) {
     if (!activeProject) return null;
     try {
       const result = await window.archiveAssistant.getProjectDirectoryPreferences(activeProject);
+      if (!isExecutionCurrent(executionToken)) return null;
       if (result?.success !== true) throw new Error(result?.message || '项目目录偏好读取失败。');
       const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
       const [archiveInspection, packageInspection] = await Promise.all([
@@ -105,6 +158,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
           PROJECT_DIRECTORY_TYPES.packageExport
         )
       ]);
+      if (!isExecutionCurrent(executionToken)) return null;
       setArchiveRoot(preferences.archiveRootDirectory);
       setArchiveRootHealth(archiveInspection?.health || null);
       setPackageExportDirectory(preferences.packageExportDirectory);
@@ -115,6 +169,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         packageInspection
       };
     } catch (error) {
+      if (!isExecutionCurrent(executionToken)) return null;
       setArchiveRoot('');
       setArchiveRootHealth(null);
       setPackageExportDirectory('');
@@ -178,36 +233,47 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
 
   useEffect(() => {
     if (!window.archiveAssistant.onArchivePackageProgress) return undefined;
+    const executionToken = executionGenerationRef.current;
     return window.archiveAssistant.onArchivePackageProgress((progress) => {
+      if (!isExecutionCurrent(executionToken)) return;
       setStatus({ type: 'idle', text: `正在生成资料包：${progress.current} / ${progress.total}` });
     });
-  }, []);
+  }, [activeProject?.projectId]);
 
   async function chooseArchiveRoot() {
+    const executionToken = executionGenerationRef.current;
+    setIsDirectorySaving(true);
     const initialPath = archiveRoot || resolveLegacyDirectoryInitialPath(
       archiveState?.runtimeConfiguration,
       PROJECT_DIRECTORY_TYPES.archiveRoot
     );
-    const selected = await window.archiveAssistant.selectArchiveRoot(initialPath);
-    if (!selected) return;
-    const result = await window.archiveAssistant.setProjectArchiveRootDirectory(
-      activeProject,
-      selected
-    );
-    if (result?.success !== true) {
-      setStatus({ type: 'error', text: result?.message || '项目归档目录保存失败。' });
-      return;
+    try {
+      const selected = await window.archiveAssistant.selectArchiveRoot(initialPath);
+      if (!isExecutionCurrent(executionToken) || !selected) return;
+      const result = await window.archiveAssistant.setProjectArchiveRootDirectory(
+        activeProject,
+        selected
+      );
+      if (!isExecutionCurrent(executionToken)) return;
+      if (result?.success !== true) {
+        setStatus({ type: 'error', text: result?.message || '项目归档目录保存失败。' });
+        return;
+      }
+      const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+      setArchiveRoot(preferences.archiveRootDirectory);
+      setArchiveRootHealth(result.health || null);
+      setPackagePlan(null);
+      setStatus({ type: 'success', text: '当前项目归档目录已更新，历史归档记录仍按原实际路径保留。' });
+      await loadLedger(executionToken);
+    } finally {
+      if (isExecutionCurrent(executionToken)) setIsDirectorySaving(false);
     }
-    const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
-    setArchiveRoot(preferences.archiveRootDirectory);
-    setArchiveRootHealth(result.health || null);
-    setPackagePlan(null);
-    setStatus({ type: 'success', text: '当前项目归档目录已更新，历史归档记录仍按原实际路径保留。' });
-    await loadLedger();
   }
 
   async function openArchiveRoot() {
+    const executionToken = executionGenerationRef.current;
     const result = await window.archiveAssistant.openProjectArchiveRootDirectory(activeProject);
+    if (!isExecutionCurrent(executionToken)) return;
     setStatus(result?.success
       ? { type: 'success', text: '已打开当前项目归档目录。' }
       : { type: 'error', text: result?.message || '当前项目归档目录不可用。' });
@@ -219,21 +285,29 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       '确定清除当前项目的归档目录吗？\n\n'
       + '此操作不会移动或删除已经归档的照片，也不会修改历史归档记录。'
     )) return;
-    const result = await window.archiveAssistant.clearProjectArchiveRootDirectory(activeProject);
-    if (result?.success !== true) {
-      setStatus({ type: 'error', text: result?.message || '清除项目归档目录失败。' });
-      return;
+    const executionToken = executionGenerationRef.current;
+    setIsDirectorySaving(true);
+    try {
+      const result = await window.archiveAssistant.clearProjectArchiveRootDirectory(activeProject);
+      if (!isExecutionCurrent(executionToken)) return;
+      if (result?.success !== true) {
+        setStatus({ type: 'error', text: result?.message || '清除项目归档目录失败。' });
+        return;
+      }
+      setArchiveRoot('');
+      setArchiveRootHealth(null);
+      setPackagePlan(null);
+      setStatus({ type: 'success', text: '当前项目归档目录已清除，历史记录和磁盘文件均已保留。' });
+    } finally {
+      if (isExecutionCurrent(executionToken)) setIsDirectorySaving(false);
     }
-    setArchiveRoot('');
-    setArchiveRootHealth(null);
-    setPackagePlan(null);
-    setStatus({ type: 'success', text: '当前项目归档目录已清除，历史记录和磁盘文件均已保留。' });
   }
 
-  async function loadLedger() {
+  async function loadLedger(executionToken = executionGenerationRef.current) {
     setIsLoading(true);
     try {
       const result = await window.archiveAssistant.loadProjectLedgerRecords(activeProject);
+      if (!isExecutionCurrent(executionToken)) return null;
       if (result?.success !== true) throw new Error(result?.message || '台账读取失败。');
       setLedgerPath((result.ledgerPaths || []).join('；'));
       setRecords(result.records || []);
@@ -250,11 +324,12 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       }
       return result;
     } catch (error) {
+      if (!isExecutionCurrent(executionToken)) return null;
       recordRuntimeLog({ page: '归档记录', operation: '加载台账', errorType: '加载台账失败', summary: error.message, error });
       setStatus({ type: 'error', text: `台账读取失败：${error.message}` });
       return null;
     } finally {
-      setIsLoading(false);
+      if (isExecutionCurrent(executionToken)) setIsLoading(false);
     }
   }
 
@@ -318,6 +393,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
 
   async function confirmDeleteRecords() {
     if (selectedRecords.length === 0 || (deleteMode === 'records-and-files' && !deleteFilesConfirmed)) return;
+    const executionToken = executionGenerationRef.current;
     setIsDeleting(true);
     try {
       const selections = selectedRecords.map((record) => ({
@@ -329,17 +405,20 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       const result = await window.archiveAssistant.deleteProjectLedgerRecords(activeProject, selections, {
         deleteFiles: deleteMode === 'records-and-files'
       });
+      if (!isExecutionCurrent(executionToken)) return;
       if (result?.success !== true) throw new Error(result?.message || '删除归档记录失败。');
       setDeleteResult(result);
       setDeleteDialogOpen(false);
       setSelectedPackageIds(new Set());
       setSelectedId('');
-      await loadLedger();
+      await loadLedger(executionToken);
+      if (!isExecutionCurrent(executionToken)) return;
       setStatus({
         type: result.failedCount > 0 ? 'warning' : 'success',
         text: `删除完成：记录 ${result.deletedRecordCount}/${result.selectedCount}，归档文件 ${result.deletedFileCount}，未找到 ${result.missingFileCount}，失败 ${result.failedCount}。台账备份 ${result.backupPaths?.length || 0} 份。`
       });
     } catch (error) {
+      if (!isExecutionCurrent(executionToken)) return;
       recordRuntimeLog({ page: '归档记录', operation: '删除归档记录', errorType: '删除归档记录失败', summary: error?.message || '删除失败', error });
       const detail = String(error?.message || '未知错误');
       const treatment = detail.includes('备份')
@@ -349,7 +428,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
           : '请重新加载台账并核对所选记录后重试。';
       setStatus({ type: 'error', text: `问题：删除归档记录失败，${detail}。处理：${treatment}` });
     } finally {
-      setIsDeleting(false);
+      if (isExecutionCurrent(executionToken)) setIsDeleting(false);
     }
   }
 
@@ -392,55 +471,71 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       : { type: 'error', text: `导出失败：${result?.message || '未知错误'}` });
   }
 
-  async function choosePackageExportDirectory() {
+  async function choosePackageExportDirectory(executionToken = executionGenerationRef.current) {
+    setIsDirectorySaving(true);
     const initialPath = packageExportDirectory || resolveLegacyDirectoryInitialPath(
       archiveState?.runtimeConfiguration,
       PROJECT_DIRECTORY_TYPES.packageExport
     );
-    const selected = await window.archiveAssistant.selectArchivePackageTargetRoot(initialPath);
-    if (!selected) return '';
-    const result = await window.archiveAssistant.setProjectPackageExportDirectory(
-      activeProject,
-      selected
-    );
-    if (result?.success !== true) {
-      setStatus({ type: 'error', text: result?.message || '资料包输出目录保存失败。' });
-      return '';
+    try {
+      const selected = await window.archiveAssistant.selectArchivePackageTargetRoot(initialPath);
+      if (!isExecutionCurrent(executionToken) || !selected) return '';
+      const result = await window.archiveAssistant.setProjectPackageExportDirectory(
+        activeProject,
+        selected
+      );
+      if (!isExecutionCurrent(executionToken)) return '';
+      if (result?.success !== true) {
+        setStatus({ type: 'error', text: result?.message || '资料包输出目录保存失败。' });
+        return '';
+      }
+      const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+      setPackageExportDirectory(preferences.packageExportDirectory);
+      setPackageExportHealth(result.health || null);
+      setPackagePlan(null);
+      setStatus({ type: 'success', text: '当前项目资料包输出目录已更新。' });
+      return preferences.packageExportDirectory;
+    } finally {
+      if (isExecutionCurrent(executionToken)) setIsDirectorySaving(false);
     }
-    const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
-    setPackageExportDirectory(preferences.packageExportDirectory);
-    setPackageExportHealth(result.health || null);
-    setPackagePlan(null);
-    setStatus({ type: 'success', text: '当前项目资料包输出目录已更新。' });
-    return preferences.packageExportDirectory;
   }
 
   async function clearPackageExportDirectory() {
     if (!packageExportDirectory) return;
     if (!window.confirm('确定清除当前项目的资料包输出目录吗？\n\n已生成的资料包不会被删除。')) return;
-    const result = await window.archiveAssistant.clearProjectPackageExportDirectory(activeProject);
-    if (result?.success !== true) {
-      setStatus({ type: 'error', text: result?.message || '清除资料包输出目录失败。' });
-      return;
+    const executionToken = executionGenerationRef.current;
+    setIsDirectorySaving(true);
+    try {
+      const result = await window.archiveAssistant.clearProjectPackageExportDirectory(activeProject);
+      if (!isExecutionCurrent(executionToken)) return;
+      if (result?.success !== true) {
+        setStatus({ type: 'error', text: result?.message || '清除资料包输出目录失败。' });
+        return;
+      }
+      setPackageExportDirectory('');
+      setPackageExportHealth(null);
+      setPackagePlan(null);
+      setStatus({ type: 'success', text: '当前项目资料包输出目录已清除，已生成资料包保持不变。' });
+    } finally {
+      if (isExecutionCurrent(executionToken)) setIsDirectorySaving(false);
     }
-    setPackageExportDirectory('');
-    setPackageExportHealth(null);
-    setPackagePlan(null);
-    setStatus({ type: 'success', text: '当前项目资料包输出目录已清除，已生成资料包保持不变。' });
   }
 
   async function openPackageExportDirectory() {
+    const executionToken = executionGenerationRef.current;
     const result = await window.archiveAssistant.openProjectPackageExportDirectory(activeProject);
+    if (!isExecutionCurrent(executionToken)) return;
     setStatus(result?.success
       ? { type: 'success', text: '已打开当前项目资料包输出目录。' }
       : { type: 'error', text: result?.message || '资料包输出目录不可用。' });
   }
 
-  async function ensurePackageExportDirectory() {
+  async function ensurePackageExportDirectory(executionToken = executionGenerationRef.current) {
     const inspection = await window.archiveAssistant.checkProjectDirectoryHealth(
       activeProject,
       PROJECT_DIRECTORY_TYPES.packageExport
     );
+    if (!isExecutionCurrent(executionToken)) return '';
     if (inspection?.success) {
       const preferences = normalizeProjectDirectoryPreferences(inspection, activeProject);
       setPackageExportDirectory(preferences.packageExportDirectory);
@@ -458,7 +553,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         ? '当前项目资料包输出目录已失效，请重新选择。'
         : '当前项目尚未设置资料包输出目录，请先选择。'
     });
-    return choosePackageExportDirectory();
+    return choosePackageExportDirectory(executionToken);
   }
 
   async function startPackageFlow() {
@@ -470,15 +565,18 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       setStatus({ type: 'error', text: '当前记录没有任何可复制照片，无法生成资料包。' });
       return;
     }
-    const targetRoot = await ensurePackageExportDirectory();
-    if (!targetRoot) return;
+    const executionToken = executionGenerationRef.current;
+    setIsPackagePlanning(true);
     try {
+      const targetRoot = await ensurePackageExportDirectory(executionToken);
+      if (!isExecutionCurrent(executionToken) || !targetRoot) return;
       const packageSettings = getDefaultArchivePackageSettings(systemSettings);
       const plan = await window.archiveAssistant.buildArchivePackagePlan(
         activeProject,
         packageSourceRecords,
         packageSettings
       );
+      if (!isExecutionCurrent(executionToken)) return;
       if (plan?.success === false) throw new Error(plan.message || '生成资料包计划失败。');
       setPackagePlan({
         ...plan,
@@ -488,13 +586,17 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         packageSettings
       });
     } catch (error) {
+      if (!isExecutionCurrent(executionToken)) return;
       recordRuntimeLog({ page: '归档记录', operation: '生成资料包预检查', errorType: '资料包生成失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成资料包预检查失败：${error.message}` });
+    } finally {
+      if (isExecutionCurrent(executionToken)) setIsPackagePlanning(false);
     }
   }
 
   async function confirmGeneratePackage() {
     if (!packagePlan) return;
+    const executionToken = executionGenerationRef.current;
     setIsPackageGenerating(true);
     setStatus({ type: 'idle', text: `正在生成资料包：0 / ${packagePlan.total}` });
     try {
@@ -502,6 +604,7 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         packagePath: packagePlan.packagePath,
         ...(packagePlan.packageSettings || {})
       });
+      if (!isExecutionCurrent(executionToken)) return;
       if (result?.success === false) throw new Error(result.message || '资料包生成失败。');
       setPackageResult(result);
       setPackagePlan(null);
@@ -510,10 +613,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         text: `资料包生成完成：成功 ${result.copiedCount}，缺失 ${result.missingCount}，失败 ${result.failedCount}。`
       });
     } catch (error) {
+      if (!isExecutionCurrent(executionToken)) return;
       recordRuntimeLog({ page: '归档记录', operation: '生成资料包', errorType: '资料包生成失败', summary: error.message, error });
       setStatus({ type: 'error', text: `资料包生成失败：${error.message}` });
     } finally {
-      setIsPackageGenerating(false);
+      if (isExecutionCurrent(executionToken)) setIsPackageGenerating(false);
     }
   }
 

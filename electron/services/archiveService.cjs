@@ -2,6 +2,7 @@ const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const dayjs = require('dayjs');
+const { inspectDirectoryHealth } = require('./directoryHealthService.cjs');
 const { appendLedgerRows, LedgerWriteError } = require('./excelService.cjs');
 const { recordArchivedPhotoFingerprints } = require('./archiveFingerprintService.cjs');
 const {
@@ -168,6 +169,82 @@ async function recoverPendingArchiveTransactions(archiveRoot, options = {}) {
     errors: recoveryErrors,
     transactions: results
   };
+}
+
+async function recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, options = {}) {
+  const roots = uniqueArchiveRoots(archiveRoots);
+  const inspectRoot = options.inspectRoot || ((archiveRoot) => inspectDirectoryHealth(archiveRoot, {
+    readable: true,
+    writable: true,
+    allowCreate: false,
+    checkOnly: true
+  }));
+  const recoverRoot = options.recoverRoot || recoverPendingArchiveTransactions;
+  const summary = {
+    success: true,
+    recoveredTransactionCount: 0,
+    transactionCount: 0,
+    committedCount: 0,
+    pendingLedgerCount: 0,
+    retryRequiredCount: 0,
+    conflictCount: 0,
+    errors: [],
+    transactions: []
+  };
+
+  for (const archiveRoot of roots) {
+    try {
+      const health = await inspectRoot(archiveRoot);
+      if (health?.healthStatus !== 'healthy') {
+        summary.errors.push({
+          archiveRoot,
+          errorCode: 'project_archive_directory_invalid',
+          message: '历史归档目录当前不可用，已跳过该目录的事务恢复。'
+        });
+        continue;
+      }
+      const result = await recoverRoot(archiveRoot);
+      summary.recoveredTransactionCount += Number(result?.recoveredTransactionCount || 0);
+      summary.transactionCount += Number(result?.transactionCount || 0);
+      summary.committedCount += Number(result?.committedCount || 0);
+      summary.pendingLedgerCount += Number(result?.pendingLedgerCount || 0);
+      summary.retryRequiredCount += Number(result?.retryRequiredCount || 0);
+      summary.conflictCount += Number(result?.conflictCount || 0);
+      summary.errors.push(...(result?.errors || []).map((error) => ({
+        ...error,
+        archiveRoot
+      })));
+      summary.transactions.push(...(result?.transactions || []).map((transaction) => ({
+        ...transaction,
+        archiveRoot
+      })));
+    } catch (error) {
+      const knownError = /^(archive|ledger|project_archive)_/.test(String(error?.code || ''));
+      summary.errors.push({
+        archiveRoot,
+        errorCode: knownError ? String(error.code) : 'archive_recovery_failed',
+        message: knownError
+          ? String(error.message || '历史归档目录事务恢复失败。')
+          : '历史归档目录事务恢复失败，请稍后重试。'
+      });
+    }
+  }
+  summary.success = summary.errors.length === 0;
+  return summary;
+}
+
+function uniqueArchiveRoots(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : []).reduce((result, value) => {
+    const text = String(value || '').trim();
+    if (!text) return result;
+    const normalized = path.resolve(text);
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return result;
+    seen.add(key);
+    result.push(normalized);
+    return result;
+  }, []);
 }
 
 async function processArchiveTransaction(archiveRoot, inputTransaction, options = {}) {
@@ -658,5 +735,6 @@ module.exports = {
   ArchivePreviewPlanError,
   archivePhotos,
   buildArchivePreview,
-  recoverPendingArchiveTransactions
+  recoverPendingArchiveTransactions,
+  recoverPendingArchiveTransactionsAcrossRoots
 };

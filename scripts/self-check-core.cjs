@@ -1,14 +1,17 @@
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pathToFileURL } = require('node:url');
+const XLSX = require('xlsx');
 const {
   buildArchivePreview,
   archivePhotos,
-  recoverPendingArchiveTransactions
+  recoverPendingArchiveTransactions,
+  recoverPendingArchiveTransactionsAcrossRoots
 } = require('../electron/services/archiveService.cjs');
 const { buildPackagePlan, generateArchivePackage } = require('../electron/services/archivePackageService.cjs');
 const { matchArchivedPhotos } = require('../electron/services/archiveFingerprintService.cjs');
@@ -46,6 +49,7 @@ const {
 const { scanImages, scanImagesWithHealth } = require('../electron/services/fileService.cjs');
 const { inspectPhotoSourceFile } = require('../electron/services/photoFileHealthService.cjs');
 const {
+  deleteLedgerRecords,
   loadLedgerRecords,
   loadProjectLedgerRecordsAcrossRoots
 } = require('../electron/services/ledgerQueryService.cjs');
@@ -4959,6 +4963,110 @@ async function checkProjectDirectoryResponsibilities(root) {
     '跨历史归档根查询必须排除其他项目记录'
   );
 
+  const recoveryUserDataPath = path.join(root, 'recovery-user-data');
+  await setProjectDirectoryPreference(recoveryUserDataPath, projectA, 'archive_root', archiveA1);
+  await setProjectDirectoryPreference(recoveryUserDataPath, projectA, 'archive_root', archiveA2);
+  const rootsAfterChange = await listProjectArchiveRoots(recoveryUserDataPath, projectA);
+  const recoveredRoots = [];
+  const recoverAcrossChangedRoot = await recoverPendingArchiveTransactionsAcrossRoots(
+    rootsAfterChange,
+    {
+      inspectRoot: async () => ({ healthStatus: 'healthy' }),
+      recoverRoot: async (archiveRoot) => {
+        recoveredRoots.push(archiveRoot);
+        return {
+          success: true,
+          recoveredTransactionCount: 1,
+          transactionCount: 1,
+          committedCount: 1,
+          pendingLedgerCount: 0,
+          retryRequiredCount: 0,
+          conflictCount: 0,
+          errors: [],
+          transactions: [{ transactionId: `tx-${path.basename(archiveRoot)}` }]
+        };
+      }
+    }
+  );
+  scenario(
+    recoveredRoots.includes(path.resolve(archiveA1))
+      && recoveredRoots.includes(path.resolve(archiveA2)),
+    '当前归档根改为 B 后仍必须恢复历史根 A 的待处理事务'
+  );
+  behavior(
+    recoverAcrossChangedRoot.transactionCount === 2
+      && recoverAcrossChangedRoot.committedCount === 2
+      && recoverAcrossChangedRoot.transactions.every((item) => item.archiveRoot),
+    '多归档根恢复必须聚合统计并为每个事务保留所属归档根'
+  );
+
+  await clearProjectDirectoryPreference(recoveryUserDataPath, projectA, 'archive_root');
+  const rootsAfterClear = await listProjectArchiveRoots(recoveryUserDataPath, projectA);
+  const recoveredAfterClear = [];
+  await recoverPendingArchiveTransactionsAcrossRoots(rootsAfterClear, {
+    inspectRoot: async () => ({ healthStatus: 'healthy' }),
+    recoverRoot: async (archiveRoot) => {
+      recoveredAfterClear.push(archiveRoot);
+      return {
+        success: true,
+        recoveredTransactionCount: 0,
+        transactionCount: 0,
+        committedCount: 0,
+        pendingLedgerCount: 0,
+        retryRequiredCount: 0,
+        conflictCount: 0,
+        errors: [],
+        transactions: []
+      };
+    }
+  });
+  scenario(
+    recoveredAfterClear.includes(path.resolve(archiveA1))
+      && recoveredAfterClear.includes(path.resolve(archiveA2)),
+    '当前归档根清除后仍必须从 archiveRootHistory 恢复历史事务'
+  );
+
+  const partialRecovery = await recoverPendingArchiveTransactionsAcrossRoots(
+    [archiveA1, archiveA2],
+    {
+      inspectRoot: async (archiveRoot) => ({
+        healthStatus: archiveRoot === path.resolve(archiveA1) ? 'missing' : 'healthy'
+      }),
+      recoverRoot: async (archiveRoot) => ({
+        success: true,
+        recoveredTransactionCount: 1,
+        transactionCount: 1,
+        committedCount: 0,
+        pendingLedgerCount: 1,
+        retryRequiredCount: 0,
+        conflictCount: 1,
+        errors: [],
+        transactions: [{ transactionId: 'healthy-root-tx', archiveRoot }]
+      })
+    }
+  );
+  scenario(
+    partialRecovery.success === false
+      && partialRecovery.errors.length === 1
+      && partialRecovery.errors[0].archiveRoot === path.resolve(archiveA1)
+      && partialRecovery.transactions[0].archiveRoot === path.resolve(archiveA2),
+    '一个历史归档根失效时必须形成独立错误并继续恢复其他健康根'
+  );
+  behavior(
+    partialRecovery.transactionCount === 1
+      && partialRecovery.pendingLedgerCount === 1
+      && partialRecovery.conflictCount === 1,
+    '部分失败时健康根的事务统计必须保留'
+  );
+
+  const emptyRecovery = await recoverPendingArchiveTransactionsAcrossRoots([]);
+  scenario(
+    emptyRecovery.success === true
+      && emptyRecovery.transactionCount === 0
+      && emptyRecovery.errors.length === 0,
+    '当前根和历史根均为空时必须返回成功的空恢复结果'
+  );
+
   const clearedArchiveA = await clearProjectDirectoryPreference(
     userDataPath,
     projectA,
@@ -4986,6 +5094,212 @@ async function checkProjectDirectoryResponsibilities(root) {
     clearedPackageA.packageExportDirectory === ''
       && packageBStillSaved.packageExportDirectory === path.resolve(packageB),
     '清除项目 A 资料包目录不得影响项目 B 或历史资料包'
+  );
+
+  const concurrentUserDataPath = path.join(root, 'concurrent-user-data');
+  await Promise.all([
+    setProjectDirectoryPreference(
+      concurrentUserDataPath,
+      projectA,
+      'archive_root',
+      archiveA1
+    ),
+    setProjectDirectoryPreference(
+      concurrentUserDataPath,
+      projectB,
+      'package_export',
+      packageB
+    )
+  ]);
+  const [concurrentA, concurrentB] = await Promise.all([
+    getProjectDirectoryPreferences(concurrentUserDataPath, projectA),
+    getProjectDirectoryPreferences(concurrentUserDataPath, projectB)
+  ]);
+  scenario(
+    concurrentA.archiveRootDirectory === path.resolve(archiveA1)
+      && concurrentB.packageExportDirectory === path.resolve(packageB),
+    '不同项目并发写入同一偏好文件时不得丢失任一修改'
+  );
+
+  await Promise.all([
+    setProjectDirectoryPreference(
+      concurrentUserDataPath,
+      projectA,
+      'archive_root',
+      archiveA2
+    ),
+    setProjectDirectoryPreference(
+      concurrentUserDataPath,
+      projectA,
+      'package_export',
+      packageA
+    )
+  ]);
+  const concurrentSameProject = await getProjectDirectoryPreferences(
+    concurrentUserDataPath,
+    projectA
+  );
+  scenario(
+    concurrentSameProject.archiveRootDirectory === path.resolve(archiveA2)
+      && concurrentSameProject.packageExportDirectory === path.resolve(packageA),
+    '同一项目并发设置归档根和资料包目录时两个字段必须同时保留'
+  );
+
+  const queuedSet = setProjectDirectoryPreference(
+    concurrentUserDataPath,
+    projectA,
+    'archive_root',
+    archiveA1
+  );
+  const queuedClear = clearProjectDirectoryPreference(
+    concurrentUserDataPath,
+    projectA,
+    'archive_root'
+  );
+  await Promise.all([queuedSet, queuedClear]);
+  const setThenClear = await getProjectDirectoryPreferences(concurrentUserDataPath, projectA);
+  scenario(
+    setThenClear.archiveRootDirectory === '',
+    'set 与 clear 并发时必须按进入同一写队列的顺序生效'
+  );
+
+  const failureUserDataPath = path.join(root, 'failure-user-data');
+  let failFirstTemporaryInstall = true;
+  const failureFileSystem = {
+    readFile: (...args) => fs.readFile(...args),
+    mkdir: (...args) => fs.mkdir(...args),
+    open: (...args) => fs.open(...args),
+    rm: (...args) => fs.rm(...args),
+    rename: async (source, target) => {
+      if (failFirstTemporaryInstall && String(source).endsWith('.tmp')) {
+        failFirstTemporaryInstall = false;
+        const error = new Error('injected preferences install failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return fs.rename(source, target);
+    }
+  };
+  const firstFailingWrite = setProjectDirectoryPreference(
+    failureUserDataPath,
+    projectA,
+    'archive_root',
+    archiveA1,
+    { fs: failureFileSystem }
+  );
+  const secondWriteAfterFailure = setProjectDirectoryPreference(
+    failureUserDataPath,
+    projectB,
+    'package_export',
+    packageB,
+    { fs: failureFileSystem }
+  );
+  const failureResults = await Promise.allSettled([
+    firstFailingWrite,
+    secondWriteAfterFailure
+  ]);
+  const recoveredQueuePreferences = await getProjectDirectoryPreferences(
+    failureUserDataPath,
+    projectB
+  );
+  const failureStorageEntries = await fs.readdir(failureUserDataPath);
+  scenario(
+    failureResults[0].status === 'rejected'
+      && failureResults[1].status === 'fulfilled'
+      && recoveredQueuePreferences.packageExportDirectory === path.resolve(packageB),
+    '前一项写入失败后同一偏好文件队列必须继续执行后续请求'
+  );
+  behavior(
+    !failureStorageEntries.some((name) => /\.(tmp|bak)$/.test(name)),
+    '并发与失败恢复后不得遗留项目目录偏好 tmp 或 bak 文件'
+  );
+
+  const writeSharedLedger = async (archiveRoot, rows) => {
+    await fs.mkdir(archiveRoot, { recursive: true });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), '照片归档台账');
+    XLSX.writeFile(workbook, getLedgerPath(archiveRoot));
+  };
+  const sharedDeleteRoot = path.join(root, 'shared-delete-success');
+  const successAPath = path.join(sharedDeleteRoot, 'project-a.jpg');
+  const successBPath = path.join(sharedDeleteRoot, 'project-b.jpg');
+  await fs.mkdir(sharedDeleteRoot, { recursive: true });
+  await Promise.all([
+    fs.writeFile(successAPath, Buffer.from('project-a')),
+    fs.writeFile(successBPath, Buffer.from('project-b'))
+  ]);
+  await writeSharedLedger(sharedDeleteRoot, [
+    ['项目ID', '项目', '新文件名', '归档路径', '来源文件路径'],
+    [projectA.projectId, projectA.projectName, 'project-a.jpg', successAPath, ''],
+    [projectB.projectId, projectB.projectName, 'project-b.jpg', successBPath, '']
+  ]);
+  const deleteOwnRecord = await deleteLedgerRecords(
+    sharedDeleteRoot,
+    [{ rowNumber: 2, newFileName: 'project-a.jpg', archivePath: successAPath }],
+    { expectedProject: projectA, deleteFiles: false }
+  );
+  const sharedRecordsAfterOwnDelete = await loadLedgerRecords(sharedDeleteRoot);
+  scenario(
+    deleteOwnRecord.deletedRecordCount === 1
+      && sharedRecordsAfterOwnDelete.records.length === 1
+      && sharedRecordsAfterOwnDelete.records[0].projectId === projectB.projectId,
+    '共享归档根中项目 A 删除自己的真实台账行必须成功且保留项目 B'
+  );
+
+  const sharedRejectRoot = path.join(root, 'shared-delete-reject');
+  const rejectBPath = path.join(sharedRejectRoot, 'project-b.jpg');
+  const rejectLegacyBPath = path.join(sharedRejectRoot, 'project-b-legacy.jpg');
+  await fs.mkdir(sharedRejectRoot, { recursive: true });
+  await Promise.all([
+    fs.writeFile(rejectBPath, Buffer.from('project-b-current')),
+    fs.writeFile(rejectLegacyBPath, Buffer.from('project-b-legacy'))
+  ]);
+  await writeSharedLedger(sharedRejectRoot, [
+    ['项目ID', '项目', '新文件名', '归档路径', '来源文件路径'],
+    [projectB.projectId, projectB.projectName, 'project-b.jpg', rejectBPath, ''],
+    ['', `  ${projectB.projectName.normalize('NFKC')}  `, 'project-b-legacy.jpg', rejectLegacyBPath, '']
+  ]);
+  const ledgerBeforeReject = await fs.readFile(getLedgerPath(sharedRejectRoot));
+  let forgedCurrentCode = '';
+  try {
+    await deleteLedgerRecords(
+      sharedRejectRoot,
+      [{
+        rowNumber: 2,
+        newFileName: 'project-b.jpg',
+        archivePath: rejectBPath,
+        projectId: projectA.projectId
+      }],
+      { expectedProject: projectA, deleteFiles: true }
+    );
+  } catch (error) {
+    forgedCurrentCode = error?.code || '';
+  }
+  let legacyMismatchCode = '';
+  try {
+    await deleteLedgerRecords(
+      sharedRejectRoot,
+      [{ rowNumber: 3, newFileName: 'project-b-legacy.jpg', archivePath: rejectLegacyBPath }],
+      { expectedProject: projectA, deleteFiles: true }
+    );
+  } catch (error) {
+    legacyMismatchCode = error?.code || '';
+  }
+  const ledgerAfterReject = await fs.readFile(getLedgerPath(sharedRejectRoot));
+  const rejectBackupExists = await fs.stat(path.join(sharedRejectRoot, '台账备份'))
+    .then(() => true)
+    .catch(() => false);
+  scenario(
+    forgedCurrentCode === 'project_context_mismatch'
+      && legacyMismatchCode === 'project_context_mismatch',
+    'renderer 伪造项目字段或选择其他项目旧行时主进程必须返回 project_context_mismatch'
+  );
+  behavior(
+    ledgerBeforeReject.equals(ledgerAfterReject)
+      && fsSync.existsSync(rejectBPath)
+      && fsSync.existsSync(rejectLegacyBPath)
+      && !rejectBackupExists,
+    '项目复核拒绝后不得备份、修改台账或删除其他项目文件'
   );
 
   const moduleUrl = pathToFileURL(
@@ -5133,8 +5447,24 @@ async function checkProjectDirectoryResponsibilities(root) {
     path.resolve(process.cwd(), 'src/pages/ArchiveRecordsPage.jsx'),
     'utf8'
   );
+  const routerSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/pages/MainRouter.jsx'),
+    'utf8'
+  );
   const mainSource = await fs.readFile(path.resolve(process.cwd(), 'electron/main.cjs'), 'utf8');
   const preloadSource = await fs.readFile(path.resolve(process.cwd(), 'electron/preload.cjs'), 'utf8');
+  const archiveServiceSource = await fs.readFile(
+    path.resolve(process.cwd(), 'electron/services/archiveService.cjs'),
+    'utf8'
+  );
+  const ledgerQuerySource = await fs.readFile(
+    path.resolve(process.cwd(), 'electron/services/ledgerQueryService.cjs'),
+    'utf8'
+  );
+  const preferencesServiceSource = await fs.readFile(
+    path.resolve(process.cwd(), 'electron/services/projectDirectoryPreferencesService.cjs'),
+    'utf8'
+  );
   const markiSources = await Promise.all([
     'electron/services/markiTrustedImportService.cjs',
     'electron/services/markiImportLifecycleService.cjs',
@@ -5149,6 +5479,51 @@ async function checkProjectDirectoryResponsibilities(root) {
   sourceContract(recordsSource.includes('loadProjectLedgerRecords'), '历史台账必须按项目跨历史归档根读取');
   sourceContract(mainSource.includes("archive_preview_directory_stale"), '正式归档必须拒绝旧目录预览');
   sourceContract(mainSource.includes('listProjectArchiveRoots'), '历史归档记录必须保留旧归档根查询入口');
+  sourceContract(
+    mainSource.includes('recoverPendingArchiveTransactionsAcrossRoots(archiveRoots)'),
+    '归档事务恢复 IPC 必须遍历当前项目全部历史归档根'
+  );
+  sourceContract(
+    mainSource.includes('expectedProject: activeProject'),
+    '项目级归档记录删除必须向可信台账服务注入当前项目'
+  );
+  sourceContract(
+    !mainSource.includes("ipcMain.handle('ledger:deleteRecords'")
+      && !preloadSource.includes('deleteLedgerRecords:'),
+    'renderer 不得继续使用绕过当前项目复核的通用台账删除入口'
+  );
+  sourceContract(
+    ledgerQuerySource.indexOf('assertRecordsBelongToExpectedProject')
+      < ledgerQuerySource.indexOf('const backupPath = backupLedger'),
+    '项目归属复核必须发生在创建台账备份和删除之前'
+  );
+  sourceContract(
+    archiveServiceSource.includes('archiveRoot') && archiveServiceSource.includes('uniqueArchiveRoots'),
+    '多根恢复结果必须保留所属归档根并按平台路径规则去重'
+  );
+  sourceContract(
+    routerSource.includes('<ArchiveRecordsPage key={archiveState.activeProject.projectId}'),
+    '归档记录页必须按当前项目 ID 重新挂载'
+  );
+  sourceContract(
+    recordsSource.includes('registerProjectWorkspaceController')
+      && recordsSource.includes('executionGenerationRef')
+      && recordsSource.includes('mountedRef'),
+    '归档记录页必须注册统一项目控制器并使用挂载与执行代次保护'
+  );
+  sourceContract(
+    recordsSource.includes('isPackageGenerating')
+      && recordsSource.includes('isDeleting')
+      && recordsSource.includes('isDirectorySaving')
+      && recordsSource.includes('isPackagePlanning'),
+    '归档记录页切换忙碌状态必须覆盖资料包、删除、目录写入和计划构建'
+  );
+  sourceContract(
+    preferencesServiceSource.includes('withProjectDirectoryPreferencesWriteLock')
+      && preferencesServiceSource.indexOf('loadProjectDirectoryPreferences(userDataPath, options)')
+        > preferencesServiceSource.indexOf('withProjectDirectoryPreferencesWriteLock(filePath'),
+    '项目目录偏好写锁必须覆盖读取、修改、保存和写后复验完整事务'
+  );
   sourceContract(preloadSource.includes('getProjectDirectoryPreferences:'), 'preload 必须暴露受控项目目录读取');
   sourceContract(preloadSource.includes('setProjectPackageExportDirectory:'), 'preload 必须暴露受控项目资料包目录写入');
   sourceContract(
@@ -5156,8 +5531,8 @@ async function checkProjectDirectoryResponsibilities(root) {
     'Marki 导入、恢复和生命周期服务不得修改项目目录偏好'
   );
 
-  assert.equal(scenarioCount, 15, '项目目录职责迁移必须执行十五个独立行为场景');
-  assert.equal(behaviorAssertionCount >= 26, true, '项目目录职责迁移至少应执行二十六个行为断言');
+  assert.equal(scenarioCount, 25, '项目目录职责迁移与审查阻断必须执行二十五个独立行为场景');
+  assert.equal(behaviorAssertionCount >= 40, true, '项目目录职责迁移与审查阻断至少应执行四十个行为断言');
   console.log(
     `项目目录职责迁移自检通过：${scenarioCount} 个行为场景，`
     + `${behaviorAssertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`

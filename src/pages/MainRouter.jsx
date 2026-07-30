@@ -39,7 +39,7 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
     return <SortWorkspacePage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.searchCenter) {
-      return <ArchiveRecordsPage archiveState={archiveState} navigationRequest={navigationRequest} />;
+      return <ArchiveRecordsPage key={archiveState.activeProject.projectId} archiveState={archiveState} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.rectificationCenter) {
       return <RectificationCenterPage archiveState={archiveState} navigationRequest={navigationRequest} />;

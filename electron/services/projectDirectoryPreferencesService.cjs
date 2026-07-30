@@ -8,6 +8,7 @@ const DIRECTORY_TYPES = Object.freeze({
   archive_root: 'archiveRootDirectory',
   package_export: 'packageExportDirectory'
 });
+const preferencesWriteQueues = new Map();
 
 class ProjectDirectoryPreferencesError extends Error {
   constructor(code, message) {
@@ -26,6 +27,27 @@ function getProjectDirectoryPreferencesPath(userDataPath) {
     );
   }
   return path.join(path.resolve(root), FILE_NAME);
+}
+
+async function withProjectDirectoryPreferencesWriteLock(filePath, action) {
+  const normalizedPath = path.resolve(String(filePath || '').trim());
+  const key = process.platform === 'win32' ? normalizedPath.toLowerCase() : normalizedPath;
+  const previous = preferencesWriteQueues.get(key) || Promise.resolve();
+  let releaseCurrent;
+  const current = new Promise((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const queueTail = previous.catch(() => {}).then(() => current);
+  preferencesWriteQueues.set(key, queueTail);
+  await previous.catch(() => {});
+  try {
+    return await action();
+  } finally {
+    releaseCurrent();
+    if (preferencesWriteQueues.get(key) === queueTail) {
+      preferencesWriteQueues.delete(key);
+    }
+  }
 }
 
 async function loadProjectDirectoryPreferences(userDataPath, options = {}) {
@@ -81,33 +103,36 @@ async function setProjectDirectoryPreference(
     );
   }
 
-  const store = await loadProjectDirectoryPreferences(userDataPath, options);
-  const existing = store.items.find((candidate) => candidate.projectId === projectId)
-    || createEmptyItem(projectId, options.now);
-  const nextItem = {
-    ...existing,
-    [field]: normalizedDirectory,
-    ...(directoryType === 'archive_root'
-      ? {
-          archiveRootHistory: uniqueDirectories([
-            ...existing.archiveRootHistory,
-            existing.archiveRootDirectory,
-            normalizedDirectory
-          ])
-        }
-      : {}),
-    updatedAt: nowIso(options.now)
-  };
-  const nextStore = {
-    schemaVersion: SCHEMA_VERSION,
-    updatedAt: nowIso(options.now),
-    items: [
-      ...store.items.filter((candidate) => candidate.projectId !== projectId),
-      nextItem
-    ].sort((left, right) => left.projectId.localeCompare(right.projectId))
-  };
-  await saveStore(userDataPath, nextStore, { ...options, fs: fileSystem });
-  return getProjectDirectoryPreferences(userDataPath, activeProject, options);
+  const filePath = getProjectDirectoryPreferencesPath(userDataPath);
+  return withProjectDirectoryPreferencesWriteLock(filePath, async () => {
+    const store = await loadProjectDirectoryPreferences(userDataPath, options);
+    const existing = store.items.find((candidate) => candidate.projectId === projectId)
+      || createEmptyItem(projectId, options.now);
+    const nextItem = {
+      ...existing,
+      [field]: normalizedDirectory,
+      ...(directoryType === 'archive_root'
+        ? {
+            archiveRootHistory: uniqueDirectories([
+              ...existing.archiveRootHistory,
+              existing.archiveRootDirectory,
+              normalizedDirectory
+            ])
+          }
+        : {}),
+      updatedAt: nowIso(options.now)
+    };
+    const nextStore = {
+      schemaVersion: SCHEMA_VERSION,
+      updatedAt: nowIso(options.now),
+      items: [
+        ...store.items.filter((candidate) => candidate.projectId !== projectId),
+        nextItem
+      ].sort((left, right) => left.projectId.localeCompare(right.projectId))
+    };
+    await saveStore(userDataPath, nextStore, { ...options, fs: fileSystem });
+    return toPublicPreferences(nextItem);
+  });
 }
 
 async function clearProjectDirectoryPreference(
@@ -118,25 +143,28 @@ async function clearProjectDirectoryPreference(
 ) {
   const projectId = normalizeProjectId(activeProject);
   const field = resolveDirectoryField(directoryType);
-  const store = await loadProjectDirectoryPreferences(userDataPath, options);
-  const existing = store.items.find((candidate) => candidate.projectId === projectId);
-  if (!existing || !existing[field]) {
-    return toPublicPreferences(existing || createEmptyItem(projectId, options.now));
-  }
-  const nextItem = {
-    ...existing,
-    [field]: '',
-    updatedAt: nowIso(options.now)
-  };
-  const nextStore = {
-    schemaVersion: SCHEMA_VERSION,
-    updatedAt: nowIso(options.now),
-    items: store.items.map((candidate) => (
-      candidate.projectId === projectId ? nextItem : candidate
-    ))
-  };
-  await saveStore(userDataPath, nextStore, options);
-  return getProjectDirectoryPreferences(userDataPath, activeProject, options);
+  const filePath = getProjectDirectoryPreferencesPath(userDataPath);
+  return withProjectDirectoryPreferencesWriteLock(filePath, async () => {
+    const store = await loadProjectDirectoryPreferences(userDataPath, options);
+    const existing = store.items.find((candidate) => candidate.projectId === projectId);
+    if (!existing || !existing[field]) {
+      return toPublicPreferences(existing || createEmptyItem(projectId, options.now));
+    }
+    const nextItem = {
+      ...existing,
+      [field]: '',
+      updatedAt: nowIso(options.now)
+    };
+    const nextStore = {
+      schemaVersion: SCHEMA_VERSION,
+      updatedAt: nowIso(options.now),
+      items: store.items.map((candidate) => (
+        candidate.projectId === projectId ? nextItem : candidate
+      ))
+    };
+    await saveStore(userDataPath, nextStore, options);
+    return toPublicPreferences(nextItem);
+  });
 }
 
 async function listProjectArchiveRoots(userDataPath, activeProject, options = {}) {
@@ -339,5 +367,6 @@ module.exports = {
   getProjectDirectoryPreferencesPath,
   listProjectArchiveRoots,
   loadProjectDirectoryPreferences,
-  setProjectDirectoryPreference
+  setProjectDirectoryPreference,
+  withProjectDirectoryPreferencesWriteLock
 };
