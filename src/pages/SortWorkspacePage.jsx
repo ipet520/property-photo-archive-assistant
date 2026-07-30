@@ -9,7 +9,11 @@ import { OCR_COMPONENT_VERSION, PAGE_KEYS } from '../constants/app.js';
 import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
 import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
-import { withRuntimeConfigFallback } from '../utils/runtimeConfig.js';
+import {
+  getLocalPhotoEntryPresentation,
+  resolveLocalPhotoEntryState,
+  withRuntimeConfigFallback
+} from '../utils/runtimeConfig.js';
 import {
   beginSmartSortExecution,
   buildSmartSortGroupMembershipByPhotoId,
@@ -209,6 +213,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const markiWorkbenchStateRef = useRef(null);
   const automaticSnapshotSaverRef = useRef(null);
   const isSortWorkspaceMountedRef = useRef(true);
+  const photoFolderResolutionRef = useRef(0);
   const moreMenuRef = useRef(null);
   const editedArchiveFormFieldsRef = useRef(new Set());
   if (!automaticSnapshotSaverRef.current) {
@@ -242,7 +247,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
-  const [photoFolder, setPhotoFolder] = useState(() => cachedSession.photoFolder || '');
+  const [photoFolder, setPhotoFolder] = useState('');
   const [archiveRoot, setArchiveRoot] = useState(() => cachedSession.archiveRoot || '');
   const [photos, setPhotos] = useState(() => Array.isArray(cachedSession.photos) ? cachedSession.photos : []);
   const [form, setForm] = useState(() => cachedSession.form || defaultForm);
@@ -344,7 +349,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (!runtimeConfiguration?.revision) return;
     setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
     setSettings(runtimeConfiguration.settings || {});
-    setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+    void synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
     setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
     setArchivePreviewPlan((current) => (
       current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
@@ -368,13 +373,16 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             }
           }))
         : Promise.resolve({ success: true, found: false, snapshot: null })
-    ]).then(([runtimeResult, snapshotResult]) => {
+    ]).then(async ([runtimeResult, snapshotResult]) => {
       const cachedSession = cachedSessionRef.current;
       const loadedRuntimeConfiguration = runtimeResult.value;
       const loadedConfigs = loadedRuntimeConfiguration?.configs;
       const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
-      const restoredPhotoFolder = loadedRuntimeConfiguration?.photoSourceDirectory || '';
+      const restoredPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(
+        loadedRuntimeConfiguration,
+        { apply: false }
+      );
       const restoredArchiveRoot = loadedRuntimeConfiguration?.archiveRootDirectory || '';
       const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
       const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
@@ -792,7 +800,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
-  const effectivePhotoFolder = photoFolder;
+  const localPhotoEntryState = getLocalPhotoEntryPresentation(photoFolder);
+  const effectivePhotoFolder = localPhotoEntryState.photoFolder;
   const selectedStateText = getSelectedStateText(selectedPhotos);
   const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
   const selectedEditablePhotos = selectedPhotos.filter((photo) => (
@@ -1504,19 +1513,40 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setBatchPreparationUndo(null);
   }
 
+  async function synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration, options = {}) {
+    const requestId = ++photoFolderResolutionRef.current;
+    let inspection = null;
+    try {
+      if (runtimeConfiguration?.photoSourceDirectory) {
+        inspection = await window.archiveAssistant.inspectConfiguredDirectory('photoSource');
+      }
+    } catch {
+      inspection = null;
+    }
+    const resolvedState = resolveLocalPhotoEntryState(runtimeConfiguration, inspection);
+    if (
+      options.apply !== false
+      && requestId === photoFolderResolutionRef.current
+      && isSortWorkspaceMountedRef.current
+    ) {
+      setPhotoFolder(resolvedState.photoFolder);
+    }
+    return resolvedState.photoFolder;
+  }
+
   async function synchronizePhotoFolderFromSettings() {
     try {
       const runtimeConfiguration = await window.archiveAssistant.loadRuntimeConfiguration();
       setSettings(runtimeConfiguration.settings || {});
       setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
-      setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+      const resolvedPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
       setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
       setArchivePreviewPlan((current) => (
         current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
           ? current
           : null
       ));
-      return runtimeConfiguration.photoSourceDirectory || '';
+      return resolvedPhotoFolder;
     } catch {
       // Keep the current directory when settings cannot be refreshed.
       return photoFolder;
@@ -1795,7 +1825,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     archiveState?.applySavedSettings?.(runtimeConfiguration);
     setSettings(runtimeConfiguration.settings || {});
     window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-    setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+    const resolvedPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
+    if (!resolvedPhotoFolder) {
+      setStatus({ type: 'error', text: '所选照片来源目录当前不可用，请重新选择。' });
+      return false;
+    }
     if (scanAfterSelect) {
       await scanPhotos(true);
     } else {
@@ -1812,6 +1846,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     try {
       const scanResult = await window.archiveAssistant.scanConfiguredImages();
       if (scanResult?.success !== true) {
+        if (scanResult?.health && scanResult.health.healthStatus !== 'healthy') {
+          setPhotoFolder('');
+        }
         setStatus({ type: 'error', text: scanResult?.message || scanResult?.error?.message || '照片来源目录当前不可用。' });
         return;
       }
@@ -3230,7 +3267,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       archiveState?.applySavedSettings?.(runtimeConfiguration);
       setSettings(runtimeConfiguration.settings || {});
       window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-      setPhotoFolder(runtimeConfiguration.photoSourceDirectory || '');
+      await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
       setPhotos(restored);
       markiWorkbenchStateRef.current = relocatedWorkspace;
       sessionSnapshotRef.current = {
@@ -3693,7 +3730,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           <div className="sort-toolbar-panel sort-toolbar-adaptive">
             <div className="sort-toolbar-main-row">
               <div className="sort-toolbar-group sort-toolbar-import-group">
-              <button type="button" className="primary orange" title={effectivePhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'} disabled={batchActionsBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>
+              <button type="button" className="primary orange" title={localPhotoEntryState.buttonTitle} disabled={batchActionsBusy || !isSessionHydrated} onClick={importOrScanPhotos}>{localPhotoEntryState.buttonLabel}</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0 || batchActionsBusy}>清空</button>
               </div>
               <div className="sort-toolbar-group sort-toolbar-select-group">
@@ -3754,7 +3791,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                 <span>{visiblePhotos.length === 0 && photos.length > 0
                   ? (smartSortViewMode === 'smartSortGroup' ? '当前分组暂无匹配照片，可切换分组或重新执行智能分拣。' : '当前筛选条件下没有照片，可调整左侧筛选。')
                   : '原始照片只读取，不移动、不删除、不压缩。'}</span>
-                {photos.length === 0 && <button type="button" className="primary orange" disabled={batchActionsBusy} onClick={importOrScanPhotos}>{effectivePhotoFolder ? '扫描' : '导入'}</button>}
+                {photos.length === 0 && <button type="button" className="primary orange" disabled={batchActionsBusy || !isSessionHydrated} onClick={importOrScanPhotos}>{localPhotoEntryState.buttonLabel}</button>}
               </div>
             ) : effectiveViewMode === 'grid' ? pagePhotos.map((photo) => (
               <PhotoCard

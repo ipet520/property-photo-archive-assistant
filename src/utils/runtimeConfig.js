@@ -99,6 +99,46 @@ export function getUsablePhotoFolder(settings) {
   return '';
 }
 
+export function resolveLocalPhotoEntryState(runtimeConfiguration, directoryInspection) {
+  const configuredDirectory = String(runtimeConfiguration?.photoSourceDirectory || '').trim();
+  const health = directoryInspection?.health;
+  const runtimeRevision = String(runtimeConfiguration?.revision || '').trim();
+  const inspectionRevision = String(directoryInspection?.revision || '').trim();
+  const sameRevision = !runtimeRevision || !inspectionRevision || runtimeRevision === inspectionRevision;
+  const inspectedConfiguredDirectory = String(health?.configuredPath || '').trim();
+  const sameDirectory = !inspectedConfiguredDirectory
+    || normalizeDirectoryIdentity(inspectedConfiguredDirectory) === normalizeDirectoryIdentity(configuredDirectory);
+  const isHealthy = Boolean(
+    configuredDirectory
+    && directoryInspection?.success === true
+    && directoryInspection?.directoryKind === 'photoSource'
+    && sameRevision
+    && sameDirectory
+    && health?.healthStatus === 'healthy'
+    && health?.exists === true
+    && health?.isDirectory === true
+    && health?.readable === true
+  );
+  const photoFolder = isHealthy
+    ? String(health.normalizedPath || configuredDirectory).trim()
+    : '';
+  return {
+    ...getLocalPhotoEntryPresentation(photoFolder),
+    configuredDirectory,
+    healthStatus: String(health?.healthStatus || (configuredDirectory ? 'unknown' : 'not_configured'))
+  };
+}
+
+export function getLocalPhotoEntryPresentation(photoFolder) {
+  const normalizedPhotoFolder = String(photoFolder || '').trim();
+  return {
+    mode: normalizedPhotoFolder ? 'scan' : 'import',
+    photoFolder: normalizedPhotoFolder,
+    buttonLabel: normalizedPhotoFolder ? '扫描' : '导入照片',
+    buttonTitle: normalizedPhotoFolder ? '扫描当前照片目录' : '导入照片文件夹并自动扫描'
+  };
+}
+
 export function getUsableArchiveRoot(settings) {
   if (settings?.archiveRootDirectory != null) {
     return String(settings.archiveRootDirectory || '').trim();
@@ -127,6 +167,14 @@ export function normalizeRuntimeConfiguration(runtimeConfiguration) {
 function nonEmptyList(value, fallback) {
   const list = Array.isArray(value) ? value.map((item) => String(item || '').trim()).filter(Boolean) : [];
   return list.length ? list : fallback;
+}
+
+function normalizeDirectoryIdentity(value) {
+  return String(value || '')
+    .trim()
+    .replaceAll('/', '\\')
+    .replace(/[\\]+$/u, '')
+    .toLocaleLowerCase('zh-CN');
 }
 
 function normalizeWatermarkRuntime(value) {

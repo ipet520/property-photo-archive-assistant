@@ -157,6 +157,7 @@ async function main() {
     await checkRecognitionEngine(temporaryRoot);
     await checkRecognitionModelCompatibility();
     await checkRuntimeConfigurationFoundation(path.join(temporaryRoot, 'runtime-configuration'));
+    await checkLocalPhotoEntryDualState();
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkMarkiPhotoQuerySessions(path.join(temporaryRoot, 'marki-photo-query'));
     await checkMarkiImportTimeHelpers();
@@ -1506,6 +1507,162 @@ async function checkRuntimeConfigurationFoundation(root) {
     `RuntimeConfiguration 基础层自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，`
     + `其中配置迁移 ${migrationAssertionCount}、目录健康 ${directoryAssertionCount}、`
     + `文件健康 ${fileAssertionCount}、快照边界 ${snapshotAssertionCount} 个断言。`
+  );
+}
+
+async function checkLocalPhotoEntryDualState() {
+  const runtimeConfigModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'runtimeConfig.js')
+  ).href;
+  const {
+    getLocalPhotoEntryPresentation,
+    resolveLocalPhotoEntryState
+  } = await import(`${runtimeConfigModuleUrl}?local-photo-entry=${Date.now()}`);
+  let scenarioCount = 0;
+  let behaviorAssertionCount = 0;
+  let sourceContractAssertionCount = 0;
+  const equal = (actual, expected, message) => {
+    behaviorAssertionCount += 1;
+    assert.deepEqual(actual, expected, message);
+  };
+  const check = (condition, message) => {
+    behaviorAssertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const sourceCheck = (condition, message) => {
+    sourceContractAssertionCount += 1;
+    assert.ok(condition, message);
+  };
+  const runtimeConfiguration = {
+    revision: 'runtime-photo-source-revision',
+    photoSourceDirectory: 'E:\\物业照片\\当前来源'
+  };
+  const healthyInspection = {
+    success: true,
+    directoryKind: 'photoSource',
+    revision: runtimeConfiguration.revision,
+    health: {
+      configuredPath: runtimeConfiguration.photoSourceDirectory,
+      normalizedPath: runtimeConfiguration.photoSourceDirectory,
+      exists: true,
+      isDirectory: true,
+      readable: true,
+      healthStatus: 'healthy'
+    }
+  };
+
+  const scenarioA = resolveLocalPhotoEntryState(
+    { revision: 'runtime-empty', photoSourceDirectory: '' },
+    null
+  );
+  equal(scenarioA.mode, 'import', '场景 A：空工作台且未配置本地来源时必须进入导入模式');
+  equal(scenarioA.buttonLabel, '导入照片', '场景 A：按钮必须显示“导入照片”');
+  scenarioCount += 1;
+
+  const scenarioB = resolveLocalPhotoEntryState(
+    { revision: 'runtime-empty-with-marki', photoSourceDirectory: '' },
+    null
+  );
+  equal(scenarioB, {
+    ...scenarioA,
+    healthStatus: 'not_configured'
+  }, '场景 B：照片池存在 Marki 照片不得改变未配置来源的导入状态');
+  scenarioCount += 1;
+
+  const scenarioC = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
+  equal(scenarioC.mode, 'scan', '场景 C：空工作台但存在健康来源目录时必须进入扫描模式');
+  equal(scenarioC.buttonLabel, '扫描', '场景 C：按钮必须显示“扫描”');
+  equal(scenarioC.photoFolder, runtimeConfiguration.photoSourceDirectory, '场景 C：扫描必须使用健康的当前来源目录');
+  scenarioCount += 1;
+
+  const scenarioD = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
+  equal(scenarioD, scenarioC, '场景 D：Marki 照片与本地照片共存不得改变扫描模式');
+  scenarioCount += 1;
+
+  const beforeMarkiAppend = getLocalPhotoEntryPresentation(scenarioC.photoFolder);
+  const afterMarkiAppend = getLocalPhotoEntryPresentation(scenarioC.photoFolder);
+  equal(afterMarkiAppend, beforeMarkiAppend, '场景 E：Marki 批次追加前后本地来源双状态必须保持');
+  scenarioCount += 1;
+
+  const afterProjectRestore = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
+  equal(afterProjectRestore, scenarioC, '场景 F：项目切换或工作台恢复不得用照片数据改写本地来源状态');
+  scenarioCount += 1;
+
+  const invalidDirectory = resolveLocalPhotoEntryState(runtimeConfiguration, {
+    ...healthyInspection,
+    success: false,
+    health: {
+      ...healthyInspection.health,
+      exists: false,
+      isDirectory: false,
+      readable: false,
+      healthStatus: 'missing'
+    }
+  });
+  equal(invalidDirectory.mode, 'import', '非空但失效的配置路径不得伪装为已选定来源');
+  equal(invalidDirectory.photoFolder, '', '失效来源不得进入扫描入口');
+  scenarioCount += 1;
+
+  const staleInspection = resolveLocalPhotoEntryState(runtimeConfiguration, {
+    ...healthyInspection,
+    revision: 'stale-runtime-revision'
+  });
+  equal(staleInspection.mode, 'import', '旧 revision 的目录检查不得覆盖当前运行配置');
+  scenarioCount += 1;
+
+  const pageSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'pages', 'SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const runtimeConfigSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'utils', 'runtimeConfig.js'),
+    'utf8'
+  );
+  const selectHandler = pageSource
+    .split('async function selectPhotoFolder', 2)[1]
+    ?.split('async function scanPhotos', 1)[0] || '';
+  const importHandler = pageSource
+    .split('async function importOrScanPhotos', 2)[1]
+    ?.split('async function clearList', 1)[0] || '';
+  const markiNavigationStart = pageSource.indexOf("navigationRequest?.action !== 'appendMarkiImportBatch'");
+  const markiNavigationEnd = pageSource.indexOf(
+    '}, [isSessionHydrated, navigationRequest]);',
+    markiNavigationStart
+  );
+  const markiNavigationHandler = markiNavigationStart >= 0 && markiNavigationEnd > markiNavigationStart
+    ? pageSource.slice(markiNavigationStart, markiNavigationEnd)
+    : '';
+  sourceCheck(
+    selectHandler.indexOf('if (!selected) return false;')
+      < selectHandler.indexOf("saveRuntimeDirectory('photoSource', selected)"),
+    '取消文件夹选择必须在保存运行配置和扫描之前退出'
+  );
+  sourceCheck(
+    importHandler.includes('if (effectivePhotoFolder)')
+      && importHandler.includes('await scanPhotos(false)')
+      && importHandler.includes('selectPhotoFolder({ scanAfterSelect: true })'),
+    '入口必须仅按有效 photoFolder 在扫描与选择后扫描之间切换'
+  );
+  sourceCheck(
+    pageSource.includes("inspectConfiguredDirectory('photoSource')")
+      && pageSource.includes('resolveLocalPhotoEntryState(runtimeConfiguration, inspection)'),
+    '双状态必须由运行配置和目录健康检查共同决定'
+  );
+  sourceCheck(
+    markiNavigationHandler && !markiNavigationHandler.includes('setPhotoFolder'),
+    'Marki 批次追加处理不得设置或清空本地 photoFolder'
+  );
+  sourceCheck(
+    pageSource.includes('{localPhotoEntryState.buttonLabel}')
+      && runtimeConfigSource.includes("buttonLabel: normalizedPhotoFolder ? '扫描' : '导入照片'"),
+    '工作台按钮必须使用统一双状态展示结果'
+  );
+
+  equal(scenarioCount, 8, '本地照片入口双状态必须执行八个行为场景');
+  check(behaviorAssertionCount >= 13, '本地照片入口双状态必须保留完整行为断言');
+  console.log(
+    `本地照片入口双状态自检通过：${scenarioCount} 个行为场景，`
+    + `${behaviorAssertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
   );
 }
 
@@ -14313,9 +14470,10 @@ async function checkSourceContracts() {
   assert.equal(invokedChannels.has('archive:recoverPendingTransactions'), true, 'preload 应暴露最小归档事务恢复接口');
   assert.equal(workspaceSource.includes('recoverPendingArchiveTransactions'), true, '工作台应在归档根目录可用时恢复待补记事务');
   assert.equal(
-    workspaceSource.includes('const effectivePhotoFolder = photoFolder;'),
+    workspaceSource.includes('const effectivePhotoFolder = localPhotoEntryState.photoFolder;')
+      && workspaceSource.includes('resolveLocalPhotoEntryState(runtimeConfiguration, inspection)'),
     true,
-    '工作台照片目录应只使用 RuntimeConfiguration 下发的权威值'
+    '工作台照片目录应只使用 RuntimeConfiguration 和目录健康检查形成的权威值'
   );
   assert.equal(
     workspaceSource.includes('window.archiveAssistant.scanConfiguredImages()'),
