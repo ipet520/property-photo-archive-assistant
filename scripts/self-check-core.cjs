@@ -157,7 +157,7 @@ async function main() {
     await checkRecognitionEngine(temporaryRoot);
     await checkRecognitionModelCompatibility();
     await checkRuntimeConfigurationFoundation(path.join(temporaryRoot, 'runtime-configuration'));
-    await checkLocalPhotoEntryDualState();
+    await checkLocalPhotoEntryDualState(path.join(temporaryRoot, 'project-local-photo-source'));
     await checkMarkiFoundation(path.join(temporaryRoot, 'marki'));
     await checkMarkiPhotoQuerySessions(path.join(temporaryRoot, 'marki-photo-query'));
     await checkMarkiImportTimeHelpers();
@@ -1451,7 +1451,7 @@ async function checkRuntimeConfigurationFoundation(root) {
   scenario();
   check(snapshotSave.success, '快照原子保存能力应保持', 'snapshot');
   const storedSnapshot = JSON.parse(await fs.readFile(getSortWorkspaceSnapshotPath(snapshotRoot), 'utf8'));
-  check(!Object.hasOwn(storedSnapshot.workspace, 'photoFolder'), '快照不得保存照片来源目录', 'snapshot');
+  equal(storedSnapshot.workspace.photoFolder, 'D:\\旧快照照片', '工作台快照必须保存项目照片来源目录', 'snapshot');
   check(!Object.hasOwn(storedSnapshot.workspace, 'archiveRoot'), '快照不得保存归档根目录', 'snapshot');
 
   storedSnapshot.workspace.photoFolder = 'D:\\历史目录';
@@ -1461,8 +1461,8 @@ async function checkRuntimeConfigurationFoundation(root) {
     decodeImage: decodeSelfCheckImage
   });
   scenario();
-  check(legacySnapshotLoad.success, 'schemaVersion 1 旧快照目录字段应安全忽略', 'snapshot');
-  check(!Object.hasOwn(legacySnapshotLoad.snapshot.workspace, 'photoFolder'), '恢复结果不得重新发布旧照片目录', 'snapshot');
+  check(legacySnapshotLoad.success, 'schemaVersion 1 旧工作台自身目录字段应安全保留', 'snapshot');
+  equal(legacySnapshotLoad.snapshot.workspace.photoFolder, 'D:\\历史目录', '旧工作台明确保存的照片目录必须随工作台恢复', 'snapshot');
   check(!Object.hasOwn(legacySnapshotLoad.snapshot.workspace, 'archiveRoot'), '恢复结果不得重新发布旧归档目录', 'snapshot');
   equal(
     legacySnapshotLoad.snapshot.workspace.recognitionResultsByPhoto['snapshot-photo'].text,
@@ -1510,14 +1510,24 @@ async function checkRuntimeConfigurationFoundation(root) {
   );
 }
 
-async function checkLocalPhotoEntryDualState() {
+async function checkLocalPhotoEntryDualState(root) {
+  await fs.mkdir(root, { recursive: true });
   const runtimeConfigModuleUrl = pathToFileURL(
     path.join(process.cwd(), 'src', 'utils', 'runtimeConfig.js')
   ).href;
+  const snapshotModuleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'sortWorkspaceSnapshot.js')
+  ).href;
   const {
+    getLocalPhotoPickerInitialPath,
     getLocalPhotoEntryPresentation,
     resolveLocalPhotoEntryState
   } = await import(`${runtimeConfigModuleUrl}?local-photo-entry=${Date.now()}`);
+  const {
+    buildSortWorkspaceSnapshotWorkspace,
+    persistMarkiWorkbenchImport,
+    persistProjectPhotoFolder
+  } = await import(`${snapshotModuleUrl}?project-photo-source=${Date.now()}`);
   let scenarioCount = 0;
   let behaviorAssertionCount = 0;
   let sourceContractAssertionCount = 0;
@@ -1533,81 +1543,208 @@ async function checkLocalPhotoEntryDualState() {
     sourceContractAssertionCount += 1;
     assert.ok(condition, message);
   };
+  const projectA = {
+    projectId: 'project-local-a',
+    projectName: '项目A'
+  };
+  const projectB = {
+    projectId: 'project-local-b',
+    projectName: '项目B'
+  };
+  const directoryA = path.join(root, 'source-a');
+  const directoryB = path.join(root, 'source-b');
+  const globalRecentDirectory = path.join(root, 'global-recent');
+  await Promise.all([
+    fs.mkdir(directoryA, { recursive: true }),
+    fs.mkdir(directoryB, { recursive: true }),
+    fs.mkdir(globalRecentDirectory, { recursive: true })
+  ]);
   const runtimeConfiguration = {
-    revision: 'runtime-photo-source-revision',
-    photoSourceDirectory: 'E:\\物业照片\\当前来源'
+    photoSourceDirectory: globalRecentDirectory,
+    settings: {
+      lastPhotoFolder: globalRecentDirectory
+    }
   };
-  const healthyInspection = {
-    success: true,
-    directoryKind: 'photoSource',
-    revision: runtimeConfiguration.revision,
-    health: {
-      configuredPath: runtimeConfiguration.photoSourceDirectory,
-      normalizedPath: runtimeConfiguration.photoSourceDirectory,
-      exists: true,
-      isDirectory: true,
+  const inspectProjectDirectory = async (folderPath) => {
+    const health = await inspectDirectoryHealth(folderPath, {
       readable: true,
-      healthStatus: 'healthy'
-    }
+      writable: false,
+      allowCreate: false,
+      checkOnly: true
+    });
+    return {
+      success: health.healthStatus === 'healthy',
+      directoryKind: 'photoSource',
+      health
+    };
   };
+  const workspaceFor = (project, photoFolder = '') => ({
+    ...createEmptyWorkspace(project),
+    ...project,
+    photoFolder
+  });
 
-  const scenarioA = resolveLocalPhotoEntryState(
-    { revision: 'runtime-empty', photoSourceDirectory: '' },
-    null
+  const noProjectSource = resolveLocalPhotoEntryState(
+    '',
+    await inspectProjectDirectory(globalRecentDirectory)
   );
-  equal(scenarioA.mode, 'import', '场景 A：空工作台且未配置本地来源时必须进入导入模式');
-  equal(scenarioA.buttonLabel, '导入照片', '场景 A：按钮必须显示“导入照片”');
+  equal(noProjectSource.mode, 'import', '场景 1：全局最近目录有效但项目无来源时必须进入导入模式');
+  equal(noProjectSource.buttonLabel, '导入照片', '场景 1：不得因全局最近目录显示扫描');
+  equal(noProjectSource.photoFolder, '', '场景 1：全局目录不得成为项目来源');
   scenarioCount += 1;
 
-  const scenarioB = resolveLocalPhotoEntryState(
-    { revision: 'runtime-empty-with-marki', photoSourceDirectory: '' },
-    null
+  const projectAInspection = await inspectProjectDirectory(directoryA);
+  const projectASource = resolveLocalPhotoEntryState(directoryA, projectAInspection);
+  equal(projectASource.mode, 'scan', '场景 2：项目 A 自身来源健康时必须进入扫描模式');
+  equal(projectASource.buttonLabel, '扫描', '场景 2：项目 A 按钮必须显示扫描');
+  equal(projectASource.photoFolder, directoryA, '场景 2：扫描必须使用项目 A 自身目录');
+  scenarioCount += 1;
+
+  const switchingRoot = path.join(root, 'switching');
+  await saveSortWorkspaceSnapshot(
+    switchingRoot,
+    workspaceFor(projectA, directoryA),
+    { activeProject: projectA }
   );
-  equal(scenarioB, {
-    ...scenarioA,
-    healthStatus: 'not_configured'
-  }, '场景 B：照片池存在 Marki 照片不得改变未配置来源的导入状态');
+  await saveSortWorkspaceSnapshot(
+    switchingRoot,
+    workspaceFor(projectB),
+    { activeProject: projectB }
+  );
+  const restoredProjectBWithoutSource = (
+    await loadSortWorkspaceSnapshot(switchingRoot, { activeProject: projectB })
+  ).snapshot.workspace;
+  equal(restoredProjectBWithoutSource.photoFolder, '', '场景 3：项目 B 不得恢复项目 A 的目录');
+  equal(
+    getLocalPhotoEntryPresentation(restoredProjectBWithoutSource.photoFolder).buttonLabel,
+    '导入照片',
+    '场景 3：切换到无来源的项目 B 必须显示导入照片'
+  );
   scenarioCount += 1;
 
-  const scenarioC = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
-  equal(scenarioC.mode, 'scan', '场景 C：空工作台但存在健康来源目录时必须进入扫描模式');
-  equal(scenarioC.buttonLabel, '扫描', '场景 C：按钮必须显示“扫描”');
-  equal(scenarioC.photoFolder, runtimeConfiguration.photoSourceDirectory, '场景 C：扫描必须使用健康的当前来源目录');
+  await saveSortWorkspaceSnapshot(
+    switchingRoot,
+    workspaceFor(projectB, directoryB),
+    { activeProject: projectB }
+  );
+  const restoredA = await loadSortWorkspaceSnapshot(switchingRoot, { activeProject: projectA });
+  const restoredB = await loadSortWorkspaceSnapshot(switchingRoot, { activeProject: projectB });
+  equal(restoredA.snapshot.workspace.photoFolder, directoryA, '场景 4：切回项目 A 必须恢复目录 A');
+  equal(restoredB.snapshot.workspace.photoFolder, directoryB, '场景 4：切回项目 B 必须恢复目录 B');
   scenarioCount += 1;
 
-  const scenarioD = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
-  equal(scenarioD, scenarioC, '场景 D：Marki 照片与本地照片共存不得改变扫描模式');
+  equal(
+    getLocalPhotoPickerInitialPath('', runtimeConfiguration),
+    globalRecentDirectory,
+    '场景 5：项目无来源时全局最近目录只能作为选择器默认位置'
+  );
+  const canceledProjectB = await loadSortWorkspaceSnapshot(
+    path.join(root, 'picker-cancel'),
+    { activeProject: projectB }
+  );
+  equal(canceledProjectB.found, false, '场景 5：取消选择不得写入项目快照');
   scenarioCount += 1;
 
-  const beforeMarkiAppend = getLocalPhotoEntryPresentation(scenarioC.photoFolder);
-  const afterMarkiAppend = getLocalPhotoEntryPresentation(scenarioC.photoFolder);
-  equal(afterMarkiAppend, beforeMarkiAppend, '场景 E：Marki 批次追加前后本地来源双状态必须保持');
-  scenarioCount += 1;
-
-  const afterProjectRestore = resolveLocalPhotoEntryState(runtimeConfiguration, healthyInspection);
-  equal(afterProjectRestore, scenarioC, '场景 F：项目切换或工作台恢复不得用照片数据改写本地来源状态');
-  scenarioCount += 1;
-
-  const invalidDirectory = resolveLocalPhotoEntryState(runtimeConfiguration, {
-    ...healthyInspection,
-    success: false,
-    health: {
-      ...healthyInspection.health,
-      exists: false,
-      isDirectory: false,
-      readable: false,
-      healthStatus: 'missing'
+  const selectionRoot = path.join(root, 'selection');
+  await saveSortWorkspaceSnapshot(
+    selectionRoot,
+    workspaceFor(projectA, directoryA),
+    { activeProject: projectA }
+  );
+  let committedProjectBWorkspace = null;
+  const projectBPersist = await persistProjectPhotoFolder({
+    currentWorkspace: workspaceFor(projectB),
+    photoFolder: directoryB,
+    saveSnapshot: (workspace) => saveSortWorkspaceSnapshot(
+      selectionRoot,
+      workspace,
+      { activeProject: projectB }
+    ),
+    commitWorkspace: (workspace) => {
+      committedProjectBWorkspace = workspace;
     }
   });
-  equal(invalidDirectory.mode, 'import', '非空但失效的配置路径不得伪装为已选定来源');
-  equal(invalidDirectory.photoFolder, '', '失效来源不得进入扫描入口');
+  check(projectBPersist.success, '场景 6：目录 B 必须先原子写入项目 B 快照');
+  equal(committedProjectBWorkspace.photoFolder, directoryB, '场景 6：提交后的项目 B 来源必须为目录 B');
+  equal(
+    (await loadSortWorkspaceSnapshot(selectionRoot, { activeProject: projectA })).snapshot.workspace.photoFolder,
+    directoryA,
+    '场景 6：保存项目 B 不得改写项目 A 的目录'
+  );
   scenarioCount += 1;
 
-  const staleInspection = resolveLocalPhotoEntryState(runtimeConfiguration, {
-    ...healthyInspection,
-    revision: 'stale-runtime-revision'
+  const missingProjectDirectory = path.join(root, 'missing-project-source');
+  const invalidDirectory = resolveLocalPhotoEntryState(
+    missingProjectDirectory,
+    await inspectProjectDirectory(missingProjectDirectory)
+  );
+  equal(invalidDirectory.mode, 'import', '场景 7：当前项目目录失效时必须回到导入模式');
+  equal(invalidDirectory.photoFolder, '', '场景 7：失效项目目录不得用于扫描');
+  check(
+    invalidDirectory.configuredDirectory !== globalRecentDirectory,
+    '场景 7：目录失效不得自动退回全局最近目录'
+  );
+  scenarioCount += 1;
+
+  let markiCommittedWorkspace = null;
+  const markiPersist = await persistMarkiWorkbenchImport({
+    currentWorkspace: workspaceFor(projectA, directoryA),
+    workbenchImportPackage: { batchId: 'project-folder-marki-batch' },
+    mergeWorkbenchImport: (workspace) => ({
+      photos: workspace.photos,
+      recognitionResultsByPhoto: workspace.recognitionResultsByPhoto,
+      watermarkRecordsByPhoto: workspace.watermarkRecordsByPhoto,
+      archiveSuggestionsByPhoto: workspace.archiveSuggestionsByPhoto,
+      selectedIds: workspace.selectedIds,
+      activePhotoId: workspace.activePhotoId,
+      addedPhotoIds: [],
+      stats: { addedCount: 0 }
+    }),
+    saveSnapshot: async () => ({ success: true }),
+    consumeBatch: async () => ({ success: true }),
+    commitWorkspace: (_merged, workspace) => {
+      markiCommittedWorkspace = workspace;
+    }
   });
-  equal(staleInspection.mode, 'import', '旧 revision 的目录检查不得覆盖当前运行配置');
+  check(markiPersist.success, '场景 8：Marki 工作台持久化模拟必须成功');
+  equal(markiCommittedWorkspace.photoFolder, directoryA, '场景 8：Marki 追加前后项目 photoFolder 必须完全不变');
+  scenarioCount += 1;
+
+  const oldProjectRoot = path.join(root, 'old-project-snapshot');
+  await saveSortWorkspaceSnapshot(
+    oldProjectRoot,
+    workspaceFor(projectA),
+    { activeProject: projectA }
+  );
+  const oldProjectSnapshotPath = getSortWorkspaceSnapshotPath(oldProjectRoot, projectA);
+  const oldProjectSnapshot = JSON.parse(await fs.readFile(oldProjectSnapshotPath, 'utf8'));
+  delete oldProjectSnapshot.workspace.photoFolder;
+  await fs.writeFile(oldProjectSnapshotPath, JSON.stringify(oldProjectSnapshot, null, 2), 'utf8');
+  const oldProjectLoad = await loadSortWorkspaceSnapshot(oldProjectRoot, { activeProject: projectA });
+  equal(oldProjectLoad.snapshot.workspace.photoFolder, '', '场景 9：旧项目快照缺少 photoFolder 时必须默认为空');
+  equal(
+    getLocalPhotoPickerInitialPath(oldProjectLoad.snapshot.workspace.photoFolder, runtimeConfiguration),
+    globalRecentDirectory,
+    '场景 9：旧项目只能在打开选择器时使用全局最近目录'
+  );
+  scenarioCount += 1;
+
+  const builtWorkspace = buildSortWorkspaceSnapshotWorkspace({
+    ...workspaceFor(projectA),
+    photoFolder: directoryA
+  });
+  equal(builtWorkspace.photoFolder, directoryA, '场景 10：renderer 快照 builder 必须真实保留 photoFolder');
+  let failedCommitCalled = false;
+  const failedPersist = await persistProjectPhotoFolder({
+    currentWorkspace: workspaceFor(projectA),
+    photoFolder: directoryA,
+    saveSnapshot: async () => ({ success: false }),
+    commitWorkspace: () => {
+      failedCommitCalled = true;
+    }
+  });
+  equal(failedPersist.success, false, '场景 10：项目快照失败时来源更新必须失败');
+  equal(failedCommitCalled, false, '场景 10：项目快照失败不得提交 renderer 来源状态');
   scenarioCount += 1;
 
   const pageSource = await fs.readFile(
@@ -1616,6 +1753,26 @@ async function checkLocalPhotoEntryDualState() {
   );
   const runtimeConfigSource = await fs.readFile(
     path.join(process.cwd(), 'src', 'utils', 'runtimeConfig.js'),
+    'utf8'
+  );
+  const snapshotSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'utils', 'sortWorkspaceSnapshot.js'),
+    'utf8'
+  );
+  const snapshotServiceSource = await fs.readFile(
+    path.join(process.cwd(), 'electron', 'services', 'sortWorkspaceSnapshotService.cjs'),
+    'utf8'
+  );
+  const mainSource = await fs.readFile(
+    path.join(process.cwd(), 'electron', 'main.cjs'),
+    'utf8'
+  );
+  const preloadSource = await fs.readFile(
+    path.join(process.cwd(), 'electron', 'preload.cjs'),
+    'utf8'
+  );
+  const headerSource = await fs.readFile(
+    path.join(process.cwd(), 'src', 'layout', 'HeaderBar.jsx'),
     'utf8'
   );
   const selectHandler = pageSource
@@ -1634,8 +1791,8 @@ async function checkLocalPhotoEntryDualState() {
     : '';
   sourceCheck(
     selectHandler.indexOf('if (!selected) return false;')
-      < selectHandler.indexOf("saveRuntimeDirectory('photoSource', selected)"),
-    '取消文件夹选择必须在保存运行配置和扫描之前退出'
+      < selectHandler.indexOf('persistProjectPhotoFolder'),
+    '取消文件夹选择必须在保存项目来源和扫描之前退出'
   );
   sourceCheck(
     importHandler.includes('if (effectivePhotoFolder)')
@@ -1644,9 +1801,10 @@ async function checkLocalPhotoEntryDualState() {
     '入口必须仅按有效 photoFolder 在扫描与选择后扫描之间切换'
   );
   sourceCheck(
-    pageSource.includes("inspectConfiguredDirectory('photoSource')")
-      && pageSource.includes('resolveLocalPhotoEntryState(runtimeConfiguration, inspection)'),
-    '双状态必须由运行配置和目录健康检查共同决定'
+    pageSource.includes('inspectPhotoSourceDirectory(projectPhotoFolder)')
+      && pageSource.includes('resolveLocalPhotoEntryState(projectPhotoFolder, inspection)')
+      && !pageSource.includes("inspectConfiguredDirectory('photoSource')"),
+    '双状态必须只由当前项目 photoFolder 和该目录健康检查共同决定'
   );
   sourceCheck(
     markiNavigationHandler && !markiNavigationHandler.includes('setPhotoFolder'),
@@ -1657,11 +1815,37 @@ async function checkLocalPhotoEntryDualState() {
       && runtimeConfigSource.includes("buttonLabel: normalizedPhotoFolder ? '扫描' : '导入照片'"),
     '工作台按钮必须使用统一双状态展示结果'
   );
+  sourceCheck(
+    pageSource.includes('scanPhotoSourceDirectory(folder)')
+      && !pageSource.includes('scanConfiguredImages()'),
+    '扫描必须显式提交当前项目来源目录，禁止读取全局配置来源'
+  );
+  sourceCheck(
+    selectHandler.indexOf('persistProjectPhotoFolder')
+      < selectHandler.indexOf("saveRuntimeDirectory("),
+    '项目来源必须先写项目快照，全局目录只能随后更新为选择器最近位置'
+  );
+  sourceCheck(
+    snapshotSource.includes("photoFolder: String(state.photoFolder || '').trim()")
+      && snapshotServiceSource.includes("photoFolder: normalizeText(input.photoFolder, 32767)"),
+    'renderer builder 和主进程 schema 必须共同保存项目 photoFolder'
+  );
+  sourceCheck(
+    mainSource.includes("'photos:inspectSourceDirectory'")
+      && mainSource.includes("'photos:scanSourceDirectory'")
+      && preloadSource.includes('scanPhotoSourceDirectory'),
+    'preload 和 IPC 必须提供当前项目目录的受控健康检查与扫描入口'
+  );
+  sourceCheck(
+    !headerSource.includes('照片来源：')
+      && !headerSource.includes('runtimeConfiguration?.photoSourceDirectory'),
+    '顶部栏不得把全局最近目录展示为当前项目照片来源'
+  );
 
-  equal(scenarioCount, 8, '本地照片入口双状态必须执行八个行为场景');
-  check(behaviorAssertionCount >= 13, '本地照片入口双状态必须保留完整行为断言');
+  equal(scenarioCount, 10, '项目级本地照片来源必须执行十个行为场景');
+  check(behaviorAssertionCount >= 25, '项目级本地照片来源必须保留完整行为断言');
   console.log(
-    `本地照片入口双状态自检通过：${scenarioCount} 个行为场景，`
+    `项目级本地照片来源自检通过：${scenarioCount} 个行为场景，`
     + `${behaviorAssertionCount} 个行为断言，${sourceContractAssertionCount} 个源码契约断言。`
   );
 }
@@ -14471,14 +14655,14 @@ async function checkSourceContracts() {
   assert.equal(workspaceSource.includes('recoverPendingArchiveTransactions'), true, '工作台应在归档根目录可用时恢复待补记事务');
   assert.equal(
     workspaceSource.includes('const effectivePhotoFolder = localPhotoEntryState.photoFolder;')
-      && workspaceSource.includes('resolveLocalPhotoEntryState(runtimeConfiguration, inspection)'),
+      && workspaceSource.includes('resolveLocalPhotoEntryState(projectPhotoFolder, inspection)'),
     true,
-    '工作台照片目录应只使用 RuntimeConfiguration 和目录健康检查形成的权威值'
+    '工作台照片目录应只使用当前项目 photoFolder 和目录健康检查形成的权威值'
   );
   assert.equal(
-    workspaceSource.includes('window.archiveAssistant.scanConfiguredImages()'),
+    workspaceSource.includes('window.archiveAssistant.scanPhotoSourceDirectory(folder)'),
     true,
-    '工作台扫描应通过受控配置目录 IPC 执行'
+    '工作台扫描应通过受控当前项目目录 IPC 执行'
   );
   assert.equal(workspaceSource.includes('|| pagePhotos[0] || photos[0] || null'), false, '空筛选组不得显示组外照片');
   assert.equal(workspaceSource.includes("['assigned', '待预览']"), false, '状态筛选不应重新出现冗余的“待预览”组');

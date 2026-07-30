@@ -10,7 +10,7 @@ import { formatFileSize, getSuggestedKeywords } from '../utils/formatters.js';
 import { mergeMarkiWorkbenchImportPackage } from '../utils/markiWorkbenchImport.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 import {
-  getLocalPhotoEntryPresentation,
+  getLocalPhotoPickerInitialPath,
   resolveLocalPhotoEntryState,
   withRuntimeConfigFallback
 } from '../utils/runtimeConfig.js';
@@ -55,6 +55,7 @@ import {
   loadProjectWorkspaceSnapshotWithLegacyMigration,
   persistLocalPhotoRelinks,
   persistMarkiWorkbenchImport,
+  persistProjectPhotoFolder,
   prepareWorkspaceAfterPhotoAppend,
   readSortWorkspaceManualDraft
 } from '../utils/sortWorkspaceSnapshot.js';
@@ -179,7 +180,6 @@ const pendingSortStatuses = new Set(['unassigned', 'unrecognized']);
 const pendingOrganizeStatuses = new Set(['recognition_empty', 'recognized', 'suggestion_ready', 'needs_completion', 'confirmed']);
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
-const sortSessionPhotoFolderKey = 'property-photo-sort-session-folder';
 const sortWorkspaceSessionCacheByProject = new Map();
 
 function normalizeStatusFilter(filter) {
@@ -248,6 +248,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
+  const [localPhotoSourceInspection, setLocalPhotoSourceInspection] = useState(null);
   const [archiveRoot, setArchiveRoot] = useState(() => cachedSession.archiveRoot || '');
   const [photos, setPhotos] = useState(() => Array.isArray(cachedSession.photos) ? cachedSession.photos : []);
   const [form, setForm] = useState(() => cachedSession.form || defaultForm);
@@ -349,7 +350,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (!runtimeConfiguration?.revision) return;
     setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
     setSettings(runtimeConfiguration.settings || {});
-    void synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
     setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
     setArchivePreviewPlan((current) => (
       current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
@@ -379,13 +379,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const loadedConfigs = loadedRuntimeConfiguration?.configs;
       const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
-      const restoredPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(
-        loadedRuntimeConfiguration,
-        { apply: false }
-      );
       const restoredArchiveRoot = loadedRuntimeConfiguration?.archiveRootDirectory || '';
       const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
       const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
+      const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
+      const restoredPhotoEntry = await inspectProjectPhotoFolder(
+        restoredPhotoFolder,
+        { apply: false }
+      );
       const restoredPhotos = restoredFromSnapshot
         ? restoreAutomaticSnapshotPhotos(restoredWorkspace.photos)
         : (Array.isArray(restoredWorkspace.photos) ? restoredWorkspace.photos : []);
@@ -440,8 +441,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setConfigs(safeConfigs);
       setSettings(loadedSettings);
       setForm(reconcileForm(restoredWorkspace.form || defaultForm, safeConfigs, activeProject));
-      window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
       setPhotoFolder(restoredPhotoFolder);
+      setLocalPhotoSourceInspection(restoredPhotoEntry.inspection);
       setArchiveRoot(restoredArchiveRoot);
       setPhotos(restoredPhotos);
       setRecognitionResultsByPhoto(restoredRecognitionMap);
@@ -479,8 +480,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         });
       } else if (!runtimeResult.success) {
         setStatus({ type: 'warning', text: '部分基础配置暂未加载，工作台已使用安全默认值。' });
-      } else if (!cachedSession?.status && restoredPhotoFolder) {
+      } else if (!cachedSession?.status && restoredPhotoEntry.mode === 'scan') {
         setStatus({ type: 'idle', text: '点击扫描读取当前照片目录。' });
+      } else if (!cachedSession?.status && restoredPhotoFolder) {
+        setStatus({ type: 'warning', text: '当前项目照片来源目录不可用，请重新选择。' });
       }
       hasHydratedSessionRef.current = true;
       automaticSnapshotSaverRef.current?.setEnabled(Boolean(cachedSession) || snapshotResult?.success === true);
@@ -714,7 +717,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   ]);
 
   useEffect(() => {
-    const refreshPhotoFolder = () => synchronizePhotoFolderFromSettings();
+    const refreshPhotoFolder = () => {
+      void inspectProjectPhotoFolder(photoFolder);
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') refreshPhotoFolder();
     };
@@ -724,7 +729,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       window.removeEventListener('focus', refreshPhotoFolder);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, []);
+  }, [photoFolder]);
 
   const smartSortGroups = useMemo(() => Array.isArray(smartSortResult?.groups) ? smartSortResult.groups : [], [smartSortResult]);
   const sourceCanonicalByPhotoId = useMemo(() => Object.fromEntries(photos.map((photo) => [
@@ -800,7 +805,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const ignoredCount = photos.filter((photo) => photo.sortStatus === 'ignored').length;
   const missingOriginalCount = photos.filter((photo) => photo.originalMissing).length;
   const editingPhoto = photos.find((photo) => photo.id === editingPhotoId) || null;
-  const localPhotoEntryState = getLocalPhotoEntryPresentation(photoFolder);
+  const localPhotoEntryState = resolveLocalPhotoEntryState(
+    photoFolder,
+    localPhotoSourceInspection
+  );
   const effectivePhotoFolder = localPhotoEntryState.photoFolder;
   const selectedStateText = getSelectedStateText(selectedPhotos);
   const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
@@ -1306,6 +1314,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     sessionSnapshotRef.current = nextSession;
     sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
     if (restoredActivePhotoId) pendingMarkiFocusPhotoIdRef.current = restoredActivePhotoId;
+    const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
+    setPhotoFolder(restoredPhotoFolder);
+    void inspectProjectPhotoFolder(restoredPhotoFolder);
     setPhotos(restoredPhotos);
     setRecognitionResultsByPhoto(restoredWorkspace.recognitionResultsByPhoto || {});
     setWatermarkRecordsByPhoto(restoredWorkspace.watermarkRecordsByPhoto || {});
@@ -1513,44 +1524,31 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setBatchPreparationUndo(null);
   }
 
-  async function synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration, options = {}) {
+  async function inspectProjectPhotoFolder(projectPhotoFolder, options = {}) {
     const requestId = ++photoFolderResolutionRef.current;
     let inspection = null;
     try {
-      if (runtimeConfiguration?.photoSourceDirectory) {
-        inspection = await window.archiveAssistant.inspectConfiguredDirectory('photoSource');
+      if (
+        projectPhotoFolder
+        && typeof window.archiveAssistant.inspectPhotoSourceDirectory === 'function'
+      ) {
+        inspection = await window.archiveAssistant.inspectPhotoSourceDirectory(projectPhotoFolder);
       }
     } catch {
       inspection = null;
     }
-    const resolvedState = resolveLocalPhotoEntryState(runtimeConfiguration, inspection);
+    const resolvedState = resolveLocalPhotoEntryState(projectPhotoFolder, inspection);
     if (
       options.apply !== false
       && requestId === photoFolderResolutionRef.current
       && isSortWorkspaceMountedRef.current
     ) {
-      setPhotoFolder(resolvedState.photoFolder);
+      setLocalPhotoSourceInspection(inspection);
     }
-    return resolvedState.photoFolder;
-  }
-
-  async function synchronizePhotoFolderFromSettings() {
-    try {
-      const runtimeConfiguration = await window.archiveAssistant.loadRuntimeConfiguration();
-      setSettings(runtimeConfiguration.settings || {});
-      setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
-      const resolvedPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
-      setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
-      setArchivePreviewPlan((current) => (
-        current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
-          ? current
-          : null
-      ));
-      return resolvedPhotoFolder;
-    } catch {
-      // Keep the current directory when settings cannot be refreshed.
-      return photoFolder;
-    }
+    return {
+      ...resolvedState,
+      inspection
+    };
   }
 
   function invalidatePreviewMessage() {
@@ -1816,42 +1814,86 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function selectPhotoFolder({ scanAfterSelect = false } = {}) {
-    const selected = await window.archiveAssistant.selectPhotoFolder();
+    const initialPath = getLocalPhotoPickerInitialPath(
+      photoFolder,
+      archiveState?.runtimeConfiguration
+    );
+    const selected = await window.archiveAssistant.selectPhotoFolder(initialPath);
     if (!selected) return false;
     if (scanAfterSelect && photos.length > 0 && !window.confirm('更换照片目录后会把新目录中的照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return false;
     }
-    const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('photoSource', selected);
-    archiveState?.applySavedSettings?.(runtimeConfiguration);
-    setSettings(runtimeConfiguration.settings || {});
-    window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-    const resolvedPhotoFolder = await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
-    if (!resolvedPhotoFolder) {
+    const selectedEntry = await inspectProjectPhotoFolder(selected, { apply: false });
+    if (selectedEntry.mode !== 'scan') {
       setStatus({ type: 'error', text: '所选照片来源目录当前不可用，请重新选择。' });
       return false;
     }
+    let persistedWorkspace = null;
+    const persistResult = await persistProjectPhotoFolder({
+      currentWorkspace: markiWorkbenchStateRef.current,
+      photoFolder: selectedEntry.photoFolder,
+      saveSnapshot: saveAutomaticSnapshotImmediately,
+      commitWorkspace: (workspace) => {
+        persistedWorkspace = workspace;
+      }
+    });
+    if (!persistResult.success) {
+      setStatus({ type: 'error', text: '照片来源目录未保存：项目工作台快照写入失败，请重试。' });
+      return false;
+    }
+    setPhotoFolder(selectedEntry.photoFolder);
+    setLocalPhotoSourceInspection(selectedEntry.inspection);
+    markiWorkbenchStateRef.current = persistedWorkspace;
+    sessionSnapshotRef.current = {
+      ...(sessionSnapshotRef.current || {}),
+      ...persistedWorkspace,
+      hasUnsavedChanges: true
+    };
+    sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+    markChanged();
+    try {
+      const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory(
+        'photoSource',
+        selectedEntry.photoFolder
+      );
+      archiveState?.applySavedSettings?.(runtimeConfiguration);
+      setSettings(runtimeConfiguration.settings || {});
+    } catch {
+      // The project source is already saved; the global recent path is only a picker convenience.
+    }
     if (scanAfterSelect) {
-      await scanPhotos(true);
+      await scanPhotos(true, selectedEntry.photoFolder);
     } else {
       setStatus({ type: 'idle', text: '照片来源目录已选择，请点击扫描。' });
     }
     return true;
   }
 
-  async function scanPhotos(force = false) {
+  async function scanPhotos(force = false, folder = effectivePhotoFolder) {
+    if (!folder) {
+      setStatus({ type: 'warning', text: '当前项目尚未选择可用的照片来源目录，请先导入照片。' });
+      return;
+    }
     if (!force && photos.length > 0 && !window.confirm('重新扫描会把尚未存在的新照片追加到统一照片池；已有本地照片、马克照片及全部处理状态都会保留，重复内容会自动跳过。确定继续吗？')) {
       return;
     }
     setIsBusy(true);
     try {
-      const scanResult = await window.archiveAssistant.scanConfiguredImages();
+      const scanResult = await window.archiveAssistant.scanPhotoSourceDirectory(folder);
       if (scanResult?.success !== true) {
-        if (scanResult?.health && scanResult.health.healthStatus !== 'healthy') {
-          setPhotoFolder('');
-        }
+        setLocalPhotoSourceInspection({
+          success: false,
+          directoryKind: 'photoSource',
+          health: scanResult?.health || scanResult?.directory || null
+        });
         setStatus({ type: 'error', text: scanResult?.message || scanResult?.error?.message || '照片来源目录当前不可用。' });
         return;
       }
+      setLocalPhotoSourceInspection({
+        success: true,
+        directoryKind: 'photoSource',
+        health: scanResult.directory
+      });
       const scanned = scanResult.photos || [];
       let archivedMatches = {};
       let archiveMatchWarning = '';
@@ -1893,6 +1935,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const scannedWorkspace = buildSortWorkspaceSnapshotWorkspace({
         activeProject,
         ...markiWorkbenchStateRef.current,
+        photoFolder: folder,
         photos: mergedPool.photos,
         selectedIds: mergedPool.selectedIds,
         activePhotoId: mergedPool.activePhotoId,
@@ -1967,6 +2010,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (!window.confirm('仅清空当前分拣列表和分拣状态，不会删除原始照片。确定清空吗？')) return;
     const emptyWorkspace = getEmptySortWorkspaceSnapshotWorkspace({
       activeProject,
+      photoFolder,
       archiveRoot,
       form,
       sortMode,
@@ -1996,7 +2040,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setEditingPhotoId('');
     invalidateBatchPreparationUndo();
     markChanged();
-    void synchronizePhotoFolderFromSettings();
     setStatus({ type: 'success', text: '已清空当前分拣列表，原始照片未受影响。' });
   }
 
@@ -3216,11 +3259,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       });
       return;
     }
-    const selected = await window.archiveAssistant.selectPhotoFolder();
+    const selected = await window.archiveAssistant.selectPhotoFolder(
+      getLocalPhotoPickerInitialPath(photoFolder, archiveState?.runtimeConfiguration)
+    );
     if (!selected) return;
     setIsBusy(true);
     try {
-      const scanned = await window.archiveAssistant.scanImages(selected);
+      const scanResult = await window.archiveAssistant.scanPhotoSourceDirectory(selected);
+      if (scanResult?.success !== true) {
+        setStatus({
+          type: 'error',
+          text: scanResult?.message || scanResult?.error?.message || '所选照片目录当前不可用。'
+        });
+        return;
+      }
+      const scanned = scanResult.photos || [];
       const available = [...scanned];
       let restoredCount = 0;
       let missingFingerprintCount = 0;
@@ -3249,7 +3302,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const restored = photos.map((photo) => restoredByPhotoId.get(photo.id) || photo);
       let relocatedWorkspace = null;
       const relinkResult = await persistLocalPhotoRelinks({
-        currentWorkspace: markiWorkbenchStateRef.current,
+        currentWorkspace: {
+          ...markiWorkbenchStateRef.current,
+          photoFolder: scanResult.directory?.normalizedPath || selected
+        },
         nextPhotos: restored,
         saveSnapshot: saveAutomaticSnapshotImmediately,
         commitWorkspace: (workspace) => {
@@ -3263,11 +3319,23 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         });
         return;
       }
-      const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory('photoSource', selected);
-      archiveState?.applySavedSettings?.(runtimeConfiguration);
-      setSettings(runtimeConfiguration.settings || {});
-      window.sessionStorage.removeItem(sortSessionPhotoFolderKey);
-      await synchronizePhotoFolderFromRuntimeConfiguration(runtimeConfiguration);
+      const restoredPhotoFolder = String(relocatedWorkspace.photoFolder || '').trim();
+      setPhotoFolder(restoredPhotoFolder);
+      setLocalPhotoSourceInspection({
+        success: true,
+        directoryKind: 'photoSource',
+        health: scanResult.directory
+      });
+      try {
+        const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory(
+          'photoSource',
+          restoredPhotoFolder
+        );
+        archiveState?.applySavedSettings?.(runtimeConfiguration);
+        setSettings(runtimeConfiguration.settings || {});
+      } catch {
+        // The current project snapshot remains authoritative.
+      }
       setPhotos(restored);
       markiWorkbenchStateRef.current = relocatedWorkspace;
       sessionSnapshotRef.current = {
@@ -3667,8 +3735,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function openPhotoDirectory() {
+    if (!effectivePhotoFolder) {
+      setStatus({ type: 'warning', text: '当前项目尚未选择可用的照片来源目录。' });
+      return;
+    }
     try {
-      const result = await window.archiveAssistant.openConfiguredDirectory('photoSource');
+      const result = await window.archiveAssistant.openPath(effectivePhotoFolder);
       setStatus({
         type: result?.success ? 'success' : 'error',
         text: result?.success

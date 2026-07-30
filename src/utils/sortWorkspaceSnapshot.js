@@ -1,6 +1,7 @@
 const SNAPSHOT_WORKSPACE_DEFAULTS = Object.freeze({
   projectId: '',
   projectName: '',
+  photoFolder: '',
   photos: [],
   selectedIds: [],
   activePhotoId: '',
@@ -53,6 +54,7 @@ export function buildSortWorkspaceSnapshotWorkspace(state = {}) {
   return {
     projectId: String(state.projectId || state.activeProject?.projectId || '').trim(),
     projectName: String(state.projectName || state.activeProject?.projectName || '').trim(),
+    photoFolder: String(state.photoFolder || '').trim(),
     photos: Array.isArray(state.photos) ? state.photos : [],
     selectedIds: Array.isArray(state.selectedIds) ? state.selectedIds : [],
     activePhotoId: state.activePhotoId || '',
@@ -226,6 +228,27 @@ export async function persistLocalPhotoRelinks({
   const workspace = buildSortWorkspaceSnapshotWorkspace({
     ...currentWorkspace,
     photos: nextPhotos
+  });
+  const snapshotResult = await saveSnapshot(workspace);
+  if (snapshotResult?.success !== true) {
+    return { success: false, workspace, snapshotResult };
+  }
+  commitWorkspace(workspace);
+  return { success: true, workspace, snapshotResult };
+}
+
+export async function persistProjectPhotoFolder({
+  currentWorkspace = {},
+  photoFolder = '',
+  saveSnapshot,
+  commitWorkspace
+} = {}) {
+  if (typeof saveSnapshot !== 'function' || typeof commitWorkspace !== 'function') {
+    throw new TypeError('项目照片来源持久化依赖无效');
+  }
+  const workspace = buildSortWorkspaceSnapshotWorkspace({
+    ...currentWorkspace,
+    photoFolder
   });
   const snapshotResult = await saveSnapshot(workspace);
   if (snapshotResult?.success !== true) {

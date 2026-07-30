@@ -99,12 +99,9 @@ export function getUsablePhotoFolder(settings) {
   return '';
 }
 
-export function resolveLocalPhotoEntryState(runtimeConfiguration, directoryInspection) {
-  const configuredDirectory = String(runtimeConfiguration?.photoSourceDirectory || '').trim();
+export function resolveLocalPhotoEntryState(projectPhotoFolder, directoryInspection) {
+  const configuredDirectory = String(projectPhotoFolder || '').trim();
   const health = directoryInspection?.health;
-  const runtimeRevision = String(runtimeConfiguration?.revision || '').trim();
-  const inspectionRevision = String(directoryInspection?.revision || '').trim();
-  const sameRevision = !runtimeRevision || !inspectionRevision || runtimeRevision === inspectionRevision;
   const inspectedConfiguredDirectory = String(health?.configuredPath || '').trim();
   const sameDirectory = !inspectedConfiguredDirectory
     || normalizeDirectoryIdentity(inspectedConfiguredDirectory) === normalizeDirectoryIdentity(configuredDirectory);
@@ -112,7 +109,6 @@ export function resolveLocalPhotoEntryState(runtimeConfiguration, directoryInspe
     configuredDirectory
     && directoryInspection?.success === true
     && directoryInspection?.directoryKind === 'photoSource'
-    && sameRevision
     && sameDirectory
     && health?.healthStatus === 'healthy'
     && health?.exists === true
@@ -127,6 +123,14 @@ export function resolveLocalPhotoEntryState(runtimeConfiguration, directoryInspe
     configuredDirectory,
     healthStatus: String(health?.healthStatus || (configuredDirectory ? 'unknown' : 'not_configured'))
   };
+}
+
+export function getLocalPhotoPickerInitialPath(projectPhotoFolder, runtimeConfiguration) {
+  const projectDirectory = String(projectPhotoFolder || '').trim();
+  if (projectDirectory) return projectDirectory;
+  const configuredDirectory = String(runtimeConfiguration?.photoSourceDirectory || '').trim();
+  if (configuredDirectory) return configuredDirectory;
+  return String(runtimeConfiguration?.settings?.lastPhotoFolder || '').trim();
 }
 
 export function getLocalPhotoEntryPresentation(photoFolder) {

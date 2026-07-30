@@ -1,9 +1,11 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('archiveAssistant', {
-  selectPhotoFolder: () => ipcRenderer.invoke('dialog:selectPhotoFolder'),
+  selectPhotoFolder: (initialPath = '') => ipcRenderer.invoke('dialog:selectPhotoFolder', { initialPath }),
   selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
+  inspectPhotoSourceDirectory: (folderPath) => ipcRenderer.invoke('photos:inspectSourceDirectory', folderPath),
+  scanPhotoSourceDirectory: (folderPath) => ipcRenderer.invoke('photos:scanSourceDirectory', folderPath),
   scanConfiguredImages: () => ipcRenderer.invoke('photos:scanConfigured'),
   inspectPhotoSourceFile: (input) => ipcRenderer.invoke('photos:inspectSourceFile', input),
   matchArchivedPhotos: (archiveRoot, photos) => ipcRenderer.invoke('photos:matchArchived', archiveRoot, photos),

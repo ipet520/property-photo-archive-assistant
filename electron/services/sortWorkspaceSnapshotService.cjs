@@ -408,6 +408,7 @@ function createEmptyWorkspace(activeProject = null) {
       projectId: project.projectId,
       projectName: project.projectName
     } : {}),
+    photoFolder: '',
     photos: [],
     selectedIds: [],
     activePhotoId: '',
@@ -473,6 +474,7 @@ function normalizeWorkspace(input, options = {}) {
       projectId: activeProject.projectId,
       projectName: activeProject.projectName
     } : {}),
+    photoFolder: normalizeText(input.photoFolder, 32767),
     photos,
     selectedIds,
     activePhotoId: safeActivePhotoId,

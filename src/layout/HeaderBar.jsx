@@ -3,7 +3,6 @@ import { APP_NAME, VERSION_SUMMARY } from '../constants/app.js';
 import appIconUrl from '../assets/app-icon.svg';
 
 export default function HeaderBar({ archiveState }) {
-  const photoSourceDirectory = archiveState.runtimeConfiguration?.photoSourceDirectory || '';
   const archiveRoot = archiveState.runtimeConfiguration?.archiveRootDirectory || '';
   const activeProject = archiveState.activeProject;
   const [switching, setSwitching] = useState(false);
@@ -64,7 +63,6 @@ export default function HeaderBar({ archiveState }) {
             {switchError && <small>{switchError}</small>}
           </span>
         )}
-        <span>照片来源：<strong title={photoSourceDirectory}>{photoSourceDirectory || '未设置'}</strong></span>
         <span>归档根目录：<strong title={archiveRoot}>{archiveRoot || '未设置'}</strong></span>
       </div>
     </header>

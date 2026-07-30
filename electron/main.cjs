@@ -394,6 +394,23 @@ async function inspectConfiguredDirectory(directoryKind, overrides = {}) {
   };
 }
 
+async function inspectPhotoSourceDirectory(folderPath) {
+  const health = await inspectDirectoryHealth(folderPath, {
+    readable: true,
+    writable: false,
+    allowCreate: false,
+    checkOnly: true
+  });
+  return {
+    success: health.healthStatus === 'healthy',
+    directoryKind: 'photoSource',
+    health,
+    message: health.healthStatus === 'healthy'
+      ? '照片来源目录可用。'
+      : createDirectoryHealthMessage('photoSource', health)
+  };
+}
+
 async function safeRecognitionCall(action, fallback) {
   try {
     return await action();
@@ -591,9 +608,11 @@ app.on('window-all-closed', () => {
   }
 });
 
-ipcMain.handle('dialog:selectPhotoFolder', async () => {
+ipcMain.handle('dialog:selectPhotoFolder', async (_event, input = {}) => {
+  const initialPath = String(input?.initialPath || '').trim();
   const result = await dialog.showOpenDialog({
     title: '选择照片文件夹',
+    ...(initialPath && path.isAbsolute(initialPath) ? { defaultPath: initialPath } : {}),
     properties: ['openDirectory']
   });
   return result.canceled ? null : result.filePaths[0];
@@ -608,6 +627,41 @@ ipcMain.handle('dialog:selectArchiveRoot', async () => {
 });
 
 ipcMain.handle('photos:scanImages', async (_event, folderPath) => scanImages(folderPath));
+ipcMain.handle('photos:inspectSourceDirectory', async (_event, folderPath) => {
+  try {
+    return await inspectPhotoSourceDirectory(folderPath);
+  } catch (error) {
+    return {
+      success: false,
+      directoryKind: 'photoSource',
+      health: null,
+      message: String(error?.message || '照片来源目录当前不可用。')
+    };
+  }
+});
+ipcMain.handle('photos:scanSourceDirectory', async (_event, folderPath) => {
+  try {
+    const inspection = await inspectPhotoSourceDirectory(folderPath);
+    if (!inspection.success) return { ...inspection, photos: [], failures: [] };
+    const result = await scanImagesWithHealth(inspection.health.normalizedPath);
+    return {
+      success: true,
+      directory: inspection.health,
+      photos: result.photos,
+      failures: result.failures
+    };
+  } catch (error) {
+    return {
+      success: false,
+      photos: [],
+      failures: [],
+      error: {
+        code: 'project_photo_scan_failed',
+        message: String(error?.message || '照片来源目录当前不可用。')
+      }
+    };
+  }
+});
 ipcMain.handle('photos:scanConfigured', async () => {
   try {
     const inspection = await inspectConfiguredDirectory('photoSource');
