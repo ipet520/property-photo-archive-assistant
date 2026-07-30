@@ -73,6 +73,13 @@ export function selectMarkiFilteredTokens(photos = []) {
     .filter(Boolean);
 }
 
+export function pruneMarkiSelectionTokens(selectedTokens = [], photos = []) {
+  const selectableTokens = new Set(selectMarkiFilteredTokens(photos));
+  return (Array.isArray(selectedTokens) ? selectedTokens : [])
+    .map(String)
+    .filter((token) => selectableTokens.has(token));
+}
+
 export function summarizeMarkiQueryResults(rawPhotos = [], filteredPhotos = [], selectedTokens = []) {
   const selected = new Set(selectedTokens.map(String));
   const projectCounts = rawPhotos.reduce((counts, photo) => {
@@ -96,6 +103,53 @@ export function summarizeMarkiQueryResults(rawPhotos = [], filteredPhotos = [], 
     selectedCount: filteredPhotos.filter((photo) => selected.has(String(photo.selectionToken))).length,
     selectableCount: filteredPhotos.filter(isMarkiQueryPhotoSelectable).length,
     ...projectCounts
+  };
+}
+
+export function createMarkiProjectWorkspaceController({
+  getState,
+  invalidateExecution,
+  destroySession,
+  clearStoredSession,
+  resetState
+} = {}) {
+  if (
+    typeof getState !== 'function'
+    || typeof invalidateExecution !== 'function'
+    || typeof destroySession !== 'function'
+    || typeof clearStoredSession !== 'function'
+    || typeof resetState !== 'function'
+  ) {
+    throw new TypeError('Marki 项目页面控制器依赖无效');
+  }
+  return {
+    isBusy() {
+      const state = getState() || {};
+      return Boolean(state.busy || state.isRefreshingReadyBatches);
+    },
+    async flush() {
+      return { success: true };
+    },
+    async clear() {
+      const state = getState() || {};
+      invalidateExecution();
+      const sessionId = String(state.sessionId || '').trim();
+      if (sessionId) {
+        const result = await destroySession(sessionId);
+        if (result?.success !== true) {
+          return {
+            success: false,
+            error: {
+              code: result?.error?.code || 'marki_photo_query_session_destroy_failed',
+              message: result?.error?.message || '当前马克查询会话清理失败。'
+            }
+          };
+        }
+      }
+      clearStoredSession();
+      resetState();
+      return { success: true };
+    }
   };
 }
 

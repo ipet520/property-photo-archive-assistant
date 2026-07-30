@@ -48,6 +48,7 @@ import {
   buildSortWorkspaceSnapshotWorkspace,
   createDebouncedSnapshotSaver,
   getEmptySortWorkspaceSnapshotWorkspace,
+  loadProjectWorkspaceSnapshotWithLegacyMigration,
   persistLocalPhotoRelinks,
   persistMarkiWorkbenchImport,
   prepareWorkspaceAfterPhotoAppend,
@@ -320,23 +321,22 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, []);
 
   async function loadActiveProjectSnapshot() {
-    const loaded = await window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
-    if (loaded?.success !== true || loaded.found === true) return loaded;
-    if (typeof window.archiveAssistant.inspectLegacySortWorkspaceSnapshot !== 'function') return loaded;
-    const legacy = await window.archiveAssistant.inspectLegacySortWorkspaceSnapshot(activeProject);
-    if (legacy?.success !== true || legacy.found !== true || legacy.canMigrate !== true) {
-      if (legacy?.found && legacy?.error?.message) {
-        setStatus({ type: 'warning', text: legacy.error.message });
-      }
-      return loaded;
+    if (typeof window.archiveAssistant.inspectLegacySortWorkspaceSnapshot !== 'function') {
+      return window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
     }
-    const confirmed = window.confirm(
-      `检测到升级前的旧工作台。\n是否将旧工作台归属到当前项目“${activeProject.projectName}”？`
-    );
-    if (!confirmed) return loaded;
-    const migrated = await window.archiveAssistant.migrateLegacySortWorkspaceSnapshot(activeProject);
-    if (migrated?.success !== true) return migrated;
-    return window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
+    return loadProjectWorkspaceSnapshotWithLegacyMigration({
+      activeProject,
+      loadSnapshot: (project) => window.archiveAssistant.loadSortWorkspaceSnapshot(project),
+      inspectLegacy: (project) => window.archiveAssistant.inspectLegacySortWorkspaceSnapshot(project),
+      migrateLegacy: (project) => window.archiveAssistant.migrateLegacySortWorkspaceSnapshot(project),
+      confirmMigration: (_inspection, project) => window.confirm(
+        `检测到升级前的旧工作台。\n是否将旧工作台归属到当前项目“${project.projectName}”？`
+      ),
+      onLegacyBlocked: (inspection) => {
+        const message = inspection?.message || inspection?.error?.message;
+        if (message) setStatus({ type: 'warning', text: message });
+      }
+    });
   }
 
   useEffect(() => {

@@ -242,6 +242,47 @@ export function getEmptySortWorkspaceSnapshotWorkspace(overrides = {}) {
   });
 }
 
+export function shouldOfferLegacyWorkspaceMigration(inspection) {
+  return (
+    inspection?.success === true
+    && inspection.found === true
+    && inspection.migrationAvailable === true
+  );
+}
+
+export async function loadProjectWorkspaceSnapshotWithLegacyMigration({
+  activeProject,
+  loadSnapshot,
+  inspectLegacy,
+  migrateLegacy,
+  confirmMigration,
+  onLegacyBlocked
+} = {}) {
+  if (
+    typeof loadSnapshot !== 'function'
+    || typeof inspectLegacy !== 'function'
+    || typeof migrateLegacy !== 'function'
+    || typeof confirmMigration !== 'function'
+  ) {
+    throw new TypeError('旧工作台迁移依赖无效');
+  }
+  const loaded = await loadSnapshot(activeProject);
+  if (loaded?.success !== true || loaded.found === true) return loaded;
+
+  const inspection = await inspectLegacy(activeProject);
+  if (!shouldOfferLegacyWorkspaceMigration(inspection)) {
+    if (inspection?.found === true && typeof onLegacyBlocked === 'function') {
+      onLegacyBlocked(inspection);
+    }
+    return loaded;
+  }
+  if (confirmMigration(inspection, activeProject) !== true) return loaded;
+
+  const migrated = await migrateLegacy(activeProject);
+  if (migrated?.success !== true) return migrated;
+  return loadSnapshot(activeProject);
+}
+
 export function buildSortWorkspaceManualDraft(workspace, options = {}) {
   const savedAt = normalizeIsoTimestamp(options.savedAt || new Date().toISOString());
   return {

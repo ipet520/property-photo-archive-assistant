@@ -249,6 +249,33 @@ export function stripReadonlyProjectPatch(patch = {}) {
   };
 }
 
+export async function runProjectWorkspaceTransition(controller, currentProject) {
+  if (controller?.isBusy?.()) {
+    return {
+      success: false,
+      code: 'project_switch_busy',
+      message: '当前有任务正在执行，请完成后再切换项目。'
+    };
+  }
+  const saveResult = await controller?.flush?.(currentProject);
+  if (saveResult && saveResult.success !== true) {
+    return {
+      success: false,
+      code: saveResult?.error?.code || 'sort_workspace_snapshot_save_failed',
+      message: saveResult?.error?.message || '当前项目工作台保存失败，已取消切换。'
+    };
+  }
+  const clearResult = await controller?.clear?.();
+  if (clearResult && clearResult.success !== true) {
+    return {
+      success: false,
+      code: clearResult?.error?.code || 'project_workspace_clear_failed',
+      message: clearResult?.error?.message || '当前项目状态清理失败，已取消切换。'
+    };
+  }
+  return { success: true };
+}
+
 export function normalizeActiveProjectValue(value) {
   const projectId = cleanId(value?.projectId);
   const projectName = cleanProjectText(value?.projectName);

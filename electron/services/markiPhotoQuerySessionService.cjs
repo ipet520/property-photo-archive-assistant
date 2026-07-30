@@ -291,15 +291,17 @@ async function appendPageToSession(session, result, dependencies) {
       orgId: session.orgId,
       sourceKeys: candidates.map((item) => item.sourceKey)
     })
-    : { bySourceKey: {} };
+    : { bySourceKey: {}, assignedProjectBySourceKey: {} };
   const statusBySourceKey = sourceStatusResult?.bySourceKey || {};
+  const assignedProjectBySourceKey = sourceStatusResult?.assignedProjectBySourceKey || {};
   const preparedEntries = candidates.map((candidate, index) => ({
     ...candidate,
     selectionToken: createOpaqueId(dependencies.randomUUID),
     displayId: String(session.orderedSelectionTokens.length + index + 1),
     selectedSourceStatus: normalizeSourceStatus(
       statusBySourceKey[candidate.sourceKey] || 'discovered'
-    )
+    ),
+    ...normalizeAssignedProject(assignedProjectBySourceKey[candidate.sourceKey])
   }));
 
   for (const entry of preparedEntries) {
@@ -310,6 +312,9 @@ async function appendPageToSession(session, result, dependencies) {
       templateName: entry.templateName,
       templateKey: entry.templateKey,
       selectedSourceStatus: entry.selectedSourceStatus,
+      assignedProjectId: entry.assignedProjectId,
+      assignedProjectName: entry.assignedProjectName,
+      projectAssignmentSource: entry.projectAssignmentSource,
       importStatus: IMPORT_TASK_STATUSES.IDLE,
       importTaskId: ''
     });
@@ -596,7 +601,10 @@ function buildSafePhotoSummary(selectionToken, entry) {
     projectText: getOwnField(fields, '小区名称'),
     workContentText: getOwnField(fields, '工作内容') || getOwnField(fields, '标题'),
     locationText: getOwnField(fields, '地点'),
-    selectedSourceStatus: entry.selectedSourceStatus
+    selectedSourceStatus: entry.selectedSourceStatus,
+    assignedProjectId: entry.assignedProjectId,
+    assignedProjectName: entry.assignedProjectName,
+    projectAssignmentSource: entry.projectAssignmentSource
   };
 }
 
@@ -775,6 +783,10 @@ async function refreshSessionSourceStatuses(session, dependencies) {
   for (const selectionToken of session.orderedSelectionTokens) {
     const entry = session.momentsBySelectionToken.get(selectionToken);
     if (!entry) continue;
+    Object.assign(
+      entry,
+      normalizeAssignedProject(result.assignedProjectBySourceKey?.[entry.sourceKey])
+    );
     if (entry.importStatus === IMPORT_TASK_STATUSES.IN_PROGRESS) {
       entry.selectedSourceStatus = 'downloading';
     } else if (entry.importStatus === IMPORT_TASK_STATUSES.FAILED) {
@@ -789,6 +801,14 @@ async function refreshSessionSourceStatuses(session, dependencies) {
       );
     }
   }
+}
+
+function normalizeAssignedProject(value) {
+  return {
+    assignedProjectId: String(value?.projectId || '').trim().slice(0, 200),
+    assignedProjectName: String(value?.projectName || '').normalize('NFKC').trim().slice(0, 500),
+    projectAssignmentSource: String(value?.projectAssignmentSource || '').trim().slice(0, 200)
+  };
 }
 
 function resolveTemplateIdentity(moment) {

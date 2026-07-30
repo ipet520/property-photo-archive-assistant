@@ -22,10 +22,12 @@ import {
 import {
   MARKI_IMPORT_STATUS_FILTERS,
   buildMarkiTemplateFilterOptions,
+  createMarkiProjectWorkspaceController,
   filterMarkiQueryPhotos,
   formatMarkiImportLifecycleStatus,
   isMarkiQueryPhotoSelectable,
   normalizeStoredTemplateFilter,
+  pruneMarkiSelectionTokens,
   selectMarkiFilteredTokens,
   summarizeMarkiQueryResults
 } from '../utils/markiImportLifecycle.js';
@@ -51,19 +53,69 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
   const [notice, setNotice] = useState({ type: 'idle', text: '' });
   const [retryLocked, setRetryLocked] = useState(false);
   const mountedRef = useRef(true);
+  const executionGenerationRef = useRef(0);
+  const projectPageStateRef = useRef(null);
   const readyBatchRefreshRef = useRef(null);
   if (!readyBatchRefreshRef.current) {
     readyBatchRefreshRef.current = createMarkiReadyBatchRefresh();
   }
+  projectPageStateRef.current = {
+    busy,
+    isRefreshingReadyBatches,
+    sessionId: session?.sessionId || ''
+  };
+  const updateBusy = useCallback((value) => {
+    if (projectPageStateRef.current) projectPageStateRef.current.busy = value;
+    setBusy(value);
+  }, []);
+  const updateReadyBatchRefreshing = useCallback((value) => {
+    if (projectPageStateRef.current) {
+      projectPageStateRef.current.isRefreshingReadyBatches = Boolean(value);
+    }
+    setIsRefreshingReadyBatches(Boolean(value));
+  }, []);
+  const isCurrentExecution = useCallback(
+    (token) => mountedRef.current && token === executionGenerationRef.current,
+    []
+  );
+  const projectControllerRef = useRef(null);
+  if (!projectControllerRef.current) {
+    projectControllerRef.current = createMarkiProjectWorkspaceController({
+      getState: () => projectPageStateRef.current,
+      invalidateExecution: () => {
+        executionGenerationRef.current += 1;
+      },
+      destroySession: destroyMarkiPhotoQuerySession,
+      clearStoredSession,
+      resetState: () => {
+        setSession(null);
+        setSelectedTokens([]);
+        setRetryLocked(false);
+        setFilters(initialFilters);
+        setMembers([]);
+        setReadyBatches([]);
+        setImportRecords([]);
+        setNotice({ type: 'idle', text: '' });
+        updateBusy('');
+        updateReadyBatchRefreshing(false);
+      }
+    });
+  }
+
+  useEffect(
+    () => archiveState?.registerProjectWorkspaceController?.(projectControllerRef.current),
+    [archiveState?.registerProjectWorkspaceController]
+  );
 
   const loadReadyBatches = useCallback(async ({ announce = false } = {}) => {
-    setIsRefreshingReadyBatches(true);
+    const executionToken = executionGenerationRef.current;
+    updateReadyBatchRefreshing(true);
     if (announce) {
       setNotice({ type: 'info', text: '正在刷新待处理批次...' });
     }
     try {
       const result = await readyBatchRefreshRef.current(activeProject);
-      if (!mountedRef.current) return;
+      if (!isCurrentExecution(executionToken)) return;
       if (result.success) {
         setReadyBatches(result.items);
       }
@@ -71,32 +123,35 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
         setNotice(result.notice);
       }
     } finally {
-      if (mountedRef.current) {
-        setIsRefreshingReadyBatches(false);
+      if (isCurrentExecution(executionToken)) {
+        updateReadyBatchRefreshing(false);
       }
     }
-  }, [activeProject]);
+  }, [activeProject, isCurrentExecution, updateReadyBatchRefreshing]);
 
   useEffect(() => {
     mountedRef.current = true;
     void initializePage();
     return () => {
       mountedRef.current = false;
+      executionGenerationRef.current += 1;
     };
 
     async function initializePage() {
-      setBusy('initializing');
+      const executionToken = executionGenerationRef.current;
+      updateBusy('initializing');
       const [statusResult, teamResult] = await Promise.all([
         getMarkiConfigStatus(),
         listMarkiTeams()
       ]);
-      if (!mountedRef.current) return;
+      if (!isCurrentExecution(executionToken)) return;
       const isConfigured = statusResult?.configured === true;
       setConfigured(isConfigured);
       if (isConfigured && teamResult?.success) {
         setTeams(Array.isArray(teamResult.teams) ? teamResult.teams : []);
       }
       const recoveryResult = await recoverMarkiImportLifecycle(activeProject);
+      if (!isCurrentExecution(executionToken)) return;
       if (recoveryResult?.success === false) {
         setNotice({
           type: 'error',
@@ -104,14 +159,16 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
         });
       }
       await Promise.all([loadReadyBatches(), loadImportRecords()]);
+      if (!isCurrentExecution(executionToken)) return;
       const stored = readStoredSession();
       if (stored?.activeProjectId && stored.activeProjectId !== activeProject?.projectId) {
         if (stored.sessionId) await destroyMarkiPhotoQuerySession(stored.sessionId);
+        if (!isCurrentExecution(executionToken)) return;
         clearStoredSession();
       }
       if (isConfigured && stored?.sessionId) {
         const restored = await getMarkiPhotoQuerySession(stored.sessionId);
-        if (!mountedRef.current) return;
+        if (!isCurrentExecution(executionToken)) return;
         if (restored?.success) {
           const restoredFilters = normalizeStoredFilters(stored.filters, initialFilters);
           setSession(restored);
@@ -122,14 +179,15 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
           );
           setRetryLocked(stored.retryLocked === true);
           if (restoredFilters.teamId) await loadAllMembers(restoredFilters.teamId);
+          if (!isCurrentExecution(executionToken)) return;
           setNotice({ type: 'success', text: `已恢复查询会话，共 ${restored.photos.length} 张照片。` });
         } else {
           clearStoredSession();
         }
       }
-      setBusy('');
+      if (isCurrentExecution(executionToken)) updateBusy('');
     }
-  }, [activeProject, initialFilters, loadReadyBatches]);
+  }, [activeProject, initialFilters, isCurrentExecution, loadReadyBatches, updateBusy]);
 
   useEffect(() => {
     if (!session?.sessionId) return;
@@ -149,7 +207,10 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
       setFilters((current) => ({ ...current, [key]: value }));
       return;
     }
+    const executionToken = executionGenerationRef.current;
+    updateBusy('filter');
     await abandonCurrentSession();
+    if (!isCurrentExecution(executionToken)) return;
     setFilters((current) => ({
       ...current,
       [key]: value,
@@ -158,7 +219,9 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
     if (key === 'teamId') {
       setMembers([]);
       if (value) await loadAllMembers(value);
+      if (!isCurrentExecution(executionToken)) return;
     }
+    updateBusy('');
   }
 
   async function abandonCurrentSession() {
@@ -171,7 +234,8 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
   }
 
   async function loadAllMembers(teamId) {
-    setBusy('members');
+    const executionToken = executionGenerationRef.current;
+    updateBusy('members');
     const allMembers = [];
     const seenMembers = new Set();
     const seenCursors = new Set();
@@ -179,8 +243,9 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
     let hasMore = true;
     for (let page = 0; page < MAX_MEMBER_PAGES && hasMore; page += 1) {
       const result = await listMarkiMembers({ teamId, ...(next ? { next } : {}) });
+      if (!isCurrentExecution(executionToken)) return;
       if (!result?.success) {
-        setBusy('');
+        updateBusy('');
         setNotice({ type: 'error', text: result?.error?.message || '成员列表读取失败。' });
         return;
       }
@@ -193,7 +258,7 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
       hasMore = result.hasMore === true;
       const cursor = String(result.next || '');
       if (hasMore && (!cursor || seenCursors.has(cursor))) {
-        setBusy('');
+        updateBusy('');
         setNotice({ type: 'error', text: '成员分页信息异常，请重新选择团队。' });
         return;
       }
@@ -206,7 +271,7 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
       setMembers(allMembers);
       setNotice({ type: 'success', text: `已读取 ${allMembers.length} 名成员。` });
     }
-    setBusy('');
+    if (isCurrentExecution(executionToken)) updateBusy('');
   }
 
   async function startQuery() {
@@ -215,10 +280,13 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
       setNotice({ type: 'error', text: validation });
       return;
     }
+    const executionToken = executionGenerationRef.current;
+    updateBusy('query');
     await abandonCurrentSession();
-    setBusy('query');
+    if (!isCurrentExecution(executionToken)) return;
     const result = await startMarkiPhotoQuerySession(buildQueryInput(filters));
-    setBusy('');
+    if (!isCurrentExecution(executionToken)) return;
+    updateBusy('');
     if (!result?.success) {
       setNotice({ type: 'error', text: result?.error?.message || '马克照片查询失败。' });
       return;
@@ -229,9 +297,11 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
 
   async function loadNextPage() {
     if (!session?.sessionId || !session.pagination?.hasMore) return;
-    setBusy('next');
+    const executionToken = executionGenerationRef.current;
+    updateBusy('next');
     const result = await loadNextMarkiPhotoQueryPage(session.sessionId);
-    setBusy('');
+    if (!isCurrentExecution(executionToken)) return;
+    updateBusy('');
     if (!result?.success) {
       setNotice({ type: 'error', text: result?.error?.message || '下一页读取失败。' });
       return;
@@ -259,7 +329,8 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
 
   async function importSelection() {
     if (!session?.sessionId || selectedTokens.length === 0) return;
-    setBusy('import');
+    const executionToken = executionGenerationRef.current;
+    updateBusy('import');
     const result = await importMarkiPhotoQuerySelection({
       sessionId: session.sessionId,
       selectionTokens: selectedTokens,
@@ -268,10 +339,12 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
       activeProjectId: activeProject?.projectId,
       activeProjectName: activeProject?.projectName
     });
-    setBusy('');
+    if (!isCurrentExecution(executionToken)) return;
+    updateBusy('');
     if (result?.status === 'ready' && result.batchId) {
       setRetryLocked(false);
       await Promise.all([loadReadyBatches(), loadImportRecords()]);
+      if (!isCurrentExecution(executionToken)) return;
       onNavigate({
         page: PAGE_KEYS.sortWorkspace,
         action: 'appendMarkiImportBatch',
@@ -292,7 +365,9 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
         text: `${formatImportFailureStatus(result.status)}${failureSummary} 可使用当前照片集合重试。`
       });
       await loadReadyBatches();
+      if (!isCurrentExecution(executionToken)) return;
       await loadImportRecords();
+      if (!isCurrentExecution(executionToken)) return;
       return;
     }
     setNotice({ type: 'error', text: result?.error?.message || '马克照片导入失败，请重试。' });
@@ -307,8 +382,9 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
   }
 
   async function loadImportRecords({ announce = false } = {}) {
+    const executionToken = executionGenerationRef.current;
     const result = await listMarkiImportRecords(activeProject);
-    if (!mountedRef.current) return;
+    if (!isCurrentExecution(executionToken)) return;
     if (result?.success) {
       setImportRecords(Array.isArray(result.items) ? result.items : []);
       if (announce) {
@@ -325,16 +401,20 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
   async function runRecordAction(action, batchId, confirmMessage = '') {
     if (isBusy) return;
     if (confirmMessage && !window.confirm(confirmMessage)) return;
-    setBusy('record');
+    const executionToken = executionGenerationRef.current;
+    updateBusy('record');
     const result = await action(batchId, activeProject);
-    setBusy('');
+    if (!isCurrentExecution(executionToken)) return;
+    updateBusy('');
     if (!result?.success) {
       setNotice({ type: 'error', text: result?.error?.message || '导入记录操作失败。' });
       return;
     }
     await Promise.all([loadImportRecords(), loadReadyBatches()]);
+    if (!isCurrentExecution(executionToken)) return;
     if (session?.sessionId) {
       const refreshed = await getMarkiPhotoQuerySession(session.sessionId);
+      if (!isCurrentExecution(executionToken)) return;
       if (refreshed?.success) setSession(refreshed);
     }
     setSelectedTokens([]);
@@ -350,16 +430,21 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
 
   async function retryImportRecord(record) {
     if (isBusy) return;
+    const executionToken = executionGenerationRef.current;
+    updateBusy('retry');
     const nextFilters = buildRecordRetryFilters(record, initialFilters);
     await abandonCurrentSession();
+    if (!isCurrentExecution(executionToken)) return;
     setFilters(nextFilters);
     setMembers([]);
     if (nextFilters.teamId) {
       await loadAllMembers(nextFilters.teamId);
+      if (!isCurrentExecution(executionToken)) return;
     }
-    setBusy('query');
+    updateBusy('retry');
     const result = await startMarkiPhotoQuerySession(buildQueryInput(nextFilters));
-    setBusy('');
+    if (!isCurrentExecution(executionToken)) return;
+    updateBusy('');
     if (!result?.success) {
       setNotice({ type: 'error', text: result?.error?.message || '失败照片重新查询失败。' });
       return;
@@ -379,9 +464,17 @@ export default function MarkiPhotoImportPage({ archiveState, onNavigate }) {
     projectCompatibility: classifyPhotoProjectCompatibility({
       activeProject,
       projectOptions: archiveState?.projectOptions || [],
-      sourceProjectText: photo.projectText
+      sourceProjectText: photo.projectText,
+      assignedProjectId: photo.assignedProjectId,
+      assignedProjectName: photo.assignedProjectName
     })
   })), [activeProject, archiveState?.projectOptions, rawQueryResults]);
+  useEffect(() => {
+    setSelectedTokens((current) => {
+      const next = pruneMarkiSelectionTokens(current, projectAwareQueryResults);
+      return next.length === current.length ? current : next;
+    });
+  }, [projectAwareQueryResults]);
   const templateOptions = useMemo(
     () => buildMarkiTemplateFilterOptions(projectAwareQueryResults),
     [projectAwareQueryResults]

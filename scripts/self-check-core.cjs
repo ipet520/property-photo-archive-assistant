@@ -3787,9 +3787,12 @@ async function checkMarkiPhotoQuerySessions(root) {
       'projectText',
       'workContentText',
       'locationText',
-      'selectedSourceStatus'
+      'selectedSourceStatus',
+      'assignedProjectId',
+      'assignedProjectName',
+      'projectAssignmentSource'
     ],
-    'renderer 照片摘要必须严格使用十三字段安全白名单'
+    'renderer 照片摘要必须严格使用十六字段安全白名单'
   );
   scenarioCount += 1;
 
@@ -12460,6 +12463,12 @@ async function checkActiveProjectBusinessBoundary(root) {
   const validationModule = await import(
     `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/archiveFormValidation.js')).href}?active-project=${Date.now()}`
   );
+  const snapshotUiModule = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js')).href}?active-project=${Date.now()}`
+  );
+  const markiLifecycleUi = await import(
+    `${pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiImportLifecycle.js')).href}?active-project=${Date.now()}`
+  );
   const workbenchModule = await import(
     `${pathToFileURL(path.resolve(process.cwd(), 'electron/services/markiWorkbenchImportCore.js')).href}?active-project=${Date.now()}`
   );
@@ -12600,16 +12609,38 @@ async function checkActiveProjectBusinessBoundary(root) {
     const restoredA = await loadSortWorkspaceSnapshot(switchRoot, { activeProject: projectA });
     equal(restoredA.snapshot.workspace.photos[0].id, photoA.id, '切回项目 A 必须恢复 A 的照片');
     equal(restoredA.snapshot.workspace.groupDraftByGroupId['group-a'].remarks, 'A组草稿', '切回项目 A 必须恢复 A 的草稿');
-    const hookSource = await fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8');
+    const [hookSource, activeContextSource] = await Promise.all([
+      fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8'),
+      fs.readFile(path.join(process.cwd(), 'src/utils/activeProjectContext.js'), 'utf8')
+    ]);
     const switchSource = hookSource
       .split('const switchActiveProject = useCallback', 2)[1]
       ?.split('const clearActiveProject = useCallback', 1)[0] || '';
+    const transitionSource = activeContextSource
+      .split('export async function runProjectWorkspaceTransition', 2)[1]
+      ?.split('export function normalizeActiveProjectValue', 1)[0] || '';
     sourceCheck(
-      switchSource.indexOf('const saveResult = await controller?.flush?.(activeProject)')
-        < switchSource.indexOf('setActiveProject(resolved)'),
-      '项目切换必须先 flush 当前项目再切换'
+      transitionSource.indexOf('await controller?.flush?.(currentProject)')
+        < transitionSource.indexOf('await controller?.clear?.()'),
+      '项目切换必须按 flush、clear 顺序执行'
     );
-    sourceCheck(switchSource.includes('if (saveResult && saveResult.success !== true)'), '快照保存失败必须禁止切换');
+    sourceCheck(
+      switchSource.indexOf('await runProjectWorkspaceTransition')
+        < switchSource.indexOf('setActiveProject(resolved)'),
+      '项目切换必须等待统一控制器完成后再设置新项目'
+    );
+    const saveFailure = await activeContext.runProjectWorkspaceTransition({
+      isBusy: () => false,
+      flush: async () => ({
+        success: false,
+        error: { code: 'sort_workspace_snapshot_save_failed', message: '模拟保存失败。' }
+      }),
+      clear: async () => {
+        throw new Error('保存失败时不得清理工作台');
+      }
+    }, projectA);
+    equal(saveFailure.success, false, '快照保存失败必须禁止切换');
+    equal(saveFailure.code, 'sort_workspace_snapshot_save_failed', '快照保存失败必须保留稳定错误码');
   });
 
   await scenario('项目级快照隔离', async () => {
@@ -12682,6 +12713,357 @@ async function checkActiveProjectBusinessBoundary(root) {
     const mixed = await inspectLegacySortWorkspaceSnapshot(mixedRoot, projectA);
     equal(mixed.migrationAvailable, false, '旧快照包含多个项目时不得迁移');
     equal(mixed.status, 'legacy_mixed_project', '旧多项目快照必须返回 legacy_mixed_project');
+  });
+
+  await scenario('renderer 使用 migrationAvailable 迁移契约', async () => {
+    const calls = [];
+    let loadCount = 0;
+    const result = await snapshotUiModule.loadProjectWorkspaceSnapshotWithLegacyMigration({
+      activeProject: projectA,
+      loadSnapshot: async (project) => {
+        calls.push(`load:${project.projectId}`);
+        loadCount += 1;
+        return loadCount === 1
+          ? { success: true, found: false }
+          : { success: true, found: true, snapshot: { workspace: makeWorkspace(projectA) } };
+      },
+      inspectLegacy: async () => {
+        calls.push('inspect');
+        return { success: true, found: true, migrationAvailable: true };
+      },
+      migrateLegacy: async () => {
+        calls.push('migrate');
+        return { success: true };
+      },
+      confirmMigration: () => {
+        calls.push('confirm');
+        return true;
+      }
+    });
+    equal(result.found, true, 'renderer 确认迁移后必须重新加载项目快照');
+    deepEqual(
+      calls,
+      ['load:project-a', 'inspect', 'confirm', 'migrate', 'load:project-a'],
+      'renderer 必须按加载、检查、确认、迁移、重载顺序执行'
+    );
+    equal(
+      snapshotUiModule.shouldOfferLegacyWorkspaceMigration({
+        success: true,
+        found: true,
+        migrationAvailable: false,
+        canMigrate: true
+      }),
+      false,
+      'renderer 不得依赖 canMigrate 别名'
+    );
+
+    let cancelledMigrations = 0;
+    const cancelled = await snapshotUiModule.loadProjectWorkspaceSnapshotWithLegacyMigration({
+      activeProject: projectA,
+      loadSnapshot: async () => ({ success: true, found: false }),
+      inspectLegacy: async () => ({ success: true, found: true, migrationAvailable: true }),
+      migrateLegacy: async () => {
+        cancelledMigrations += 1;
+        return { success: true };
+      },
+      confirmMigration: () => false
+    });
+    equal(cancelled.found, false, '用户取消时项目工作台必须保持空');
+    equal(cancelledMigrations, 0, '用户取消时不得调用迁移');
+
+    const blockedMessages = [];
+    await snapshotUiModule.loadProjectWorkspaceSnapshotWithLegacyMigration({
+      activeProject: projectA,
+      loadSnapshot: async () => ({ success: true, found: false }),
+      inspectLegacy: async () => ({
+        success: true,
+        found: true,
+        migrationAvailable: false,
+        status: 'legacy_mixed_project',
+        message: '旧工作台包含多个项目，不能自动迁移。'
+      }),
+      migrateLegacy: async () => ({ success: true }),
+      confirmMigration: () => true,
+      onLegacyBlocked: (inspection) => blockedMessages.push(inspection.message)
+    });
+    deepEqual(
+      blockedMessages,
+      ['旧工作台包含多个项目，不能自动迁移。'],
+      '项目冲突或混合项目必须显示服务状态消息且不弹迁移确认'
+    );
+  });
+
+  const createProjectLockQueryService = ({ getAssignedProject }) => {
+    let uuidValue = 1;
+    return createMarkiPhotoQuerySessionService({
+      now: () => Date.UTC(2026, 6, 29, 0, 0, 0),
+      randomUUID: () => `10000000-0000-4000-8000-${String(uuidValue++).padStart(12, '0')}`,
+      listMarkiMoments: async () => ({
+        success: true,
+        moments: [{
+          id: 'project-lock-moment',
+          uid: '20001',
+          teamId: '10001',
+          url: 'https://images.test/project-lock-moment.jpg',
+          momentType: 1,
+          content: JSON.stringify([
+            ['小区名称', projectA.projectName],
+            ['工作内容', '秩序巡查'],
+            ['地点', '东门']
+          ]),
+          markName: '正常工作记录',
+          lng: 0,
+          lat: 0,
+          postTime: Math.floor(Date.UTC(2026, 6, 28, 1, 0, 0) / 1000)
+        }],
+        next: '',
+        hasMore: false
+      }),
+      resolveSourceStatuses: async ({ sourceKeys }) => {
+        const sourceKey = sourceKeys[0];
+        const assignedProject = getAssignedProject();
+        return {
+          success: true,
+          bySourceKey: { [sourceKey]: 'discovered' },
+          assignedProjectBySourceKey: assignedProject
+            ? { [sourceKey]: assignedProject }
+            : {}
+        };
+      }
+    });
+  };
+  const createProjectLockQueryInput = () => ({
+    credentials: { orgId: '12345', key: 'mock-key' },
+    documentsPath: path.join(root, 'project-lock-documents'),
+    userDataPath: path.join(root, 'project-lock-user-data'),
+    filters: {
+      teamId: 10001,
+      uid: 20001,
+      start: '2026-07-28 00:00:00',
+      end: '2026-07-29 00:00:00'
+    }
+  });
+
+  await scenario('Marki 来源项目锁定首次查询', async () => {
+    const assignedProject = {
+      projectId: projectB.projectId,
+      projectName: projectB.projectName,
+      projectAssignmentSource: 'marki_structured_confirmed'
+    };
+    const service = createProjectLockQueryService({
+      getAssignedProject: () => assignedProject
+    });
+    const created = await service.create(createProjectLockQueryInput());
+    const photo = created.photos[0];
+    equal(photo.assignedProjectId, projectB.projectId, '安全摘要必须返回来源锁定项目 ID');
+    equal(photo.assignedProjectName, projectB.projectName, '安全摘要必须返回来源锁定项目名称');
+    equal(
+      photo.projectAssignmentSource,
+      'marki_structured_confirmed',
+      '安全摘要必须返回项目归属依据'
+    );
+    const compatibility = activeContext.classifyPhotoProjectCompatibility({
+      activeProject: projectA,
+      projectOptions: runtimeConfiguration.configs.projectOptions,
+      sourceProjectText: photo.projectText,
+      assignedProjectId: photo.assignedProjectId,
+      assignedProjectName: photo.assignedProjectName
+    });
+    const projectedPhoto = { ...photo, projectCompatibility: compatibility };
+    equal(compatibility.status, 'source_project_locked', '其他项目来源锁必须优先于水印项目文本');
+    equal(markiLifecycleUi.isMarkiQueryPhotoSelectable(projectedPhoto), false, '锁定到其他项目的照片必须不可选');
+    deepEqual(markiLifecycleUi.selectMarkiFilteredTokens([projectedPhoto]), [], '全选必须排除来源项目锁照片');
+    equal(
+      markiLifecycleUi.summarizeMarkiQueryResults(
+        [projectedPhoto],
+        [projectedPhoto],
+        []
+      ).sourceProjectLockedCount,
+      1,
+      '查询摘要必须统计一张已归属其他项目照片'
+    );
+  });
+
+  await scenario('Marki 来源项目锁定刷新与清空', async () => {
+    let assignedProject = null;
+    const service = createProjectLockQueryService({
+      getAssignedProject: () => assignedProject
+    });
+    const created = await service.create(createProjectLockQueryInput());
+    equal(created.photos[0].assignedProjectId, '', '首次无项目锁时安全摘要必须为空');
+    const selectedTokens = [created.photos[0].selectionToken];
+
+    assignedProject = {
+      projectId: projectB.projectId,
+      projectName: projectB.projectName,
+      projectAssignmentSource: 'marki_structured_confirmed'
+    };
+    const locked = await service.get(created.sessionId);
+    equal(locked.photos[0].assignedProjectId, projectB.projectId, '刷新后会话必须立即写入新项目锁');
+    const lockedPhoto = {
+      ...locked.photos[0],
+      projectCompatibility: activeContext.classifyPhotoProjectCompatibility({
+        activeProject: projectA,
+        projectOptions: runtimeConfiguration.configs.projectOptions,
+        sourceProjectText: locked.photos[0].projectText,
+        assignedProjectId: locked.photos[0].assignedProjectId,
+        assignedProjectName: locked.photos[0].assignedProjectName
+      })
+    };
+    deepEqual(
+      markiLifecycleUi.pruneMarkiSelectionTokens(selectedTokens, [lockedPhoto]),
+      [],
+      '来源刷新为其他项目锁后必须清除原选择'
+    );
+
+    assignedProject = null;
+    const unlocked = await service.get(created.sessionId);
+    equal(unlocked.photos[0].assignedProjectId, '', '来源锁消失后必须清空旧项目 ID');
+    equal(unlocked.photos[0].assignedProjectName, '', '来源锁消失后必须清空旧项目名称');
+    equal(unlocked.photos[0].projectAssignmentSource, '', '来源锁消失后必须清空旧归属依据');
+  });
+
+  await scenario('Marki 导入页项目切换清理', async () => {
+    const pageState = {
+      busy: '',
+      isRefreshingReadyBatches: false,
+      sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      session: { sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      selectedTokens: ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+      retryLocked: true,
+      filters: { teamId: '10001' },
+      readyBatches: [{ batchId: 'batch-project-a' }],
+      importRecords: [{ batchId: 'record-project-a' }],
+      notice: { type: 'error', text: 'A项目状态' }
+    };
+    let executionGeneration = 0;
+    const oldExecutionGeneration = executionGeneration;
+    const destroyedSessions = [];
+    const clearOrder = [];
+    const controller = markiLifecycleUi.createMarkiProjectWorkspaceController({
+      getState: () => pageState,
+      invalidateExecution: () => {
+        executionGeneration += 1;
+      },
+      destroySession: async (sessionId) => {
+        clearOrder.push('destroy');
+        destroyedSessions.push(sessionId);
+        return { success: true };
+      },
+      clearStoredSession: () => {
+        clearOrder.push('storage');
+        pageState.storedSession = null;
+      },
+      resetState: () => {
+        clearOrder.push('state');
+        pageState.sessionId = '';
+        pageState.session = null;
+        pageState.selectedTokens = [];
+        pageState.retryLocked = false;
+        pageState.filters = {};
+        pageState.readyBatches = [];
+        pageState.importRecords = [];
+        pageState.notice = { type: 'idle', text: '' };
+      }
+    });
+    const transition = await activeContext.runProjectWorkspaceTransition(controller, projectA);
+    equal(transition.success, true, 'Marki 页面无忙碌任务时必须允许完成项目切换清理');
+    deepEqual(
+      destroyedSessions,
+      ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'],
+      '项目切换必须销毁 A 项目查询会话'
+    );
+    deepEqual(pageState.selectedTokens, [], '项目切换必须清空 A 项目 selectionToken');
+    equal(pageState.retryLocked, false, '项目切换必须清空重试锁');
+    deepEqual(pageState.readyBatches, [], '项目切换必须清空 A 项目待处理批次');
+    deepEqual(pageState.importRecords, [], '项目切换必须清空 A 项目导入记录');
+    deepEqual(clearOrder, ['destroy', 'storage', 'state'], '异步 clear 必须先销毁会话再清理存储和页面状态');
+    equal(executionGeneration > oldExecutionGeneration, true, '项目切换必须失效旧页面异步执行代次');
+    let staleNavigationCount = 0;
+    if (oldExecutionGeneration === executionGeneration) staleNavigationCount += 1;
+    equal(staleNavigationCount, 0, '旧项目异步结果不得导航或追加 batchId 到新项目');
+  });
+
+  await scenario('Marki 导入进行中禁止项目切换', async () => {
+    let activeProject = projectA;
+    let clearCalls = 0;
+    const busyState = {
+      busy: 'import',
+      isRefreshingReadyBatches: false,
+      sessionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    };
+    const controller = markiLifecycleUi.createMarkiProjectWorkspaceController({
+      getState: () => busyState,
+      invalidateExecution: () => {},
+      destroySession: async () => ({ success: true }),
+      clearStoredSession: () => {},
+      resetState: () => {
+        clearCalls += 1;
+      }
+    });
+    const transition = await activeContext.runProjectWorkspaceTransition(controller, activeProject);
+    if (transition.success) activeProject = projectB;
+    equal(transition.code, 'project_switch_busy', '导入 promise 进行中必须返回 project_switch_busy');
+    equal(activeProject.projectId, projectA.projectId, '导入完成前 activeProject 必须保持 A');
+    equal(clearCalls, 0, '忙碌拒绝时不得清理或切换页面状态');
+    busyState.busy = '';
+    busyState.isRefreshingReadyBatches = true;
+    equal(
+      (await activeContext.runProjectWorkspaceTransition(controller, activeProject)).code,
+      'project_switch_busy',
+      '待处理批次刷新期间也必须禁止项目切换'
+    );
+  });
+
+  await scenario('来源项目为空的旧选择不得跨项目', async () => {
+    const state = {
+      busy: '',
+      isRefreshingReadyBatches: false,
+      sessionId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      selectedTokens: ['eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'],
+      readyBatches: [{ batchId: 'batch-a-unassigned-source' }]
+    };
+    let importCalls = 0;
+    const controller = markiLifecycleUi.createMarkiProjectWorkspaceController({
+      getState: () => state,
+      invalidateExecution: () => {},
+      destroySession: async () => ({ success: true }),
+      clearStoredSession: () => {},
+      resetState: () => {
+        state.sessionId = '';
+        state.selectedTokens = [];
+        state.readyBatches = [];
+      }
+    });
+    const transition = await activeContext.runProjectWorkspaceTransition(controller, projectA);
+    if (transition.success && state.selectedTokens.length) importCalls += 1;
+    equal(transition.success, true, '来源项目为空时切换仍必须先完成页面清理');
+    deepEqual(state.selectedTokens, [], '项目 A 的空项目来源选择不得保留到项目 B');
+    deepEqual(state.readyBatches, [], '项目 A 的 batchId 不得保留到项目 B');
+    equal(importCalls, 0, '旧选择不得直接归属并导入项目 B');
+  });
+
+  await scenario('项目页面 clear 失败阻止切换', async () => {
+    let activeProject = projectA;
+    const controller = markiLifecycleUi.createMarkiProjectWorkspaceController({
+      getState: () => ({
+        busy: '',
+        isRefreshingReadyBatches: false,
+        sessionId: 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+      }),
+      invalidateExecution: () => {},
+      destroySession: async () => ({
+        success: false,
+        error: { code: 'session_destroy_failed', message: '会话销毁失败。' }
+      }),
+      clearStoredSession: () => {},
+      resetState: () => {}
+    });
+    const transition = await activeContext.runProjectWorkspaceTransition(controller, projectA);
+    if (transition.success) activeProject = projectB;
+    equal(transition.success, false, 'clear 失败时项目切换必须失败');
+    equal(transition.code, 'session_destroy_failed', 'clear 失败必须保留安全错误码');
+    equal(activeProject.projectId, projectA.projectId, 'clear 失败时 activeProject 必须保持 A');
   });
 
   await scenario('11张时间地点 Marki 使用当前项目且零 OCR', async () => {
@@ -13123,10 +13505,63 @@ async function checkActiveProjectBusinessBoundary(root) {
     );
   });
 
-  equal(scenarioCount, 15, '系统级项目业务边界必须独立执行 15 个行为场景');
+  const [
+    sortWorkspaceSource,
+    snapshotUiSource,
+    querySessionSource,
+    markiPageSource,
+    routerSource,
+    workspaceHookSource
+  ] = await Promise.all([
+    fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'electron/services/markiPhotoQuerySessionService.cjs'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/pages/MarkiPhotoImportPage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/pages/MainRouter.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8')
+  ]);
+  sourceCheck(
+    snapshotUiSource.includes('inspection.migrationAvailable === true'),
+    'renderer 迁移契约必须使用 migrationAvailable'
+  );
+  sourceCheck(
+    !sortWorkspaceSource.includes('legacy.canMigrate'),
+    'SortWorkspacePage 不得继续读取 canMigrate'
+  );
+  sourceCheck(
+    querySessionSource.includes('assignedProjectBySourceKey')
+      && querySessionSource.includes('projectAssignmentSource: entry.projectAssignmentSource'),
+    '查询会话必须贯通来源项目锁定安全摘要'
+  );
+  sourceCheck(
+    markiPageSource.includes('assignedProjectId: photo.assignedProjectId')
+      && markiPageSource.includes('assignedProjectName: photo.assignedProjectName'),
+    'Marki 页面兼容性判断必须使用安全项目锁字段'
+  );
+  sourceCheck(
+    markiPageSource.includes('registerProjectWorkspaceController')
+      && markiPageSource.includes('createMarkiProjectWorkspaceController'),
+    'Marki 页面必须注册统一项目切换控制器'
+  );
+  sourceCheck(
+    routerSource.includes('<MarkiPhotoImportPage key={archiveState.activeProject.projectId}'),
+    'Marki 页面必须按 activeProject ID 重新挂载'
+  );
+  sourceCheck(
+    workspaceHookSource.includes('await runProjectWorkspaceTransition'),
+    '项目切换必须等待 flush 和异步 clear 完成'
+  );
+  sourceCheck(
+    markiPageSource.includes('executionGenerationRef.current += 1')
+      && markiPageSource.includes('isCurrentExecution(executionToken)'),
+    'Marki 页面必须使用执行代次阻止旧异步结果回写'
+  );
+
+  equal(scenarioCount, 22, '系统级项目业务边界必须保留 15 个原场景并新增 7 个审查阻断场景');
   console.log(
-    `系统级项目业务边界自检通过：${scenarioCount} 个新增行为场景，`
-    + `${assertionCount} 个新增行为断言，${sourceContractAssertionCount} 个新增源码契约断言。`
+    `系统级项目业务边界自检通过：保留 15 个原行为场景，新增 ${scenarioCount - 15} 个审查阻断场景；`
+    + `行为断言总数 ${assertionCount}（原 91 个未减少、既有切换契约强化 2 个、审查阻断新增 39 个），`
+    + `源码契约断言总数 ${sourceContractAssertionCount}（新增 ${sourceContractAssertionCount - 8}）。`
   );
 }
 

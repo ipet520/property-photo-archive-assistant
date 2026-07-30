@@ -33,7 +33,7 @@ export default function MainRouter({ currentPage, onNavigate, navigationRequest,
     return <SortWorkspacePage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.markiImport) {
-    return <MarkiPhotoImportPage archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
+    return <MarkiPhotoImportPage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;
   }
   if (currentPage === PAGE_KEYS.sortWorkspace) {
     return <SortWorkspacePage key={archiveState.activeProject.projectId} archiveState={archiveState} onNavigate={onNavigate} navigationRequest={navigationRequest} />;

@@ -3,6 +3,7 @@ import { normalizeRuntimeConfiguration } from '../utils/runtimeConfig.js';
 import {
   getEnabledProjectOptions,
   resolveActiveProject,
+  runProjectWorkspaceTransition,
   validateActiveProject
 } from '../utils/activeProjectContext.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
@@ -122,19 +123,11 @@ export function useAppWorkspace() {
     if (resolved.projectId === activeProject.projectId) {
       return { success: true, activeProject: resolved, unchanged: true };
     }
-    const controller = projectWorkspaceControllerRef.current;
-    if (controller?.isBusy?.()) {
-      return { success: false, code: 'project_switch_busy', message: '当前有任务正在执行，请完成后再切换项目。' };
-    }
-    const saveResult = await controller?.flush?.(activeProject);
-    if (saveResult && saveResult.success !== true) {
-      return {
-        success: false,
-        code: saveResult?.error?.code || 'sort_workspace_snapshot_save_failed',
-        message: saveResult?.error?.message || '当前项目工作台保存失败，已取消切换。'
-      };
-    }
-    controller?.clear?.();
+    const transition = await runProjectWorkspaceTransition(
+      projectWorkspaceControllerRef.current,
+      activeProject
+    );
+    if (transition.success !== true) return transition;
     setActiveProject(resolved);
     setStatus({ type: 'success', text: `已切换到项目“${resolved.projectName}”。` });
     return { success: true, activeProject: resolved };
