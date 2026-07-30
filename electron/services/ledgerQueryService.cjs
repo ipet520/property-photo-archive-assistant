@@ -1,7 +1,12 @@
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const XLSX = require('xlsx');
-const { getLedgerPath, normalizeExistingLedgerRows } = require('./excelService.cjs');
+const {
+  getLedgerPath,
+  normalizeExistingLedgerRows,
+  withLedgerWriteLock
+} = require('./excelService.cjs');
 
 const FIELD_ALIASES = {
   date: ['日期', '归档日期', '拍摄日期', '时间'],
@@ -249,6 +254,33 @@ function uniquePaths(values) {
   }, []);
 }
 
+function groupLedgerSelectionsByTrustedRoot(trustedArchiveRoots, selections) {
+  const trustedRootsByKey = new Map(
+    (Array.isArray(trustedArchiveRoots) ? trustedArchiveRoots : []).map((value) => {
+      const trustedRoot = path.resolve(String(value || '').trim());
+      return [normalizePhysicalPathKey(trustedRoot), trustedRoot];
+    })
+  );
+  const groups = new Map();
+  for (const selection of Array.isArray(selections) ? selections : []) {
+    const archiveRootKey = normalizePhysicalPathKey(selection?.archiveRoot);
+    const trustedArchiveRoot = trustedRootsByKey.get(archiveRootKey);
+    if (!trustedArchiveRoot) {
+      throw new LedgerQueryError(
+        'project_archive_directory_invalid',
+        '所选归档记录不属于当前项目目录。'
+      );
+    }
+    const group = groups.get(archiveRootKey) || {
+      archiveRoot: trustedArchiveRoot,
+      selections: []
+    };
+    group.selections.push(selection);
+    groups.set(archiveRootKey, group);
+  }
+  return [...groups.values()];
+}
+
 async function exportLedgerRecords(filePath, records = []) {
   const rows = [
     EXPORT_HEADERS.map(([, header]) => header),
@@ -262,21 +294,71 @@ async function exportLedgerRecords(filePath, records = []) {
   return { success: true, filePath };
 }
 
-async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
+async function prepareLedgerRecordDeletion(archiveRoot, selections = [], expectedProject) {
   if (!archiveRoot) throw new Error('请先选择归档根目录');
   if (!Array.isArray(selections) || selections.length === 0) throw new Error('请先选择需要删除的归档记录');
 
-  const ledgerPath = getLedgerPath(archiveRoot);
+  const normalizedArchiveRoot = path.resolve(archiveRoot);
+  const ledgerPath = getLedgerPath(normalizedArchiveRoot);
   if (!fs.existsSync(ledgerPath)) throw new Error('当前归档目录下未找到照片归档台账');
 
-  const current = await loadLedgerRecords(archiveRoot);
+  const ledgerIdentity = readLedgerIdentity(ledgerPath);
+  const current = await loadLedgerRecords(normalizedArchiveRoot);
   const selectedRecords = validateSelections(current.records, selections);
-  assertRecordsBelongToExpectedProject(selectedRecords, options.expectedProject);
+  assertRecordsBelongToExpectedProject(selectedRecords, expectedProject);
+  assertDeletionPathsAreSafe(normalizedArchiveRoot, ledgerPath, selectedRecords);
+  assertLedgerIdentityMatches(ledgerPath, ledgerIdentity);
+  return Object.freeze({
+    archiveRoot: normalizedArchiveRoot,
+    ledgerPath,
+    expectedProject: Object.freeze({
+      projectId: String(expectedProject?.projectId || '').trim(),
+      projectName: normalizeProjectName(expectedProject?.projectName)
+    }),
+    selections: Object.freeze(selectedRecords.map((record) => Object.freeze({
+      rowNumber: record.rowNumber,
+      newFileName: record.newFileName,
+      archivePath: record.archivePath
+    }))),
+    ledgerIdentity: Object.freeze(ledgerIdentity)
+  });
+}
+
+async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
+  const preparedDeletion = options.preparedDeletion || await prepareLedgerRecordDeletion(
+    archiveRoot,
+    selections,
+    options.expectedProject
+  );
+  const ledgerPath = getLedgerPath(archiveRoot);
+  return withLedgerWriteLock(ledgerPath, () => executePreparedLedgerDeletion(
+    archiveRoot,
+    preparedDeletion,
+    options
+  ));
+}
+
+async function executePreparedLedgerDeletion(archiveRoot, preparedDeletion, options = {}) {
+  const normalizedArchiveRoot = path.resolve(String(archiveRoot || '').trim());
+  const ledgerPath = getLedgerPath(normalizedArchiveRoot);
+  assertPreparedDeletionContext(
+    normalizedArchiveRoot,
+    ledgerPath,
+    preparedDeletion,
+    options.expectedProject
+  );
+  assertLedgerIdentityMatches(ledgerPath, preparedDeletion.ledgerIdentity);
+
+  const current = await loadLedgerRecords(normalizedArchiveRoot);
+  const selectedRecords = validateSelections(current.records, preparedDeletion.selections);
+  assertRecordsBelongToExpectedProject(selectedRecords, preparedDeletion.expectedProject);
+  assertDeletionPathsAreSafe(normalizedArchiveRoot, ledgerPath, selectedRecords);
+  assertLedgerIdentityMatches(ledgerPath, preparedDeletion.ledgerIdentity);
   const workbook = XLSX.readFile(ledgerPath, { cellDates: true });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new Error('照片归档台账中没有可用工作表');
 
-  const backupPath = backupLedger(archiveRoot, ledgerPath);
+  const backupPath = backupLedger(normalizedArchiveRoot, ledgerPath);
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
   const removedIndexes = new Set(selectedRecords.map((record) => record.rowNumber - 1));
@@ -307,7 +389,7 @@ async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
   }
 
   const fileResult = options.deleteFiles
-    ? deleteSelectedArchiveFiles(archiveRoot, ledgerPath, selectedRecords)
+    ? deleteSelectedArchiveFiles(normalizedArchiveRoot, ledgerPath, selectedRecords)
     : { deletedFileCount: 0, missingFileCount: 0, failedCount: 0, notes: ['仅删除归档记录，归档照片文件已保留。'] };
 
   return {
@@ -317,6 +399,72 @@ async function deleteLedgerRecords(archiveRoot, selections = [], options = {}) {
     backupPath,
     ...fileResult
   };
+}
+
+function assertPreparedDeletionContext(archiveRoot, ledgerPath, preparedDeletion, expectedProject) {
+  if (
+    !preparedDeletion
+    || normalizePath(preparedDeletion.archiveRoot) !== normalizePath(archiveRoot)
+    || normalizePath(preparedDeletion.ledgerPath) !== normalizePath(ledgerPath)
+  ) {
+    throw new LedgerQueryError('ledger_changed_after_preflight', '删除预检已失效，请重新加载台账。');
+  }
+  const expectedProjectId = String(expectedProject?.projectId || '').trim();
+  const expectedProjectName = normalizeProjectName(expectedProject?.projectName);
+  if (
+    !expectedProjectId
+    || !expectedProjectName
+    || preparedDeletion.expectedProject?.projectId !== expectedProjectId
+    || preparedDeletion.expectedProject?.projectName !== expectedProjectName
+  ) {
+    throw new LedgerQueryError('project_context_mismatch', '当前项目与删除预检不一致，已拒绝删除。');
+  }
+}
+
+function readLedgerIdentity(ledgerPath) {
+  try {
+    const stat = fs.statSync(ledgerPath);
+    if (!stat.isFile()) throw new Error('not_file');
+    return {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      sha256: crypto.createHash('sha256').update(fs.readFileSync(ledgerPath)).digest('hex')
+    };
+  } catch {
+    throw new LedgerQueryError(
+      'ledger_changed_after_preflight',
+      '台账自预检后已发生变化，请重新加载后再试。'
+    );
+  }
+}
+
+function assertLedgerIdentityMatches(ledgerPath, expectedIdentity) {
+  const currentIdentity = readLedgerIdentity(ledgerPath);
+  if (
+    !expectedIdentity
+    || currentIdentity.size !== expectedIdentity.size
+    || currentIdentity.mtimeMs !== expectedIdentity.mtimeMs
+    || currentIdentity.sha256 !== expectedIdentity.sha256
+  ) {
+    throw new LedgerQueryError(
+      'ledger_changed_after_preflight',
+      '台账自预检后已发生变化，请重新加载后再试。'
+    );
+  }
+}
+
+function assertDeletionPathsAreSafe(archiveRoot, ledgerPath, records) {
+  records.forEach((record) => {
+    const safety = validateArchiveFilePath(
+      archiveRoot,
+      ledgerPath,
+      record.archivePath,
+      record.originalPath
+    );
+    if (!safety.safe) {
+      throw new LedgerQueryError('ledger_selection_invalid', safety.reason);
+    }
+  });
 }
 
 function assertRecordsBelongToExpectedProject(records, expectedProject) {
@@ -433,6 +581,11 @@ function normalizePath(value) {
   return path.resolve(String(value || '')).toLowerCase();
 }
 
+function normalizePhysicalPathKey(value) {
+  const normalized = path.resolve(String(value || '').trim());
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
 function formatTimestamp(date) {
   const pad = (value, size = 2) => String(value).padStart(size, '0');
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMilliseconds(), 3)}`;
@@ -442,6 +595,8 @@ module.exports = {
   LedgerQueryError,
   deleteLedgerRecords,
   exportLedgerRecords,
+  groupLedgerSelectionsByTrustedRoot,
   loadLedgerRecords,
-  loadProjectLedgerRecordsAcrossRoots
+  loadProjectLedgerRecordsAcrossRoots,
+  prepareLedgerRecordDeletion
 };

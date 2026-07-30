@@ -67,8 +67,13 @@ function buildArchiveOperationKey(items = []) {
 
 function createArchiveTransaction(input = {}) {
   const operationKey = normalizeSha256(input.operationKey);
+  const projectId = normalizeText(input.projectId);
+  const projectName = normalizeProjectName(input.projectName);
   if (!operationKey) {
     throw createTransactionError('archive_operation_key_invalid', '归档事务标识无效。');
+  }
+  if (!projectId || !projectName) {
+    throw createTransactionError('archive_transaction_project_mismatch', '归档事务缺少可信项目身份。');
   }
   if (!Array.isArray(input.items) || input.items.length === 0) {
     throw createTransactionError('archive_operation_items_missing', '归档事务没有可处理照片。');
@@ -79,6 +84,8 @@ function createArchiveTransaction(input = {}) {
     schemaVersion: TRANSACTION_SCHEMA_VERSION,
     transactionId,
     operationKey,
+    projectId,
+    projectName,
     state: 'planned',
     createdAt: now,
     updatedAt: now,
@@ -272,6 +279,8 @@ function normalizeArchiveTransaction(input = {}) {
   }
   const transactionId = normalizeTransactionId(input.transactionId);
   const operationKey = normalizeSha256(input.operationKey);
+  const projectId = normalizeText(input.projectId);
+  const projectName = normalizeProjectName(input.projectName);
   const state = normalizeText(input.state);
   if (Number(input.schemaVersion) !== TRANSACTION_SCHEMA_VERSION || !operationKey || !TRANSACTION_STATES.has(state)) {
     throw createTransactionError('archive_transaction_corrupt', '归档事务记录格式无效。');
@@ -288,10 +297,24 @@ function normalizeArchiveTransaction(input = {}) {
     itemIds.add(normalized.itemId);
     return normalized;
   });
+  if (projectId) {
+    const projectMismatch = !projectName || items.some((item) => (
+      item.ledgerRow.projectId !== projectId
+      || normalizeProjectName(item.ledgerRow.project) !== projectName
+    ));
+    if (projectMismatch) {
+      throw createTransactionError(
+        'archive_transaction_project_mismatch',
+        '归档事务包含不一致的项目条目。'
+      );
+    }
+  }
   return {
     schemaVersion: TRANSACTION_SCHEMA_VERSION,
     transactionId,
     operationKey,
+    projectId,
+    projectName,
     state,
     createdAt: normalizeText(input.createdAt) || new Date().toISOString(),
     updatedAt: normalizeText(input.updatedAt) || new Date().toISOString(),
@@ -357,6 +380,7 @@ function normalizeLedgerRow(input = {}) {
   }
   return {
     date: normalizeText(input.date),
+    projectId: normalizeText(input.projectId),
     project: normalizeText(input.project),
     watermarkCategory: normalizeText(input.watermarkCategory),
     workContent: normalizeText(input.workContent),
@@ -383,6 +407,14 @@ function normalizeLedgerRow(input = {}) {
     constructionUnitConfirmed: normalizeText(input.constructionUnitConfirmed),
     constructionUnitSource: normalizeText(input.constructionUnitSource)
   };
+}
+
+function normalizeProjectName(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function validateRelativeTargetPath(value) {

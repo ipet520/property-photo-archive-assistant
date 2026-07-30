@@ -24,8 +24,10 @@ const { loadDashboardData } = require('./services/dashboardService.cjs');
 const {
   deleteLedgerRecords,
   exportLedgerRecords,
+  groupLedgerSelectionsByTrustedRoot,
   loadLedgerRecords,
-  loadProjectLedgerRecordsAcrossRoots
+  loadProjectLedgerRecordsAcrossRoots,
+  prepareLedgerRecordDeletion
 } = require('./services/ledgerQueryService.cjs');
 const {
   getRecognitionConfig,
@@ -513,7 +515,7 @@ async function safeProjectDirectoryCall(action) {
   try {
     return await action();
   } catch (error) {
-    const safeCode = /^(active_project|project_context|project_directory|project_archive|project_package)_/.test(
+    const safeCode = /^(active_project|project_context|project_directory|project_archive|project_package|ledger)_/.test(
       String(error?.code || '')
     )
       ? String(error.code)
@@ -598,28 +600,27 @@ async function deleteCurrentProjectLedgerRecords(
   options = {}
 ) {
   const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
-  const allowedRoots = new Set(
-    (await listProjectArchiveRoots(app.getPath('userData'), activeProject))
-      .map((value) => normalizePathKey(value))
+  const groups = groupLedgerSelectionsByTrustedRoot(
+    await listProjectArchiveRoots(app.getPath('userData'), activeProject),
+    selections
   );
-  const groups = new Map();
-  for (const selection of Array.isArray(selections) ? selections : []) {
-    const archiveRoot = path.resolve(String(selection?.archiveRoot || '').trim());
-    if (!allowedRoots.has(normalizePathKey(archiveRoot))) {
-      throw new ProjectDirectoryPreferencesError(
-        'project_archive_directory_invalid',
-        '所选归档记录不属于当前项目目录。'
-      );
-    }
-    const list = groups.get(archiveRoot) || [];
-    list.push(selection);
-    groups.set(archiveRoot, list);
+  const preparedGroups = [];
+  for (const group of groups) {
+    preparedGroups.push({
+      ...group,
+      preparedDeletion: await prepareLedgerRecordDeletion(
+        group.archiveRoot,
+        group.selections,
+        activeProject
+      )
+    });
   }
   const results = [];
-  for (const [archiveRoot, groupSelections] of groups) {
-    results.push(await deleteLedgerRecords(archiveRoot, groupSelections, {
+  for (const group of preparedGroups) {
+    results.push(await deleteLedgerRecords(group.archiveRoot, group.selections, {
       ...options,
-      expectedProject: activeProject
+      expectedProject: activeProject,
+      preparedDeletion: group.preparedDeletion
     }));
   }
   return results.reduce((summary, result) => ({
@@ -649,11 +650,6 @@ function normalizeProjectNameForLedger(value) {
     .replace(/\u3000/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function normalizePathKey(value) {
-  const normalized = path.resolve(String(value || '').trim());
-  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function assertPackageRecordsBelongToProject(records, activeProject) {
@@ -1402,7 +1398,9 @@ ipcMain.handle('archive:recoverPendingTransactions', async (_event, activeProjec
   async () => {
     const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
     const archiveRoots = await listProjectArchiveRoots(app.getPath('userData'), activeProject);
-    return recoverPendingArchiveTransactionsAcrossRoots(archiveRoots);
+    return recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, {
+      expectedProject: activeProject
+    });
   },
   createArchiveRecoveryIpcError
 ));

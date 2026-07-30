@@ -89,8 +89,10 @@ async function archivePhotos(archivePlan, options = {}) {
   if (suppliedTransactionId) {
     const archiveRoot = path.resolve(String(archivePlan.archiveRoot || '').trim());
     const loaded = await loadArchiveTransaction(archiveRoot, suppliedTransactionId);
+    assertTransactionProjectForExecution(loaded, archivePlan.activeProject);
     return withArchiveTransactionLock(`operation:${loaded.operationKey}`, async () => {
       const transaction = await loadArchiveTransaction(archiveRoot, suppliedTransactionId);
+      assertTransactionProjectForExecution(transaction, archivePlan.activeProject);
       return processArchiveTransaction(archiveRoot, transaction, { ...options, allowCopy: true });
     });
   }
@@ -100,11 +102,19 @@ async function archivePhotos(archivePlan, options = {}) {
   const operationKey = previewPlan.planId;
   return withArchiveTransactionLock(`operation:${operationKey}`, async () => {
     let transaction = await findArchiveTransactionByOperationKey(archiveRoot, operationKey);
+    if (transaction) {
+      assertTransactionProjectForExecution(transaction, {
+        projectId: previewPlan.projectId,
+        projectName: previewPlan.projectName
+      });
+    }
     if (!transaction) {
       const preflight = await validateArchivePreviewPlanItemsForExecution(previewPlan, options);
       const preflightByItemId = new Map(preflight.items.map((item) => [item.itemId, item]));
       transaction = createArchiveTransaction({
         operationKey,
+        projectId: previewPlan.projectId,
+        projectName: previewPlan.projectName,
         items: toTransactionItems(previewPlan)
       });
       transaction = {
@@ -138,12 +148,48 @@ async function recoverPendingArchiveTransactions(archiveRoot, options = {}) {
   const pending = await listPendingArchiveTransactions(root);
   const recoveryErrors = [...pending.errors];
   const results = [];
+  let skippedOtherProjectCount = 0;
+  let unresolvedProjectTransactionCount = 0;
   for (const candidate of pending.transactions) {
+    const projectDisposition = classifyTransactionProject(candidate, options.expectedProject);
+    if (projectDisposition === 'other_project') {
+      skippedOtherProjectCount += 1;
+      continue;
+    }
+    if (projectDisposition === 'unresolved') {
+      unresolvedProjectTransactionCount += 1;
+      recoveryErrors.push({
+        transactionId: candidate.transactionId,
+        errorCode: 'archive_transaction_project_unresolved',
+        message: '历史归档事务无法确认所属项目，已跳过自动恢复。'
+      });
+      continue;
+    }
     try {
       const result = await withArchiveTransactionLock(`operation:${candidate.operationKey}`, async () => {
         const transaction = await loadArchiveTransaction(root, candidate.transactionId);
+        const currentDisposition = classifyTransactionProject(transaction, options.expectedProject);
+        if (currentDisposition !== 'current_project') {
+          return {
+            transactionId: transaction.transactionId,
+            projectDisposition: currentDisposition
+          };
+        }
         return processArchiveTransaction(root, transaction, { ...options, allowCopy: false });
       });
+      if (result.projectDisposition === 'other_project') {
+        skippedOtherProjectCount += 1;
+        continue;
+      }
+      if (result.projectDisposition === 'unresolved') {
+        unresolvedProjectTransactionCount += 1;
+        recoveryErrors.push({
+          transactionId: result.transactionId,
+          errorCode: 'archive_transaction_project_unresolved',
+          message: '历史归档事务无法确认所属项目，已跳过自动恢复。'
+        });
+        continue;
+      }
       results.push(result);
     } catch (error) {
       recoveryErrors.push({
@@ -166,6 +212,8 @@ async function recoverPendingArchiveTransactions(archiveRoot, options = {}) {
       0
     ),
     conflictCount: results.reduce((sum, result) => sum + result.conflictCount, 0),
+    skippedOtherProjectCount,
+    unresolvedProjectTransactionCount,
     errors: recoveryErrors,
     transactions: results
   };
@@ -188,6 +236,8 @@ async function recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, option
     pendingLedgerCount: 0,
     retryRequiredCount: 0,
     conflictCount: 0,
+    skippedOtherProjectCount: 0,
+    unresolvedProjectTransactionCount: 0,
     errors: [],
     transactions: []
   };
@@ -203,13 +253,19 @@ async function recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, option
         });
         continue;
       }
-      const result = await recoverRoot(archiveRoot);
+      const result = await recoverRoot(archiveRoot, {
+        expectedProject: options.expectedProject
+      });
       summary.recoveredTransactionCount += Number(result?.recoveredTransactionCount || 0);
       summary.transactionCount += Number(result?.transactionCount || 0);
       summary.committedCount += Number(result?.committedCount || 0);
       summary.pendingLedgerCount += Number(result?.pendingLedgerCount || 0);
       summary.retryRequiredCount += Number(result?.retryRequiredCount || 0);
       summary.conflictCount += Number(result?.conflictCount || 0);
+      summary.skippedOtherProjectCount += Number(result?.skippedOtherProjectCount || 0);
+      summary.unresolvedProjectTransactionCount += Number(
+        result?.unresolvedProjectTransactionCount || 0
+      );
       summary.errors.push(...(result?.errors || []).map((error) => ({
         ...error,
         archiveRoot
@@ -231,6 +287,58 @@ async function recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, option
   }
   summary.success = summary.errors.length === 0;
   return summary;
+}
+
+function classifyTransactionProject(transaction, expectedProject) {
+  if (!expectedProject) return 'current_project';
+  const expectedProjectId = String(expectedProject?.projectId || '').trim();
+  const expectedProjectName = normalizeProjectName(expectedProject?.projectName);
+  if (!expectedProjectId || !expectedProjectName) {
+    throw new ArchiveServiceError(
+      'archive_transaction_project_mismatch',
+      '当前项目上下文无效，已拒绝恢复归档事务。'
+    );
+  }
+
+  const transactionProjectId = String(transaction?.projectId || '').trim();
+  if (transactionProjectId) {
+    return transactionProjectId === expectedProjectId ? 'current_project' : 'other_project';
+  }
+
+  const legacyProjectNames = (transaction?.items || [])
+    .map((item) => normalizeProjectName(item?.ledgerRow?.project));
+  if (
+    legacyProjectNames.length === 0
+    || legacyProjectNames.some((projectName) => !projectName)
+  ) {
+    return 'unresolved';
+  }
+  const uniqueProjectNames = new Set(legacyProjectNames);
+  if (uniqueProjectNames.size !== 1) return 'unresolved';
+  return legacyProjectNames[0] === expectedProjectName ? 'current_project' : 'other_project';
+}
+
+function assertTransactionProjectForExecution(transaction, expectedProject) {
+  if (!expectedProject) return;
+  const disposition = classifyTransactionProject(transaction, expectedProject);
+  if (disposition !== 'current_project') {
+    throw new ArchiveServiceError(
+      disposition === 'other_project'
+        ? 'archive_transaction_project_mismatch'
+        : 'archive_transaction_project_unresolved',
+      disposition === 'other_project'
+        ? '归档事务与当前项目不一致，已拒绝执行。'
+        : '历史归档事务无法确认所属项目，已拒绝执行。'
+    );
+  }
+}
+
+function normalizeProjectName(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function uniqueArchiveRoots(values) {
@@ -353,7 +461,11 @@ async function processArchiveTransaction(archiveRoot, inputTransaction, options 
     try {
       const ledgerResult = await appendLedgerRows(
         archiveRoot,
-        ledgerPendingIndexes.map(({ item }) => buildLedgerCommitInput(archiveRoot, item)),
+        ledgerPendingIndexes.map(({ item }) => buildLedgerCommitInput(
+          archiveRoot,
+          item,
+          options.expectedProject
+        )),
         options.excelOptions || {}
       );
       if (typeof options.hooks?.afterLedgerAppend === 'function') {
@@ -385,7 +497,7 @@ async function processArchiveTransaction(archiveRoot, inputTransaction, options 
   let fingerprintIndexWarning = '';
   const committedInputs = transaction.items
     .filter((item) => item.stage === 'committed')
-    .map((item) => buildLedgerCommitInput(archiveRoot, item));
+    .map((item) => buildLedgerCommitInput(archiveRoot, item, options.expectedProject));
   if (committedInputs.length > 0) {
     try {
       await recordArchivedPhotoFingerprints(archiveRoot, committedInputs);
@@ -482,10 +594,14 @@ function buildLedgerRow(item) {
   };
 }
 
-function buildLedgerCommitInput(archiveRoot, item) {
+function buildLedgerCommitInput(archiveRoot, item, expectedProject) {
   const targetPath = resolveArchiveTargetPath(archiveRoot, item.targetRelativePath);
+  const legacyProjectMatches = !item.ledgerRow.projectId
+    && normalizeProjectName(item.ledgerRow.project) === normalizeProjectName(expectedProject?.projectName);
   return {
     ...item.ledgerRow,
+    projectId: item.ledgerRow.projectId
+      || (legacyProjectMatches ? String(expectedProject?.projectId || '').trim() : ''),
     id: item.photoId,
     photoId: item.photoId,
     sourceKey: item.sourceKey,

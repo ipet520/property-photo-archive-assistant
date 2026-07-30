@@ -434,5 +434,6 @@ module.exports = {
   appendLedgerRows,
   getLedgerPath,
   normalizeExistingLedgerRows,
-  recoverLedgerSwapArtifacts
+  recoverLedgerSwapArtifacts,
+  withLedgerWriteLock
 };

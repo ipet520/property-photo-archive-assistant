@@ -24,8 +24,11 @@ const {
 const {
   buildArchiveOperationKey,
   buildArchiveSourceIdentity,
-  getArchiveTransactionDirectory
+  createArchiveTransaction,
+  getArchiveTransactionDirectory,
+  loadArchiveTransaction
 } = require('../electron/services/archiveTransactionService.cjs');
+const { toTransactionItems } = require('../electron/services/archivePreviewPlanService.cjs');
 const {
   getLedgerPath,
   normalizeExistingLedgerRows,
@@ -50,8 +53,10 @@ const { scanImages, scanImagesWithHealth } = require('../electron/services/fileS
 const { inspectPhotoSourceFile } = require('../electron/services/photoFileHealthService.cjs');
 const {
   deleteLedgerRecords,
+  groupLedgerSelectionsByTrustedRoot,
   loadLedgerRecords,
-  loadProjectLedgerRecordsAcrossRoots
+  loadProjectLedgerRecordsAcrossRoots,
+  prepareLedgerRecordDeletion
 } = require('../electron/services/ledgerQueryService.cjs');
 const { getRecognitionStatus } = require('../electron/services/recognitionService.cjs');
 const {
@@ -201,6 +206,9 @@ async function main() {
     await checkSmartClassificationBusinessClosure(path.join(temporaryRoot, 'smart-classification-business-closure'));
     await checkActiveProjectBusinessBoundary(path.join(temporaryRoot, 'active-project-business-boundary'));
     await checkProjectDirectoryResponsibilities(path.join(temporaryRoot, 'project-directory-responsibilities'));
+    await checkArchiveProjectIsolationAndDeletionPreflight(
+      path.join(temporaryRoot, 'archive-project-isolation')
+    );
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
@@ -5480,8 +5488,9 @@ async function checkProjectDirectoryResponsibilities(root) {
   sourceContract(mainSource.includes("archive_preview_directory_stale"), '正式归档必须拒绝旧目录预览');
   sourceContract(mainSource.includes('listProjectArchiveRoots'), '历史归档记录必须保留旧归档根查询入口');
   sourceContract(
-    mainSource.includes('recoverPendingArchiveTransactionsAcrossRoots(archiveRoots)'),
-    '归档事务恢复 IPC 必须遍历当前项目全部历史归档根'
+    mainSource.includes('recoverPendingArchiveTransactionsAcrossRoots(archiveRoots, {')
+      && mainSource.includes('expectedProject: activeProject'),
+    '归档事务恢复 IPC 必须遍历当前项目全部历史归档根并注入当前项目'
   );
   sourceContract(
     mainSource.includes('expectedProject: activeProject'),
@@ -5535,6 +5544,390 @@ async function checkProjectDirectoryResponsibilities(root) {
   assert.equal(behaviorAssertionCount >= 40, true, '项目目录职责迁移与审查阻断至少应执行四十个行为断言');
   console.log(
     `项目目录职责迁移自检通过：${scenarioCount} 个行为场景，`
+    + `${behaviorAssertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
+  );
+}
+
+async function checkArchiveProjectIsolationAndDeletionPreflight(root) {
+  const projectA = { projectId: 'archive-project-a', projectName: '归档项目 A' };
+  const projectB = { projectId: 'archive-project-b', projectName: '归档项目 B' };
+  let scenarioCount = 0;
+  let behaviorAssertionCount = 0;
+  let sourceContractCount = 0;
+  const scenario = (condition, message) => {
+    scenarioCount += 1;
+    behaviorAssertionCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+  const behavior = (condition, message) => {
+    behaviorAssertionCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+  const sourceContract = (condition, message) => {
+    sourceContractCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+
+  const sharedRecoveryRoot = path.join(root, 'shared-recovery-root');
+  const createPendingTransaction = async (activeProject, tag, count = 1) => {
+    const plan = await createArchiveTransactionTestPlan(path.join(root, `pending-${tag}`), {
+      activeProject,
+      archiveRoot: sharedRecoveryRoot,
+      count,
+      tag,
+      formPatch: { workContent: `待恢复工作-${tag}` }
+    });
+    const result = await archivePhotos(
+      { previewPlan: plan.preview },
+      {
+        excelOptions: {
+          hooks: {
+            writeWorkbook: async () => {
+              throw createInjectedError('EPERM');
+            }
+          }
+        }
+      }
+    );
+    assert.equal(result.pendingLedgerCount, count, `${tag} 必须先形成待补记事务`);
+    return {
+      plan,
+      result,
+      transactionPath: path.join(
+        getArchiveTransactionDirectory(sharedRecoveryRoot),
+        `${result.transactionId}.json`
+      )
+    };
+  };
+  const rewriteAsLegacyTransaction = async (pending, mutateRows) => {
+    const payload = JSON.parse(await fs.readFile(pending.transactionPath, 'utf8'));
+    delete payload.projectId;
+    delete payload.projectName;
+    payload.items.forEach((item, index) => {
+      item.ledgerRow.projectId = '';
+      mutateRows(item.ledgerRow, index);
+    });
+    await fs.writeFile(pending.transactionPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  };
+
+  const pendingANew = await createPendingTransaction(projectA, 'a-new');
+  const pendingBNew = await createPendingTransaction(projectB, 'b-new');
+  const pendingALegacy = await createPendingTransaction(projectA, 'a-legacy');
+  const pendingUnresolved = await createPendingTransaction(projectA, 'unresolved');
+  const pendingMixed = await createPendingTransaction(projectA, 'mixed', 2);
+  await rewriteAsLegacyTransaction(pendingALegacy, (ledgerRow) => {
+    ledgerRow.project = projectA.projectName;
+  });
+  await rewriteAsLegacyTransaction(pendingUnresolved, (ledgerRow) => {
+    ledgerRow.project = '';
+  });
+  await rewriteAsLegacyTransaction(pendingMixed, (ledgerRow, index) => {
+    ledgerRow.project = index === 0 ? projectA.projectName : projectB.projectName;
+  });
+
+  const mismatchedItems = toTransactionItems(pendingANew.plan.preview);
+  mismatchedItems[0].ledgerRow.projectId = projectB.projectId;
+  let transactionMismatchCode = '';
+  try {
+    createArchiveTransaction({
+      operationKey: 'f'.repeat(64),
+      projectId: projectA.projectId,
+      projectName: projectA.projectName,
+      items: mismatchedItems
+    });
+  } catch (error) {
+    transactionMismatchCode = error?.code || '';
+  }
+  scenario(
+    transactionMismatchCode === 'archive_transaction_project_mismatch',
+    '新事务包含混合项目台账行时必须稳定拒绝'
+  );
+  const persistedANew = await loadArchiveTransaction(
+    sharedRecoveryRoot,
+    pendingANew.result.transactionId
+  );
+  behavior(
+    persistedANew.projectId === projectA.projectId
+      && persistedANew.projectName === projectA.projectName
+      && persistedANew.items.every(
+        (item) => item.ledgerRow.projectId === projectA.projectId
+          && item.ledgerRow.project === projectA.projectName
+      ),
+    '新事务保存重载后顶层和逐项项目身份必须完整一致'
+  );
+
+  const bBeforeARecovery = await fs.readFile(pendingBNew.transactionPath);
+  const unresolvedBeforeARecovery = await fs.readFile(pendingUnresolved.transactionPath);
+  const mixedBeforeARecovery = await fs.readFile(pendingMixed.transactionPath);
+  const recoveryForA = await recoverPendingArchiveTransactionsAcrossRoots(
+    [sharedRecoveryRoot],
+    {
+      expectedProject: projectA,
+      inspectRoot: async () => ({ healthStatus: 'healthy' })
+    }
+  );
+  const ledgerAfterARecovery = await loadLedgerRecords(sharedRecoveryRoot);
+  scenario(
+    recoveryForA.transactionCount === 2
+      && recoveryForA.committedCount === 2
+      && recoveryForA.skippedOtherProjectCount === 1
+      && recoveryForA.unresolvedProjectTransactionCount === 2,
+    '共享根恢复项目 A 时必须只恢复 A 新事务和名称一致的历史事务'
+  );
+  behavior(
+    ledgerAfterARecovery.records.length === 2
+      && ledgerAfterARecovery.records.every((record) => record.projectId === projectA.projectId),
+    '项目 A 恢复新写入的所有 Excel 行必须带稳定项目 ID'
+  );
+  behavior(
+    (await fs.readFile(pendingBNew.transactionPath)).equals(bBeforeARecovery),
+    '项目 B 新事务在恢复项目 A 时必须完全不变'
+  );
+  behavior(
+    (await fs.readFile(pendingUnresolved.transactionPath)).equals(unresolvedBeforeARecovery)
+      && (await fs.readFile(pendingMixed.transactionPath)).equals(mixedBeforeARecovery),
+    '无项目和混合项目历史事务必须保持文件不变'
+  );
+  behavior(
+    recoveryForA.errors.filter(
+      (item) => item.errorCode === 'archive_transaction_project_unresolved'
+    ).length === 2,
+    '无法确认项目的历史事务必须返回独立稳定错误'
+  );
+
+  const pendingAForBIsolation = await createPendingTransaction(projectA, 'a-for-b');
+  const aForBBytes = await fs.readFile(pendingAForBIsolation.transactionPath);
+  const recoveryForB = await recoverPendingArchiveTransactionsAcrossRoots(
+    [sharedRecoveryRoot],
+    {
+      expectedProject: projectB,
+      inspectRoot: async () => ({ healthStatus: 'healthy' })
+    }
+  );
+  const ledgerAfterBRecovery = await loadLedgerRecords(sharedRecoveryRoot);
+  scenario(
+    recoveryForB.transactionCount === 1
+      && recoveryForB.committedCount === 1
+      && recoveryForB.skippedOtherProjectCount === 1
+      && recoveryForB.unresolvedProjectTransactionCount === 2,
+    '共享根恢复项目 B 时必须反向隔离项目 A 待处理事务'
+  );
+  behavior(
+    ledgerAfterBRecovery.records.filter((record) => record.projectId === projectB.projectId).length === 1,
+    '项目 B 恢复只能新增自己的稳定项目 ID 台账行'
+  );
+  behavior(
+    (await fs.readFile(pendingAForBIsolation.transactionPath)).equals(aForBBytes),
+    '项目 A 待处理事务在恢复项目 B 时必须完全不变'
+  );
+
+  const writeLedger = async (archiveRoot, rows) => {
+    await fs.mkdir(archiveRoot, { recursive: true });
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      workbook,
+      XLSX.utils.aoa_to_sheet([
+        ['项目ID', '项目', '新文件名', '归档路径', '来源文件路径'],
+        ...rows
+      ]),
+      '照片归档台账'
+    );
+    XLSX.writeFile(workbook, getLedgerPath(archiveRoot));
+  };
+  const makeDeletionRoot = async (name, project, fileName = `${name}.jpg`) => {
+    const archiveRoot = path.join(root, name);
+    const archivePath = path.join(archiveRoot, fileName);
+    await fs.mkdir(archiveRoot, { recursive: true });
+    await fs.writeFile(archivePath, Buffer.from(`archive-${name}`));
+    await writeLedger(archiveRoot, [[
+      project.projectId,
+      project.projectName,
+      fileName,
+      archivePath,
+      ''
+    ]]);
+    return {
+      archiveRoot,
+      archivePath,
+      selection: {
+        rowNumber: 2,
+        newFileName: fileName,
+        archivePath,
+        archiveRoot
+      }
+    };
+  };
+
+  const deleteRootA = await makeDeletionRoot('delete-root-a', projectA);
+  const deleteRootB = await makeDeletionRoot('delete-root-b', projectA);
+  const trustedGroups = groupLedgerSelectionsByTrustedRoot(
+    [deleteRootA.archiveRoot, deleteRootB.archiveRoot],
+    [deleteRootA.selection, deleteRootB.selection]
+  );
+  const preparedSuccess = [];
+  for (const group of trustedGroups) {
+    preparedSuccess.push({
+      ...group,
+      plan: await prepareLedgerRecordDeletion(group.archiveRoot, group.selections, projectA)
+    });
+  }
+  for (const group of preparedSuccess) {
+    await deleteLedgerRecords(group.archiveRoot, group.selections, {
+      expectedProject: projectA,
+      preparedDeletion: group.plan,
+      deleteFiles: false
+    });
+  }
+  scenario(
+    (await loadLedgerRecords(deleteRootA.archiveRoot)).records.length === 0
+      && (await loadLedgerRecords(deleteRootB.archiveRoot)).records.length === 0,
+    '两个归档根全部预检成功后必须都能删除当前项目台账行'
+  );
+  behavior(
+    fsSync.existsSync(path.join(deleteRootA.archiveRoot, '台账备份'))
+      && fsSync.existsSync(path.join(deleteRootB.archiveRoot, '台账备份')),
+    '成功执行后每个被修改台账根必须生成独立备份'
+  );
+
+  const conflictRootA = await makeDeletionRoot('conflict-root-a', projectA);
+  const conflictRootB = await makeDeletionRoot('conflict-root-b', projectB);
+  const conflictLedgerABefore = await fs.readFile(getLedgerPath(conflictRootA.archiveRoot));
+  const conflictLedgerBBefore = await fs.readFile(getLedgerPath(conflictRootB.archiveRoot));
+  let conflictCode = '';
+  try {
+    const conflictGroups = groupLedgerSelectionsByTrustedRoot(
+      [conflictRootA.archiveRoot, conflictRootB.archiveRoot],
+      [conflictRootA.selection, conflictRootB.selection]
+    );
+    const conflictPlans = [];
+    for (const group of conflictGroups) {
+      conflictPlans.push(await prepareLedgerRecordDeletion(
+        group.archiveRoot,
+        group.selections,
+        projectA
+      ));
+    }
+    for (let index = 0; index < conflictGroups.length; index += 1) {
+      await deleteLedgerRecords(conflictGroups[index].archiveRoot, conflictGroups[index].selections, {
+        expectedProject: projectA,
+        preparedDeletion: conflictPlans[index],
+        deleteFiles: true
+      });
+    }
+  } catch (error) {
+    conflictCode = error?.code || '';
+  }
+  scenario(
+    conflictCode === 'project_context_mismatch',
+    '任一归档根包含其他项目记录时必须在整体预检阶段拒绝'
+  );
+  behavior(
+    (await fs.readFile(getLedgerPath(conflictRootA.archiveRoot))).equals(conflictLedgerABefore)
+      && (await fs.readFile(getLedgerPath(conflictRootB.archiveRoot))).equals(conflictLedgerBBefore),
+    '跨根项目冲突不得修改任何一个台账'
+  );
+  behavior(
+    !fsSync.existsSync(path.join(conflictRootA.archiveRoot, '台账备份'))
+      && !fsSync.existsSync(path.join(conflictRootB.archiveRoot, '台账备份'))
+      && fsSync.existsSync(conflictRootA.archivePath)
+      && fsSync.existsSync(conflictRootB.archivePath),
+    '跨根项目冲突不得创建备份或删除文件'
+  );
+
+  const duplicateRoot = await makeDeletionRoot('duplicate-root', projectA);
+  const rootAlias = process.platform === 'win32'
+    ? duplicateRoot.archiveRoot.toUpperCase()
+    : path.join(duplicateRoot.archiveRoot, '.');
+  const duplicateGroups = groupLedgerSelectionsByTrustedRoot(
+    [duplicateRoot.archiveRoot],
+    [
+      duplicateRoot.selection,
+      { ...duplicateRoot.selection, archiveRoot: rootAlias, rowNumber: 3 }
+    ]
+  );
+  scenario(
+    duplicateGroups.length === 1
+      && duplicateGroups[0].archiveRoot === path.resolve(duplicateRoot.archiveRoot)
+      && duplicateGroups[0].selections.length === 2,
+    '同一物理归档根的大小写或等价路径只能形成一个删除组'
+  );
+
+  const staleRoot = await makeDeletionRoot('stale-root', projectA);
+  const stalePlan = await prepareLedgerRecordDeletion(
+    staleRoot.archiveRoot,
+    [staleRoot.selection],
+    projectA
+  );
+  const secondStalePath = path.join(staleRoot.archiveRoot, 'stale-extra.jpg');
+  await fs.writeFile(secondStalePath, Buffer.from('stale-extra'));
+  await writeLedger(staleRoot.archiveRoot, [
+    [projectA.projectId, projectA.projectName, path.basename(staleRoot.archivePath), staleRoot.archivePath, ''],
+    [projectA.projectId, projectA.projectName, path.basename(secondStalePath), secondStalePath, '']
+  ]);
+  let staleCode = '';
+  try {
+    await deleteLedgerRecords(staleRoot.archiveRoot, [staleRoot.selection], {
+      expectedProject: projectA,
+      preparedDeletion: stalePlan,
+      deleteFiles: true
+    });
+  } catch (error) {
+    staleCode = error?.code || '';
+  }
+  scenario(
+    staleCode === 'ledger_changed_after_preflight',
+    '台账预检后发生外部变化必须稳定拒绝旧行号删除'
+  );
+  behavior(
+    (await loadLedgerRecords(staleRoot.archiveRoot)).records.length === 2
+      && !fsSync.existsSync(path.join(staleRoot.archiveRoot, '台账备份'))
+      && fsSync.existsSync(staleRoot.archivePath),
+    '台账变化拒绝后不得备份、修改台账或删除文件'
+  );
+
+  let forgedRootCode = '';
+  try {
+    groupLedgerSelectionsByTrustedRoot(
+      [deleteRootA.archiveRoot],
+      [{ ...deleteRootA.selection, archiveRoot: path.join(root, 'forged-root') }]
+    );
+  } catch (error) {
+    forgedRootCode = error?.code || '';
+  }
+  scenario(
+    forgedRootCode === 'project_archive_directory_invalid',
+    'renderer 伪造归档根不得绕过可信项目目录历史'
+  );
+
+  const mainSource = await fs.readFile(path.resolve(process.cwd(), 'electron/main.cjs'), 'utf8');
+  const transactionSource = await fs.readFile(
+    path.resolve(process.cwd(), 'electron/services/archiveTransactionService.cjs'),
+    'utf8'
+  );
+  sourceContract(
+    mainSource.indexOf('prepareLedgerRecordDeletion(')
+      < mainSource.indexOf('deleteLedgerRecords(group.archiveRoot'),
+    '主进程必须先完成全部预检计划再开始执行删除'
+  );
+  sourceContract(
+    mainSource.includes('expectedProject: activeProject')
+      && mainSource.includes('recoverPendingArchiveTransactionsAcrossRoots(archiveRoots'),
+    '主进程恢复必须注入当前可信项目'
+  );
+  sourceContract(
+    transactionSource.includes('projectId: normalizeText(input.projectId)')
+      && transactionSource.includes('archive_transaction_project_mismatch'),
+    '归档事务规范化必须保留项目 ID 并拒绝混合项目'
+  );
+
+  assert.equal(scenarioCount, 8, '归档项目隔离与删除预检必须执行八个独立行为场景');
+  assert.equal(
+    behaviorAssertionCount >= 19,
+    true,
+    '归档项目隔离与删除预检至少应执行十九个行为断言'
+  );
+  console.log(
+    `归档项目隔离与删除预检自检通过：${scenarioCount} 个行为场景，`
     + `${behaviorAssertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
   );
 }
@@ -14939,6 +15332,10 @@ async function checkArchiveFlow(root) {
   const sourcePath = path.join(sourceDirectory, 'original.jpg');
   const originalContent = Buffer.from('AAAA-BBBB-CCCC');
   await fs.writeFile(sourcePath, originalContent);
+  const activeProject = {
+    projectId: 'archive-flow-project',
+    projectName: '潇湘新区二期'
+  };
   const form = {
     project: '潇湘新区二期',
     watermarkCategory: '机动车违规管理',
@@ -14957,7 +15354,12 @@ async function checkArchiveFlow(root) {
     extension: '.jpg'
   };
 
-  const preview = await buildArchivePreview({ form, photos: [photo], archiveRoot });
+  const preview = await buildArchivePreview({
+    form,
+    photos: [photo],
+    archiveRoot,
+    activeProject
+  });
   assert.equal(preview.success, true, '预览应返回冻结 PreviewPlan');
   assert.equal(preview.items[0].location, '现场', '空位置应在归档服务中统一归一为“现场”');
   assert.equal(preview.items[0].vehiclePlate, '湘A12345', '车牌号码必须进入 PreviewPlan 安全预览项');
@@ -15006,7 +15408,8 @@ async function checkArchiveFlow(root) {
     () => buildArchivePreview({
       form,
       photos: [{ ...photo, id: 'missing-source', path: path.join(sourceDirectory, 'missing.jpg') }],
-      archiveRoot: failedArchiveRoot
+      archiveRoot: failedArchiveRoot,
+      activeProject
     }),
     '原图缺失时不得生成可确认的预览计划'
   );
@@ -15030,6 +15433,31 @@ async function checkArchiveTransactionRecovery(root) {
     path.join(getArchiveTransactionDirectory(single.archiveRoot), `${singleResult.transactionId}.json`),
     'utf8'
   ));
+  const reloadedSingleTransaction = await loadArchiveTransaction(
+    single.archiveRoot,
+    singleResult.transactionId
+  );
+  const singleLedgerRecord = (await loadLedgerRecords(single.archiveRoot)).records[0];
+  assert.equal(
+    reloadedSingleTransaction.projectId,
+    single.activeProject.projectId,
+    'PreviewPlan 稳定项目 ID 必须保存并重载到归档事务顶层'
+  );
+  assert.equal(
+    reloadedSingleTransaction.projectName,
+    single.activeProject.projectName,
+    'PreviewPlan 项目名称必须保存并重载到归档事务顶层'
+  );
+  assert.equal(
+    reloadedSingleTransaction.items[0].ledgerRow.projectId,
+    single.activeProject.projectId,
+    '归档事务台账行必须保留稳定项目 ID'
+  );
+  assert.equal(
+    singleLedgerRecord.projectId,
+    single.activeProject.projectId,
+    '完整临时目录归档链必须将稳定项目 ID 写入 Excel 项目 ID 列'
+  );
   assert.equal(path.isAbsolute(singleTransaction.items[0].targetRelativePath), false, '事务日志不得保存绝对目标路径');
   assert.equal(Object.prototype.hasOwnProperty.call(singleTransaction.items[0], 'targetPath'), false, '事务日志不得持久化 targetPath');
 
@@ -15422,11 +15850,15 @@ async function checkArchiveTransactionRecovery(root) {
 async function createArchiveTransactionTestPlan(root, options = {}) {
   const count = Number(options.count) || 1;
   const tag = String(options.tag || 'test');
+  const activeProject = options.activeProject || {
+    projectId: 'archive-transaction-project',
+    projectName: '事务测试项目'
+  };
   const sourceDirectory = path.join(root, `source-${tag}`);
   const archiveRoot = options.archiveRoot || path.join(root, 'archive');
   await fs.mkdir(sourceDirectory, { recursive: true });
   const form = {
-    project: '事务测试项目',
+    project: activeProject.projectName,
     watermarkCategory: '事务测试分类',
     workContent: '事务测试工作',
     date: '2026-07-17',
@@ -15451,10 +15883,16 @@ async function createArchiveTransactionTestPlan(root, options = {}) {
     });
     sources.push({ path: sourcePath, content });
   }
-  const previewResult = await buildArchivePreview({ form, photos, archiveRoot });
+  const previewResult = await buildArchivePreview({
+    form,
+    photos,
+    archiveRoot,
+    activeProject
+  });
   return {
     root,
     archiveRoot,
+    activeProject,
     form,
     photos,
     preview: previewResult.previewPlan,
