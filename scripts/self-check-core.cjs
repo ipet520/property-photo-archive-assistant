@@ -35,9 +35,20 @@ const {
   saveAllUserConfigs
 } = require('../electron/services/configService.cjs');
 const { inspectDirectoryHealth } = require('../electron/services/directoryHealthService.cjs');
+const {
+  clearProjectDirectoryPreference,
+  getProjectDirectoryPreferences,
+  getProjectDirectoryPreferencesPath,
+  listProjectArchiveRoots,
+  loadProjectDirectoryPreferences,
+  setProjectDirectoryPreference
+} = require('../electron/services/projectDirectoryPreferencesService.cjs');
 const { scanImages, scanImagesWithHealth } = require('../electron/services/fileService.cjs');
 const { inspectPhotoSourceFile } = require('../electron/services/photoFileHealthService.cjs');
-const { loadLedgerRecords } = require('../electron/services/ledgerQueryService.cjs');
+const {
+  loadLedgerRecords,
+  loadProjectLedgerRecordsAcrossRoots
+} = require('../electron/services/ledgerQueryService.cjs');
 const { getRecognitionStatus } = require('../electron/services/recognitionService.cjs');
 const {
   buildMarkiPostSignature,
@@ -185,6 +196,7 @@ async function main() {
     await checkWatermarkTemplateFormContract(path.join(temporaryRoot, 'watermark-template-form'));
     await checkSmartClassificationBusinessClosure(path.join(temporaryRoot, 'smart-classification-business-closure'));
     await checkActiveProjectBusinessBoundary(path.join(temporaryRoot, 'active-project-business-boundary'));
+    await checkProjectDirectoryResponsibilities(path.join(temporaryRoot, 'project-directory-responsibilities'));
     await checkMaintenanceRecommendations(path.join(temporaryRoot, 'maintenance'));
     await checkSmartSortOutcomes(path.join(temporaryRoot, 'smart-sort'));
     await checkArchiveFlow(path.join(temporaryRoot, 'archive-flow'));
@@ -4822,6 +4834,336 @@ async function checkMarkiReadyBatchRefresh() {
   assert.equal(requestCount, 2, '刷新完成后锁必须释放并允许再次刷新');
 }
 
+async function checkProjectDirectoryResponsibilities(root) {
+  const userDataPath = path.join(root, 'user-data');
+  const archiveA1 = path.join(root, 'archive-a-1');
+  const archiveA2 = path.join(root, 'archive-a-2');
+  const archiveB = path.join(root, 'archive-b');
+  const packageA = path.join(root, 'package-a');
+  const packageB = path.join(root, 'package-b');
+  await Promise.all([
+    archiveA1,
+    archiveA2,
+    archiveB,
+    packageA,
+    packageB
+  ].map((directory) => fs.mkdir(directory, { recursive: true })));
+
+  const projectA = { projectId: 'project-directory-a', projectName: '项目 A' };
+  const projectARenamed = { projectId: projectA.projectId, projectName: '项目 A（已改名）' };
+  const projectB = { projectId: 'project-directory-b', projectName: '项目 B' };
+  let scenarioCount = 0;
+  let behaviorAssertionCount = 0;
+  let sourceContractCount = 0;
+  const scenario = (condition, message) => {
+    scenarioCount += 1;
+    behaviorAssertionCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+  const behavior = (condition, message) => {
+    behaviorAssertionCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+  const sourceContract = (condition, message) => {
+    sourceContractCount += 1;
+    assert.equal(Boolean(condition), true, message);
+  };
+
+  const emptyA = await getProjectDirectoryPreferences(userDataPath, projectA);
+  scenario(
+    emptyA.archiveRootDirectory === '' && emptyA.packageExportDirectory === '',
+    '新项目不得从旧全局目录自动获得归档或资料包目录'
+  );
+  behavior(
+    Object.keys(emptyA).sort().join(',') === 'archiveRootDirectory,packageExportDirectory,projectId,updatedAt',
+    'renderer 可见偏好必须严格限制为业务必要字段'
+  );
+
+  await setProjectDirectoryPreference(userDataPath, projectA, 'archive_root', archiveA1);
+  await setProjectDirectoryPreference(userDataPath, projectB, 'archive_root', archiveB);
+  const [savedA1, savedB1] = await Promise.all([
+    getProjectDirectoryPreferences(userDataPath, projectA),
+    getProjectDirectoryPreferences(userDataPath, projectB)
+  ]);
+  scenario(
+    savedA1.archiveRootDirectory === path.resolve(archiveA1)
+      && savedB1.archiveRootDirectory === path.resolve(archiveB),
+    '项目 A、B 必须独立保存归档目录'
+  );
+  behavior(savedA1.archiveRootDirectory !== savedB1.archiveRootDirectory, '不同项目目录不得互相覆盖');
+
+  const renamedA = await getProjectDirectoryPreferences(userDataPath, projectARenamed);
+  scenario(
+    renamedA.archiveRootDirectory === path.resolve(archiveA1),
+    '项目改名但 projectId 不变时必须保留目录偏好'
+  );
+
+  await setProjectDirectoryPreference(userDataPath, projectA, 'package_export', packageA);
+  await setProjectDirectoryPreference(userDataPath, projectB, 'package_export', packageB);
+  const [savedA2, savedB2] = await Promise.all([
+    getProjectDirectoryPreferences(userDataPath, projectA),
+    getProjectDirectoryPreferences(userDataPath, projectB)
+  ]);
+  scenario(
+    savedA2.packageExportDirectory === path.resolve(packageA)
+      && savedB2.packageExportDirectory === path.resolve(packageB),
+    '项目 A、B 必须独立保存资料包输出目录'
+  );
+
+  await setProjectDirectoryPreference(userDataPath, projectA, 'archive_root', archiveA2);
+  const archiveHistory = await listProjectArchiveRoots(userDataPath, projectA);
+  scenario(
+    archiveHistory.includes(path.resolve(archiveA1))
+      && archiveHistory.includes(path.resolve(archiveA2)),
+    '更改当前归档目录后必须保留历史归档根用于读取旧台账'
+  );
+  behavior(archiveHistory.length === 2, '历史归档根不得重复');
+  const failedHistoryRoot = path.join(root, 'archive-failed');
+  const historicalRecords = await loadProjectLedgerRecordsAcrossRoots(
+    [...archiveHistory, failedHistoryRoot],
+    projectA,
+    {
+      loadLedgerRecords: async (archiveRoot) => {
+        if (archiveRoot === path.resolve(failedHistoryRoot)) {
+          throw new Error('injected ledger failure');
+        }
+        const isOldRoot = archiveRoot === path.resolve(archiveA1);
+        return {
+          ledgerPath: path.join(archiveRoot, '照片归档台账.xlsx'),
+          records: [
+            {
+              rowNumber: 2,
+              projectId: isOldRoot ? '' : projectA.projectId,
+              project: projectA.projectName,
+              archivePath: path.join(archiveRoot, isOldRoot ? 'old.jpg' : 'new.jpg')
+            },
+            {
+              rowNumber: 3,
+              projectId: projectB.projectId,
+              project: projectB.projectName,
+              archivePath: path.join(archiveRoot, 'other-project.jpg')
+            }
+          ]
+        };
+      }
+    }
+  );
+  behavior(historicalRecords.records.length === 2, '当前项目必须同时保留新旧归档根中的历史记录');
+  behavior(
+    historicalRecords.records.every((record) => record.archiveRoot && record.archiveDirectory),
+    '历史记录必须保留各自实际归档根和目录'
+  );
+  behavior(historicalRecords.failedCount === 1, '单个历史归档根读取失败不得阻断其他记录');
+  behavior(
+    historicalRecords.records.every((record) => record.projectId !== projectB.projectId),
+    '跨历史归档根查询必须排除其他项目记录'
+  );
+
+  const clearedArchiveA = await clearProjectDirectoryPreference(
+    userDataPath,
+    projectA,
+    'archive_root'
+  );
+  const untouchedB = await getProjectDirectoryPreferences(userDataPath, projectB);
+  scenario(
+    clearedArchiveA.archiveRootDirectory === ''
+      && clearedArchiveA.packageExportDirectory === path.resolve(packageA)
+      && untouchedB.archiveRootDirectory === path.resolve(archiveB),
+    '清除项目 A 归档目录只能清除该字段且不得影响项目 B'
+  );
+  behavior(
+    (await listProjectArchiveRoots(userDataPath, projectA)).includes(path.resolve(archiveA2)),
+    '清除当前归档目录不得删除历史归档根'
+  );
+
+  const clearedPackageA = await clearProjectDirectoryPreference(
+    userDataPath,
+    projectA,
+    'package_export'
+  );
+  const packageBStillSaved = await getProjectDirectoryPreferences(userDataPath, projectB);
+  scenario(
+    clearedPackageA.packageExportDirectory === ''
+      && packageBStillSaved.packageExportDirectory === path.resolve(packageB),
+    '清除项目 A 资料包目录不得影响项目 B 或历史资料包'
+  );
+
+  const moduleUrl = pathToFileURL(
+    path.join(process.cwd(), 'src', 'utils', 'projectDirectoryPreferences.js')
+  ).href;
+  const {
+    PROJECT_DIRECTORY_TYPES,
+    buildProjectDirectoryState,
+    isArchivePreviewPlanCurrent,
+    normalizeProjectDirectoryPreferences,
+    resolveLegacyDirectoryInitialPath
+  } = await import(`${moduleUrl}?project-directories=${Date.now()}`);
+  const legacyRuntime = {
+    archiveRootDirectory: path.join(root, 'legacy-archive'),
+    archivePackageDirectory: path.join(root, 'legacy-package')
+  };
+  const legacyArchiveInitialPath = resolveLegacyDirectoryInitialPath(
+    legacyRuntime,
+    PROJECT_DIRECTORY_TYPES.archiveRoot
+  );
+  const legacyPackageInitialPath = resolveLegacyDirectoryInitialPath(
+    legacyRuntime,
+    PROJECT_DIRECTORY_TYPES.packageExport
+  );
+  scenario(
+    legacyArchiveInitialPath === legacyRuntime.archiveRootDirectory
+      && legacyPackageInitialPath === legacyRuntime.archivePackageDirectory,
+    '旧全局目录只能解析为文件夹选择器初始位置'
+  );
+  const normalizedEmpty = normalizeProjectDirectoryPreferences({}, projectA);
+  behavior(
+    normalizedEmpty.archiveRootDirectory === ''
+      && normalizedEmpty.packageExportDirectory === '',
+    '旧全局目录不得自动进入项目目录偏好'
+  );
+
+  const healthyArchiveState = buildProjectDirectoryState(
+    archiveA1,
+    { healthStatus: 'healthy', normalizedPath: archiveA1 }
+  );
+  scenario(
+    healthyArchiveState.healthy
+      && healthyArchiveState.canOpen
+      && healthyArchiveState.canClear
+      && healthyArchiveState.selectLabel === '更改目录',
+    '健康项目目录必须允许打开、更改和清除'
+  );
+
+  const missingArchiveState = buildProjectDirectoryState(
+    archiveA1,
+    { healthStatus: 'missing', normalizedPath: archiveA1 }
+  );
+  scenario(
+    missingArchiveState.invalid
+      && !missingArchiveState.canOpen
+      && missingArchiveState.canClear
+      && missingArchiveState.selectLabel === '重新选择目录',
+    '失效项目目录必须禁止打开并要求重新选择'
+  );
+  const unsetArchiveState = buildProjectDirectoryState('', {
+    healthStatus: 'not_configured',
+    normalizedPath: ''
+  });
+  behavior(
+    !unsetArchiveState.canOpen
+      && !unsetArchiveState.canClear
+      && unsetArchiveState.selectLabel === '选择目录',
+    '未设置项目目录必须显示选择状态且不得回退旧全局目录'
+  );
+
+  const currentPlan = {
+    projectId: projectA.projectId,
+    archiveRoot: archiveA1
+  };
+  scenario(
+    isArchivePreviewPlanCurrent(currentPlan, projectA, archiveA1),
+    '预览项目和归档目录均一致时计划才可继续使用'
+  );
+
+  scenario(
+    !isArchivePreviewPlanCurrent(currentPlan, projectB, archiveA1)
+      && !isArchivePreviewPlanCurrent(currentPlan, projectA, archiveA2),
+    '项目切换或归档目录更改必须使旧预览失效'
+  );
+
+  const corruptRoot = path.join(root, 'corrupt');
+  await fs.mkdir(corruptRoot, { recursive: true });
+  await fs.writeFile(
+    getProjectDirectoryPreferencesPath(corruptRoot),
+    '{not-json',
+    'utf8'
+  );
+  let corruptCode = '';
+  try {
+    await loadProjectDirectoryPreferences(corruptRoot);
+  } catch (error) {
+    corruptCode = error?.code || '';
+  }
+  scenario(
+    corruptCode === 'project_directory_preferences_corrupt',
+    '损坏 JSON 必须返回稳定错误码'
+  );
+
+  const invalidRoot = path.join(root, 'invalid');
+  await fs.mkdir(invalidRoot, { recursive: true });
+  await fs.writeFile(
+    getProjectDirectoryPreferencesPath(invalidRoot),
+    JSON.stringify({ schemaVersion: 2, updatedAt: new Date().toISOString(), items: [] }),
+    'utf8'
+  );
+  let invalidCode = '';
+  try {
+    await loadProjectDirectoryPreferences(invalidRoot);
+  } catch (error) {
+    invalidCode = error?.code || '';
+  }
+  scenario(
+    invalidCode === 'project_directory_preferences_invalid',
+    'schema 错误必须返回稳定错误码'
+  );
+
+  const persistedPath = getProjectDirectoryPreferencesPath(userDataPath);
+  const persisted = JSON.parse(await fs.readFile(persistedPath, 'utf8'));
+  const storageEntries = await fs.readdir(path.dirname(persistedPath));
+  scenario(
+    persisted.schemaVersion === 1
+      && persisted.items.length === 2
+      && !storageEntries.some((name) => /\.(tmp|bak)$/.test(name)),
+    '项目目录偏好必须原子持久化且写后不遗留临时文件'
+  );
+  behavior(
+    persisted.items.every((item) => item.projectId && !Object.hasOwn(item, 'projectName')),
+    '项目目录偏好必须只以稳定 projectId 为键'
+  );
+
+  const settingsSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/pages/SettingsPage.jsx'),
+    'utf8'
+  );
+  const workspaceSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/pages/SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const recordsSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/pages/ArchiveRecordsPage.jsx'),
+    'utf8'
+  );
+  const mainSource = await fs.readFile(path.resolve(process.cwd(), 'electron/main.cjs'), 'utf8');
+  const preloadSource = await fs.readFile(path.resolve(process.cwd(), 'electron/preload.cjs'), 'utf8');
+  const markiSources = await Promise.all([
+    'electron/services/markiTrustedImportService.cjs',
+    'electron/services/markiImportLifecycleService.cjs',
+    'electron/services/markiWorkbenchRehydrateService.cjs'
+  ].map((filePath) => fs.readFile(path.resolve(process.cwd(), filePath), 'utf8')));
+  sourceContract(!settingsSource.includes('settings-default-paths'), '系统设置不得再渲染默认目录页面');
+  sourceContract(!settingsSource.includes('默认照片导入目录'), '系统设置不得再显示默认照片导入目录');
+  sourceContract(workspaceSource.includes('setProjectArchiveRootDirectory'), '工作台必须管理当前项目归档目录');
+  sourceContract(workspaceSource.includes('clearProjectArchiveRootDirectory'), '工作台必须支持清除当前项目归档目录');
+  sourceContract(workspaceSource.includes('isArchivePreviewPlanCurrent'), '工作台必须校验预览项目和归档目录');
+  sourceContract(recordsSource.includes('setProjectPackageExportDirectory'), '归档记录页必须管理当前项目资料包目录');
+  sourceContract(recordsSource.includes('loadProjectLedgerRecords'), '历史台账必须按项目跨历史归档根读取');
+  sourceContract(mainSource.includes("archive_preview_directory_stale"), '正式归档必须拒绝旧目录预览');
+  sourceContract(mainSource.includes('listProjectArchiveRoots'), '历史归档记录必须保留旧归档根查询入口');
+  sourceContract(preloadSource.includes('getProjectDirectoryPreferences:'), 'preload 必须暴露受控项目目录读取');
+  sourceContract(preloadSource.includes('setProjectPackageExportDirectory:'), 'preload 必须暴露受控项目资料包目录写入');
+  sourceContract(
+    markiSources.every((source) => !source.includes('projectDirectoryPreferences')),
+    'Marki 导入、恢复和生命周期服务不得修改项目目录偏好'
+  );
+
+  assert.equal(scenarioCount, 15, '项目目录职责迁移必须执行十五个独立行为场景');
+  assert.equal(behaviorAssertionCount >= 26, true, '项目目录职责迁移至少应执行二十六个行为断言');
+  console.log(
+    `项目目录职责迁移自检通过：${scenarioCount} 个行为场景，`
+    + `${behaviorAssertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
+  );
+}
+
 function createJsonResponse(payload) {
   return {
     ok: true,
@@ -4849,7 +5191,8 @@ async function checkMaintenanceRecommendations(root) {
   assert.equal(directoryByKey.get('sortDrafts')?.status, 'info', '尚未创建的分拣草稿目录不应误报异常');
   assert.equal(directoryByKey.get('configBackup')?.status, 'info', '尚未创建的设置备份目录不应误报异常');
   assert.equal(report.sortProgressStatus.status, 'info', '没有分拣草稿应为提示状态');
-  assert.equal(report.packageStatus.status, 'normal', '已配置且可读写的空资料包目录应为正常状态');
+  assert.equal(report.packageStatus.status, 'project_managed', '旧全局资料包目录不得再作为业务状态自动生效');
+  assert.equal(report.packageStatus.root, '', '数据维护报告不得返回旧全局资料包目录');
   assert.equal(report.suggestions.some((item) => item.title.includes('分拣进度保存目录不可用')), false, '维护建议不应误报分拣草稿目录');
   assert.equal(report.suggestions.some((item) => item.title.includes('设置备份目录不可用')), false, '维护建议不应误报设置备份目录');
 
@@ -4862,7 +5205,7 @@ async function checkMaintenanceRecommendations(root) {
   });
   const optionalPackageReport = await getDataMaintenanceReport({ documentsPath, projectRoot: process.cwd() });
   const optionalPackageSuggestion = optionalPackageReport.suggestions.find((item) => item.title.includes('资料包导出目录未配置'));
-  assert.equal(optionalPackageSuggestion?.level, 'info', '未配置可选资料包目录只应显示普通提示');
+  assert.equal(optionalPackageSuggestion, undefined, '项目资料包目录不得由全局维护报告提示或自动配置');
 
   const invalidDocumentsPath = path.join(root, 'invalid-documents');
   const missingArchiveRoot = path.join(root, 'missing-archive');
@@ -4874,7 +5217,7 @@ async function checkMaintenanceRecommendations(root) {
     defaultArchivePackageRoot: ''
   });
   const invalidReport = await getDataMaintenanceReport({ documentsPath: invalidDocumentsPath, projectRoot: process.cwd() });
-  assert.equal(invalidReport.suggestions.some((item) => item.title === '默认归档根目录不可用'), true, '失效归档根目录应明确提示');
+  assert.equal(invalidReport.suggestions.some((item) => item.title === '默认归档根目录不可用'), false, '旧全局归档根失效不得污染当前项目目录状态');
   assert.equal(invalidReport.suggestions.some((item) => item.title === '未发现归档台账'), false, '归档根目录失效时不应重复提示未发现台账');
 }
 
@@ -14332,7 +14675,7 @@ async function checkArchiveTransactionRecovery(root) {
     legacyHeaders,
     ['2026-07-17', '旧项目', '旧分类', '旧工作', '旧位置', 'new.jpg', 'old.jpg', '', '', 'C:\\archive\\new.jpg', '2026-07-17 10:00:00']
   ]);
-  assert.equal(normalizedLegacyRows[0].length, 27, '旧台账加载后应补齐来源追溯和条件字段列');
+  assert.equal(normalizedLegacyRows[0].length, 28, '旧台账加载后应补齐来源追溯、条件字段和项目 ID 列');
   assert.deepEqual(
     normalizedLegacyRows[1].slice(0, 4),
     ['2026-07-17', '旧项目', '旧分类', '旧工作'],
@@ -14362,7 +14705,7 @@ async function checkArchiveTransactionRecovery(root) {
       'standard_work_record', 'platform_only'
     ]
   ]);
-  assert.equal(normalizedCurrentRows[0].length, 27, '当前 20 列台账加载后应只在末尾追加条件字段列');
+  assert.equal(normalizedCurrentRows[0].length, 28, '当前 20 列台账加载后应只在末尾追加条件字段和项目 ID 列');
   assert.deepEqual(
     normalizedCurrentRows[1].slice(0, 20),
     [
@@ -14374,7 +14717,7 @@ async function checkArchiveTransactionRecovery(root) {
     ],
     '当前 20 列业务和追溯数据不得丢失或换序'
   );
-  assert.equal(normalizedCurrentRows[1].slice(20).every((value) => value === ''), true, '当前台账缺失的七个条件字段应安全补空');
+  assert.equal(normalizedCurrentRows[1].slice(20).every((value) => value === ''), true, '当前台账缺失的七个条件字段和项目 ID 应安全补空');
 
   const conditionFields = {
     watermarkCategory: '工程类工作记录',
@@ -14862,14 +15205,32 @@ async function checkDownstreamPages({ root, archiveRoot, ledgerRecord }) {
   assert.equal(summary.rectificationItems.length, 1, '资料汇总中心应读取整改事项');
   assert.equal(summary.photoRecords[0].fileExists, true, '资料汇总中心应正确判断归档文件状态');
 
-  const dashboard = await loadDashboardData({ documentsPath, projectRoot: process.cwd() });
+  const dashboard = await loadDashboardData({
+    documentsPath,
+    projectRoot: process.cwd(),
+    activeProject: {
+      projectId: ledgerRecord.projectId || 'project-downstream',
+      projectName: ledgerRecord.project
+    },
+    projectLedgerResult: { records: [ledgerRecord] },
+    projectDirectories: {
+      archive: {
+        success: true,
+        preferences: { archiveRootDirectory: archiveRoot }
+      },
+      package: {
+        success: true,
+        preferences: { packageExportDirectory: packageTargetRoot }
+      }
+    }
+  });
   assert.equal(dashboard.archiveMetrics.total, 1, '首页归档总数应与台账一致');
   assert.equal(dashboard.archiveMetrics.missingCount, 0, '首页不应误报归档文件缺失');
   assert.equal(dashboard.rectificationMetrics.total, 1, '首页整改总数应与整改数据一致');
 
   const maintenance = await getDataMaintenanceReport({ documentsPath, projectRoot: process.cwd() });
-  assert.equal(maintenance.ledgerStatus.total, 1, '数据维护中心台账统计应与归档记录一致');
-  assert.equal(maintenance.ledgerStatus.missingCount, 0, '数据维护中心不应误报归档文件缺失');
+  assert.equal(maintenance.ledgerStatus.status, 'project_managed', '数据维护中心应把归档台账交由当前项目业务页管理');
+  assert.equal(maintenance.ledgerStatus.total, 0, '数据维护中心不得扫描旧全局归档根并混合项目台账');
 }
 
 async function checkSourceContracts() {
@@ -14897,7 +15258,7 @@ async function checkSourceContracts() {
     fs.readFile(path.join(process.cwd(), 'src/styles/main.css'), 'utf8')
   ]);
   const invokedChannels = new Set([...preloadSource.matchAll(/ipcRenderer\.invoke\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
-  const handledChannels = new Set([...mainSource.matchAll(/ipcMain\.handle\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
+  const handledChannels = new Set([...mainSource.matchAll(/ipcMain\.handle\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]));
   const missingHandlers = [...invokedChannels].filter((channel) => !handledChannels.has(channel));
   assert.deepEqual(missingHandlers, [], `preload 中存在无主进程处理器的 IPC：${missingHandlers.join(', ')}`);
   assert.equal(invokedChannels.has('archive:recoverPendingTransactions'), true, 'preload 应暴露最小归档事务恢复接口');

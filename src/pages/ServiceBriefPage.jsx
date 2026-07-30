@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PAGE_KEYS } from '../constants/app.js';
 import { resolveProjectInfo } from '../utils/projectResolver.js';
-import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const IMAGE_TEMPLATE = {
@@ -25,7 +24,7 @@ const defaultFilters = {
 };
 
 export default function ServiceBriefPage({ archiveState, onNavigate }) {
-  const [archiveRoot, setArchiveRoot] = useState(archiveState?.archiveRoot || '');
+  const activeProject = archiveState?.activeProject;
   const [ledgerPath, setLedgerPath] = useState('');
   const [records, setRecords] = useState([]);
   const [filters, setFilters] = useState(defaultFilters);
@@ -39,26 +38,8 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
   const [exportResult, setExportResult] = useState(null);
 
   useEffect(() => {
-    let alive = true;
-    window.archiveAssistant.loadSettings().then((settings) => {
-      if (!alive) return;
-      const root = archiveState?.archiveRoot || getUsableArchiveRoot(settings) || '';
-      setArchiveRoot(root);
-      if (!root) {
-        setStatus({ type: 'warning', text: '请先到系统设置中设置归档根目录。' });
-      }
-    }).catch((error) => {
-      recordRuntimeLog({ page: '每日服务简报', operation: '读取系统设置', errorType: '设置读取失败', summary: error.message, error });
-      setStatus({ type: 'error', text: `读取系统设置失败：${error.message}` });
-    });
-    return () => {
-      alive = false;
-    };
-  }, [archiveState?.archiveRoot]);
-
-  useEffect(() => {
-    if (archiveRoot) loadLedger(archiveRoot);
-  }, [archiveRoot]);
+    if (activeProject) void loadLedger();
+  }, [activeProject?.projectId]);
 
   const options = useMemo(() => ({
     project: unique(records.map((record) => record.project || '未识别项目')),
@@ -105,22 +86,19 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
     setExportResult(null);
   }
 
-  async function loadLedger(root = archiveRoot) {
-    if (!root) {
-      setStatus({ type: 'warning', text: '请先到系统设置中设置归档根目录。' });
-      return;
-    }
+  async function loadLedger() {
     setIsLoading(true);
     try {
-      const result = await window.archiveAssistant.loadLedgerRecords(root);
-      setLedgerPath(result.ledgerPath || '');
+      const result = await window.archiveAssistant.loadProjectLedgerRecords(activeProject);
+      if (result?.success !== true) throw new Error(result?.message || '读取项目台账失败。');
+      setLedgerPath((result.ledgerPaths || []).join('；'));
       setRecords(result.records || []);
       setSelectedIds(new Set());
       setSelectedPhotoIds(new Set());
       setExpandedIds(new Set());
       setExportResult(null);
       if (result.missingLedger) {
-        setStatus({ type: 'warning', text: '当前归档根目录下未找到照片台账，请先完成照片归档。' });
+        setStatus({ type: 'warning', text: '当前项目尚无照片归档记录，请先完成照片归档。' });
       } else {
         setStatus({ type: 'success', text: `已读取 ${result.records.length} 条归档照片记录。` });
       }
@@ -268,11 +246,8 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
     }
   }
 
-  const noRoot = !archiveRoot;
   const currentDateRecords = records.filter((record) => normalizeRecordDate(record) === filters.date);
-  const emptyText = noRoot
-    ? '请先到系统设置中设置归档根目录。'
-    : records.length === 0
+  const emptyText = records.length === 0
       ? '当前归档根目录下未找到照片台账，请先完成照片归档。'
       : currentDateRecords.length === 0
         ? '当前日期暂无归档照片记录，可切换日期查看。'
@@ -287,8 +262,8 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
           <p>人工勾选适合公开展示的事项和照片，统一导出每日服务简报图，并附带简短配图文案。</p>
         </div>
         <div className="service-brief-actions">
-          <button type="button" className="primary" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '读取中...' : '刷新台账'}</button>
-          <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>设置归档目录</button>
+          <button type="button" className="primary" onClick={() => loadLedger()} disabled={isLoading}>{isLoading ? '读取中...' : '刷新台账'}</button>
+          <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' })}>管理归档目录</button>
         </div>
       </section>
 
@@ -329,7 +304,7 @@ export default function ServiceBriefPage({ archiveState, onNavigate }) {
           {visibleItems.length === 0 ? (
             <div className="service-brief-empty">
               <strong>{emptyText}</strong>
-              {noRoot ? <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>去系统设置</button> : null}
+              {noRoot ? <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' })}>管理项目归档目录</button> : null}
             </div>
           ) : (
             <div className="service-item-list">

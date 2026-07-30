@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('archiveAssistant', {
   selectPhotoFolder: (initialPath = '') => ipcRenderer.invoke('dialog:selectPhotoFolder', { initialPath }),
-  selectArchiveRoot: () => ipcRenderer.invoke('dialog:selectArchiveRoot'),
+  selectArchiveRoot: (initialPath = '') => ipcRenderer.invoke('dialog:selectArchiveRoot', { initialPath }),
   scanImages: (folderPath) => ipcRenderer.invoke('photos:scanImages', folderPath),
   inspectPhotoSourceDirectory: (folderPath) => ipcRenderer.invoke('photos:inspectSourceDirectory', folderPath),
   scanPhotoSourceDirectory: (folderPath) => ipcRenderer.invoke('photos:scanSourceDirectory', folderPath),
@@ -127,6 +127,30 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   openConfiguredDirectory: (directoryKind) => (
     ipcRenderer.invoke('runtimeConfiguration:openDirectory', directoryKind)
   ),
+  getProjectDirectoryPreferences: (activeProject) => (
+    ipcRenderer.invoke('projectDirectories:get', activeProject)
+  ),
+  setProjectArchiveRootDirectory: (activeProject, directory) => (
+    ipcRenderer.invoke('projectDirectories:setArchiveRoot', activeProject, directory)
+  ),
+  clearProjectArchiveRootDirectory: (activeProject) => (
+    ipcRenderer.invoke('projectDirectories:clearArchiveRoot', activeProject)
+  ),
+  setProjectPackageExportDirectory: (activeProject, directory) => (
+    ipcRenderer.invoke('projectDirectories:setPackageExport', activeProject, directory)
+  ),
+  clearProjectPackageExportDirectory: (activeProject) => (
+    ipcRenderer.invoke('projectDirectories:clearPackageExport', activeProject)
+  ),
+  checkProjectDirectoryHealth: (activeProject, directoryType) => (
+    ipcRenderer.invoke('projectDirectories:checkHealth', activeProject, directoryType)
+  ),
+  openProjectArchiveRootDirectory: (activeProject) => (
+    ipcRenderer.invoke('projectDirectories:openArchiveRoot', activeProject)
+  ),
+  openProjectPackageExportDirectory: (activeProject) => (
+    ipcRenderer.invoke('projectDirectories:openPackageExport', activeProject)
+  ),
   onRuntimeConfigurationChanged: (callback) => {
     const listener = (_event, runtimeConfiguration) => callback(runtimeConfiguration);
     ipcRenderer.on('runtimeConfiguration:changed', listener);
@@ -139,7 +163,9 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   },
   buildArchivePreview: (payload) => ipcRenderer.invoke('archive:buildPreview', payload),
   archivePhotos: (archivePlan) => ipcRenderer.invoke('archive:archivePhotos', archivePlan),
-  recoverPendingArchiveTransactions: () => ipcRenderer.invoke('archive:recoverPendingTransactions'),
+  recoverPendingArchiveTransactions: (activeProject) => (
+    ipcRenderer.invoke('archive:recoverPendingTransactions', activeProject)
+  ),
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   updateLastPhotoFolder: (folderPath) => ipcRenderer.invoke('settings:updateLastPhotoFolder', folderPath),
@@ -152,10 +178,22 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   openLedger: (archiveRoot) => ipcRenderer.invoke('ledger:open', archiveRoot),
   loadLedgerRecords: (archiveRoot) => ipcRenderer.invoke('ledger:loadRecords', archiveRoot),
   deleteLedgerRecords: (archiveRoot, selections, options) => ipcRenderer.invoke('ledger:deleteRecords', archiveRoot, selections, options),
+  loadProjectLedgerRecords: (activeProject) => (
+    ipcRenderer.invoke('ledger:loadProjectRecords', activeProject)
+  ),
+  deleteProjectLedgerRecords: (activeProject, selections, options) => (
+    ipcRenderer.invoke('ledger:deleteProjectRecords', activeProject, selections, options)
+  ),
   exportLedgerRecords: (records) => ipcRenderer.invoke('ledger:exportRecords', records),
-  selectArchivePackageTargetRoot: () => ipcRenderer.invoke('archivePackage:selectTargetRoot'),
-  buildArchivePackagePlan: (records, targetRoot, options) => ipcRenderer.invoke('archivePackage:buildPlan', records, targetRoot, options),
-  generateArchivePackage: (records, options) => ipcRenderer.invoke('archivePackage:generate', records, options),
+  selectArchivePackageTargetRoot: (initialPath = '') => (
+    ipcRenderer.invoke('archivePackage:selectTargetRoot', { initialPath })
+  ),
+  buildArchivePackagePlan: (activeProject, records, options) => (
+    ipcRenderer.invoke('archivePackage:buildPlan', activeProject, records, options)
+  ),
+  generateArchivePackage: (activeProject, records, options) => (
+    ipcRenderer.invoke('archivePackage:generate', activeProject, records, options)
+  ),
   exportServiceBriefImages: (payload) => ipcRenderer.invoke('serviceBrief:exportImages', payload),
   getDataMaintenanceReport: () => ipcRenderer.invoke('dataMaintenance:getReport'),
   loadTrialIssues: () => ipcRenderer.invoke('trialIssues:load'),
@@ -163,12 +201,12 @@ contextBridge.exposeInMainWorld('archiveAssistant', {
   deleteTrialIssue: (id) => ipcRenderer.invoke('trialIssues:delete', id),
   clearHandledTrialIssues: () => ipcRenderer.invoke('trialIssues:clearHandled'),
   exportTrialIssues: (items, format) => ipcRenderer.invoke('trialIssues:export', items, format),
-  loadDashboardData: () => ipcRenderer.invoke('dashboard:loadData'),
+  loadDashboardData: (activeProject) => ipcRenderer.invoke('dashboard:loadData', activeProject),
   loadRectificationItems: () => ipcRenderer.invoke('rectification:loadItems'),
   saveRectificationItem: (item) => ipcRenderer.invoke('rectification:saveItem', item),
   selectRectificationPhotos: () => ipcRenderer.invoke('rectification:selectPhotos'),
   exportRectificationItems: (items) => ipcRenderer.invoke('rectification:exportItems', items),
-  loadSummaryData: (archiveRoot) => ipcRenderer.invoke('summary:loadData', archiveRoot),
+  loadSummaryData: (activeProject) => ipcRenderer.invoke('summary:loadData', activeProject),
   exportSummaryWorkbook: (payload) => ipcRenderer.invoke('summary:exportWorkbook', payload),
   onArchivePackageProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);

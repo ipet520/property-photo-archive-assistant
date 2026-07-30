@@ -36,13 +36,14 @@ class ArchiveServiceError extends Error {
 }
 
 async function buildArchivePreview(payload) {
-  const { form, photos, archiveRoot } = payload;
+  const { form, photos, archiveRoot, activeProject } = payload;
   validatePreviewPayload(form, photos, archiveRoot);
 
   const previewInputs = [];
   for (let index = 0; index < photos.length; index += 1) {
     const photo = photos[index];
     const item = mergePhotoOverrides(form, photo);
+    item.projectId = String(activeProject?.projectId || photo.projectId || '').trim();
     const targetDirectory = buildTargetDirectory(archiveRoot, item);
     const newFileName = buildFileName(item, photo.extension, index + 1);
     const targetPath = path.join(targetDirectory, newFileName);
@@ -68,6 +69,8 @@ async function buildArchivePreview(payload) {
     });
   }
   const previewPlan = await createArchivePreviewPlan({
+    projectId: activeProject?.projectId,
+    projectName: activeProject?.projectName,
     archiveRoot,
     items: previewInputs
   });
@@ -373,6 +376,7 @@ async function inspectFrozenTarget(targetPath, item, options = {}) {
 function buildLedgerRow(item) {
   return {
     date: String(item.date || '').trim(),
+    projectId: String(item.projectId || '').trim(),
     project: String(item.project || '').trim(),
     watermarkCategory: String(item.watermarkCategory || '').trim(),
     workContent: String(item.workContent || '').trim(),

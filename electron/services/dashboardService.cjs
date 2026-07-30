@@ -2,20 +2,28 @@ const { getDataMaintenanceReport } = require('./dataMaintenanceService.cjs');
 const { loadSettings } = require('./settingsService.cjs');
 const { loadSummaryData } = require('./summaryService.cjs');
 
-async function loadDashboardData({ documentsPath, projectRoot }) {
+async function loadDashboardData({
+  documentsPath,
+  projectRoot,
+  activeProject,
+  projectLedgerResult,
+  projectDirectories
+}) {
   const loadedAt = new Date().toISOString();
   const settingsResult = await settle(() => loadSettings(documentsPath));
   const settings = settingsResult.value || emptySettings();
-  const archiveRoot = settings.defaultArchiveRoot || settings.lastArchiveRoot || '';
+  const archiveRoot = projectDirectories?.archive?.preferences?.archiveRootDirectory || '';
 
   const [maintenanceResult, summaryResult] = await Promise.all([
     settle(() => getDataMaintenanceReport({ documentsPath, projectRoot })),
-    settle(() => loadSummaryData({ archiveRoot, documentsPath, projectRoot }))
+    settle(() => loadSummaryData({ archiveRoot: '', documentsPath, projectRoot }))
   ]);
 
   const maintenance = maintenanceResult.value || {};
   const summary = summaryResult.value || {};
-  const photoRecords = Array.isArray(summary.photoRecords) ? summary.photoRecords : [];
+  const photoRecords = Array.isArray(projectLedgerResult?.records)
+    ? projectLedgerResult.records
+    : [];
   const rectificationItems = Array.isArray(summary.rectificationItems) ? summary.rectificationItems : [];
   const archiveMetrics = buildArchiveMetrics(photoRecords, maintenance.ledgerStatus);
   const rectificationMetrics = buildRectificationMetrics(rectificationItems);
@@ -34,14 +42,20 @@ async function loadDashboardData({ documentsPath, projectRoot }) {
       maintenance,
       archiveMetrics,
       rectificationMetrics,
-      settings,
+      projectDirectories,
       errors: {
         settings: settingsResult.error,
         maintenance: maintenanceResult.error,
         summary: summaryResult.error || summary.rectificationError
       }
     }),
-    systemStatus: buildSystemStatus({ maintenance, settings, summary }),
+    systemStatus: buildSystemStatus({
+      activeProject,
+      maintenance,
+      settings,
+      summary,
+      projectDirectories
+    }),
     errors: {
       settings: settingsResult.error,
       maintenance: maintenanceResult.error,
@@ -95,28 +109,34 @@ function buildRectificationMetrics(items) {
   };
 }
 
-function buildHealthAlerts({ maintenance, archiveMetrics, rectificationMetrics, settings, errors }) {
+function buildHealthAlerts({ maintenance, archiveMetrics, rectificationMetrics, projectDirectories, errors }) {
   const alerts = [];
   if (errors.settings) addAlert(alerts, 'warning', '系统配置读取失败', '已使用默认配置兜底，请到系统设置中检查。', 'settings');
-  if (!settings.defaultArchiveRoot) addAlert(alerts, 'warning', '未配置默认归档根目录', '请到系统设置中配置默认归档根目录。', 'settings');
-  else if (settings.pathStatus && !settings.pathStatus.defaultArchiveRootExists) addAlert(alerts, 'warning', '默认归档根目录不存在', '请到系统设置中重新选择可访问的目录。', 'settings');
+  if (!projectDirectories?.archive?.preferences?.archiveRootDirectory) {
+    addAlert(alerts, 'info', '当前项目未设置归档目录', '请到照片分拣工作台或归档记录页选择项目归档目录。', 'searchCenter');
+  } else if (projectDirectories.archive.success !== true) {
+    addAlert(alerts, 'warning', '当前项目归档目录不可用', '请到归档记录页重新选择可读写目录。', 'searchCenter');
+  }
   if (maintenance.ledgerStatus?.status === 'error' || errors.summary) addAlert(alerts, 'warning', '归档台账读取失败', maintenance.ledgerStatus?.message || errors.summary, 'searchCenter');
   else if (!maintenance.ledgerStatus?.ledgerExists && archiveMetrics.total === 0) addAlert(alerts, 'info', '未找到归档台账', '完成一次归档后，首页将显示归档统计。', 'searchCenter');
   if (archiveMetrics.missingCount > 0) addAlert(alerts, 'warning', '台账中存在文件缺失', `当前有 ${archiveMetrics.missingCount} 条归档文件缺失记录。`, 'dataMaintenance');
   if (rectificationMetrics.overdueCount > 0) addAlert(alerts, 'warning', '存在逾期整改事项', `当前有 ${rectificationMetrics.overdueCount} 条待整改或整改中事项已逾期。`, 'rectificationCenter');
   if (maintenance.configStatus?.status && maintenance.configStatus.status !== 'normal') addAlert(alerts, 'warning', '配置文件需要检查', maintenance.configStatus.summary || '请到系统设置中检查基础配置。', 'settings');
-  if (['warning', 'error'].includes(maintenance.packageStatus?.status)) addAlert(alerts, 'warning', '资料包目录需要关注', maintenance.packageStatus.message || '请检查默认资料包导出目录。', 'dataMaintenance');
+  if (
+    projectDirectories?.package?.preferences?.packageExportDirectory
+    && projectDirectories.package.success !== true
+  ) {
+    addAlert(alerts, 'warning', '当前项目资料包目录不可用', '请到归档记录页重新选择资料包输出目录。', 'searchCenter');
+  }
   if (errors.maintenance) addAlert(alerts, 'warning', '数据健康检查失败', errors.maintenance, 'dataMaintenance');
   return alerts.slice(0, 6);
 }
 
-function buildSystemStatus({ maintenance, settings, summary }) {
-  const directoryItems = maintenance.directoryStatus?.items || [];
-  const findDirectory = (key) => directoryItems.find((item) => item.key === key);
+function buildSystemStatus({ activeProject, maintenance, settings, summary, projectDirectories }) {
   return {
-    photoFolder: settings.defaultPhotoFolder || settings.lastPhotoFolder || '',
-    archiveRoot: settings.defaultArchiveRoot || settings.lastArchiveRoot || '',
-    packageRoot: settings.defaultArchivePackageRoot || '',
+    activeProject: activeProject?.projectName || '',
+    archiveRoot: projectDirectories?.archive?.preferences?.archiveRootDirectory || '',
+    packageRoot: projectDirectories?.package?.preferences?.packageExportDirectory || '',
     rectificationPath: summary.rectificationSourcePath || '',
     rectificationStatus: summary.rectificationError
       ? `读取失败：${summary.rectificationError}`
@@ -125,9 +145,8 @@ function buildSystemStatus({ maintenance, settings, summary }) {
     sortDraftPath: maintenance.sortProgressStatus?.draftsDir || '',
     configStatus: maintenance.configStatus?.summary || settings.warning || '系统配置可读取',
     configPath: settings.settingsPath || '',
-    photoFolderStatus: findDirectory('defaultPhotoFolder')?.message || '',
-    archiveRootStatus: findDirectory('defaultArchiveRoot')?.message || '',
-    packageRootStatus: findDirectory('defaultArchivePackageRoot')?.message || maintenance.packageStatus?.message || ''
+    archiveRootStatus: projectDirectories?.archive?.message || '',
+    packageRootStatus: projectDirectories?.package?.message || ''
   };
 }
 

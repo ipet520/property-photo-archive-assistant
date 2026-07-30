@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getDefaultArchivePackageSettings, getUsableArchiveRoot } from '../utils/runtimeConfig.js';
+import { getDefaultArchivePackageSettings } from '../utils/runtimeConfig.js';
+import {
+  buildProjectDirectoryState,
+  normalizeProjectDirectoryPreferences,
+  PROJECT_DIRECTORY_TYPES,
+  resolveLegacyDirectoryInitialPath
+} from '../utils/projectDirectoryPreferences.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
@@ -18,9 +24,13 @@ const defaultFilters = {
 const pageSizeOptions = [50, 100, 200];
 
 export default function ArchiveRecordsPage({ archiveState, navigationRequest }) {
+  const activeProject = archiveState?.activeProject;
   const handledNavigationRef = useRef(0);
   const packageButtonRef = useRef(null);
-  const [archiveRoot, setArchiveRoot] = useState(archiveState?.archiveRoot || '');
+  const [archiveRoot, setArchiveRoot] = useState('');
+  const [archiveRootHealth, setArchiveRootHealth] = useState(null);
+  const [packageExportDirectory, setPackageExportDirectory] = useState('');
+  const [packageExportHealth, setPackageExportHealth] = useState(null);
   const [ledgerPath, setLedgerPath] = useState('');
   const [records, setRecords] = useState([]);
   const [filters, setFilters] = useState(defaultFilters);
@@ -43,19 +53,22 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
-    window.archiveAssistant.loadSettings().then((settings) => {
-      setSystemSettings(settings);
-      const root = archiveState?.archiveRoot || getUsableArchiveRoot(settings) || '';
-      if (root) setArchiveRoot(root);
-    }).catch(() => {});
-  }, [archiveState?.archiveRoot]);
+    window.archiveAssistant.loadSettings().then(setSystemSettings).catch(() => {});
+    void refreshProjectDirectories();
+    setRecords([]);
+    setLedgerPath('');
+    setSelectedId('');
+    setSelectedPackageIds(new Set());
+    setPackagePlan(null);
+    setPackageResult(null);
+  }, [activeProject?.projectId]);
 
   useEffect(() => {
-    if (!archiveRoot || !navigationRequest?.nonce || handledNavigationRef.current === navigationRequest.nonce) return;
+    if (!navigationRequest?.nonce || handledNavigationRef.current === navigationRequest.nonce) return;
     handledNavigationRef.current = navigationRequest.nonce;
     const action = navigationRequest.action;
     if (!['load-ledger', 'select-record', 'missing-files', 'package'].includes(action)) return;
-    loadLedger(archiveRoot).then((result) => {
+    loadLedger().then((result) => {
       const loadedRecords = result?.records || [];
       if (action === 'missing-files') {
         setFilters((current) => ({ ...current, fileStatus: 'missing' }));
@@ -74,7 +87,42 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
         setStatus({ type: 'idle', text: '台账已加载，可使用“生成资料包”创建当前筛选结果资料包。' });
       }
     });
-  }, [archiveRoot, navigationRequest?.nonce]);
+  }, [activeProject?.projectId, navigationRequest?.nonce]);
+
+  async function refreshProjectDirectories() {
+    if (!activeProject) return null;
+    try {
+      const result = await window.archiveAssistant.getProjectDirectoryPreferences(activeProject);
+      if (result?.success !== true) throw new Error(result?.message || '项目目录偏好读取失败。');
+      const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+      const [archiveInspection, packageInspection] = await Promise.all([
+        window.archiveAssistant.checkProjectDirectoryHealth(
+          activeProject,
+          PROJECT_DIRECTORY_TYPES.archiveRoot
+        ),
+        window.archiveAssistant.checkProjectDirectoryHealth(
+          activeProject,
+          PROJECT_DIRECTORY_TYPES.packageExport
+        )
+      ]);
+      setArchiveRoot(preferences.archiveRootDirectory);
+      setArchiveRootHealth(archiveInspection?.health || null);
+      setPackageExportDirectory(preferences.packageExportDirectory);
+      setPackageExportHealth(packageInspection?.health || null);
+      return {
+        preferences,
+        archiveInspection,
+        packageInspection
+      };
+    } catch (error) {
+      setArchiveRoot('');
+      setArchiveRootHealth(null);
+      setPackageExportDirectory('');
+      setPackageExportHealth(null);
+      setStatus({ type: 'error', text: error.message || '项目目录偏好读取失败。' });
+      return null;
+    }
+  }
 
   const options = useMemo(() => ({
     project: unique(records.map((record) => record.project)),
@@ -103,6 +151,26 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   const packageCopyableCount = packageSourceRecords.filter((record) => record.fileExists).length;
   const existsCount = filteredRecords.filter((record) => record.fileExists).length;
   const missingCount = filteredRecords.length - existsCount;
+  const archiveDirectoryState = buildProjectDirectoryState(
+    archiveRoot,
+    archiveRootHealth,
+    {
+      select: '选择目录',
+      change: '更改',
+      reselect: '重新选择',
+      empty: '未设置'
+    }
+  );
+  const packageDirectoryState = buildProjectDirectoryState(
+    packageExportDirectory,
+    packageExportHealth,
+    {
+      select: '选择目录',
+      change: '更改',
+      reselect: '重新选择',
+      empty: '未设置'
+    }
+  );
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -116,32 +184,69 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
   }, []);
 
   async function chooseArchiveRoot() {
-    const selected = await window.archiveAssistant.selectArchiveRoot();
+    const initialPath = archiveRoot || resolveLegacyDirectoryInitialPath(
+      archiveState?.runtimeConfiguration,
+      PROJECT_DIRECTORY_TYPES.archiveRoot
+    );
+    const selected = await window.archiveAssistant.selectArchiveRoot(initialPath);
     if (!selected) return;
-    setArchiveRoot(selected);
-    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
-    setSystemSettings(nextSettings);
-    archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
-    await loadLedger(selected);
-  }
-
-  async function loadLedger(root = archiveRoot) {
-    if (!root) {
-      setStatus({ type: 'error', text: '请先选择归档根目录。' });
+    const result = await window.archiveAssistant.setProjectArchiveRootDirectory(
+      activeProject,
+      selected
+    );
+    if (result?.success !== true) {
+      setStatus({ type: 'error', text: result?.message || '项目归档目录保存失败。' });
       return;
     }
+    const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+    setArchiveRoot(preferences.archiveRootDirectory);
+    setArchiveRootHealth(result.health || null);
+    setPackagePlan(null);
+    setStatus({ type: 'success', text: '当前项目归档目录已更新，历史归档记录仍按原实际路径保留。' });
+    await loadLedger();
+  }
+
+  async function openArchiveRoot() {
+    const result = await window.archiveAssistant.openProjectArchiveRootDirectory(activeProject);
+    setStatus(result?.success
+      ? { type: 'success', text: '已打开当前项目归档目录。' }
+      : { type: 'error', text: result?.message || '当前项目归档目录不可用。' });
+  }
+
+  async function clearArchiveRoot() {
+    if (!archiveRoot) return;
+    if (!window.confirm(
+      '确定清除当前项目的归档目录吗？\n\n'
+      + '此操作不会移动或删除已经归档的照片，也不会修改历史归档记录。'
+    )) return;
+    const result = await window.archiveAssistant.clearProjectArchiveRootDirectory(activeProject);
+    if (result?.success !== true) {
+      setStatus({ type: 'error', text: result?.message || '清除项目归档目录失败。' });
+      return;
+    }
+    setArchiveRoot('');
+    setArchiveRootHealth(null);
+    setPackagePlan(null);
+    setStatus({ type: 'success', text: '当前项目归档目录已清除，历史记录和磁盘文件均已保留。' });
+  }
+
+  async function loadLedger() {
     setIsLoading(true);
     try {
-      const result = await window.archiveAssistant.loadLedgerRecords(root);
-      setLedgerPath(result.ledgerPath || '');
+      const result = await window.archiveAssistant.loadProjectLedgerRecords(activeProject);
+      if (result?.success !== true) throw new Error(result?.message || '台账读取失败。');
+      setLedgerPath((result.ledgerPaths || []).join('；'));
       setRecords(result.records || []);
       setSelectedId('');
       setSelectedPackageIds(new Set());
       setPage(1);
       if (result.missingLedger) {
-        setStatus({ type: 'warning', text: '当前归档目录下未找到照片归档台账，请先完成归档或重新选择归档目录。' });
+        setStatus({ type: 'warning', text: '当前项目尚无可读取的历史归档记录。' });
       } else {
-        setStatus({ type: 'success', text: `已加载 ${result.records.length} 条归档记录。` });
+        setStatus({
+          type: result.failedCount > 0 ? 'warning' : 'success',
+          text: `已从项目历史归档目录加载 ${result.records.length} 条归档记录。${result.failedCount > 0 ? `另有 ${result.failedCount} 个历史目录读取失败。` : ''}`
+        });
       }
       return result;
     } catch (error) {
@@ -218,19 +323,21 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       const selections = selectedRecords.map((record) => ({
         rowNumber: record.rowNumber,
         newFileName: record.newFileName,
-        archivePath: record.archivePath
+        archivePath: record.archivePath,
+        archiveRoot: record.archiveRoot
       }));
-      const result = await window.archiveAssistant.deleteLedgerRecords(archiveRoot, selections, {
+      const result = await window.archiveAssistant.deleteProjectLedgerRecords(activeProject, selections, {
         deleteFiles: deleteMode === 'records-and-files'
       });
+      if (result?.success !== true) throw new Error(result?.message || '删除归档记录失败。');
       setDeleteResult(result);
       setDeleteDialogOpen(false);
       setSelectedPackageIds(new Set());
       setSelectedId('');
-      await loadLedger(archiveRoot);
+      await loadLedger();
       setStatus({
         type: result.failedCount > 0 ? 'warning' : 'success',
-        text: `删除完成：记录 ${result.deletedRecordCount}/${result.selectedCount}，归档文件 ${result.deletedFileCount}，未找到 ${result.missingFileCount}，失败 ${result.failedCount}。台账备份：${result.backupPath}`
+        text: `删除完成：记录 ${result.deletedRecordCount}/${result.selectedCount}，归档文件 ${result.deletedFileCount}，未找到 ${result.missingFileCount}，失败 ${result.failedCount}。台账备份 ${result.backupPaths?.length || 0} 份。`
       });
     } catch (error) {
       recordRuntimeLog({ page: '归档记录', operation: '删除归档记录', errorType: '删除归档记录失败', summary: error?.message || '删除失败', error });
@@ -285,6 +392,75 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       : { type: 'error', text: `导出失败：${result?.message || '未知错误'}` });
   }
 
+  async function choosePackageExportDirectory() {
+    const initialPath = packageExportDirectory || resolveLegacyDirectoryInitialPath(
+      archiveState?.runtimeConfiguration,
+      PROJECT_DIRECTORY_TYPES.packageExport
+    );
+    const selected = await window.archiveAssistant.selectArchivePackageTargetRoot(initialPath);
+    if (!selected) return '';
+    const result = await window.archiveAssistant.setProjectPackageExportDirectory(
+      activeProject,
+      selected
+    );
+    if (result?.success !== true) {
+      setStatus({ type: 'error', text: result?.message || '资料包输出目录保存失败。' });
+      return '';
+    }
+    const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+    setPackageExportDirectory(preferences.packageExportDirectory);
+    setPackageExportHealth(result.health || null);
+    setPackagePlan(null);
+    setStatus({ type: 'success', text: '当前项目资料包输出目录已更新。' });
+    return preferences.packageExportDirectory;
+  }
+
+  async function clearPackageExportDirectory() {
+    if (!packageExportDirectory) return;
+    if (!window.confirm('确定清除当前项目的资料包输出目录吗？\n\n已生成的资料包不会被删除。')) return;
+    const result = await window.archiveAssistant.clearProjectPackageExportDirectory(activeProject);
+    if (result?.success !== true) {
+      setStatus({ type: 'error', text: result?.message || '清除资料包输出目录失败。' });
+      return;
+    }
+    setPackageExportDirectory('');
+    setPackageExportHealth(null);
+    setPackagePlan(null);
+    setStatus({ type: 'success', text: '当前项目资料包输出目录已清除，已生成资料包保持不变。' });
+  }
+
+  async function openPackageExportDirectory() {
+    const result = await window.archiveAssistant.openProjectPackageExportDirectory(activeProject);
+    setStatus(result?.success
+      ? { type: 'success', text: '已打开当前项目资料包输出目录。' }
+      : { type: 'error', text: result?.message || '资料包输出目录不可用。' });
+  }
+
+  async function ensurePackageExportDirectory() {
+    const inspection = await window.archiveAssistant.checkProjectDirectoryHealth(
+      activeProject,
+      PROJECT_DIRECTORY_TYPES.packageExport
+    );
+    if (inspection?.success) {
+      const preferences = normalizeProjectDirectoryPreferences(inspection, activeProject);
+      setPackageExportDirectory(preferences.packageExportDirectory);
+      setPackageExportHealth(inspection.health || null);
+      return inspection.health.normalizedPath;
+    }
+    if (inspection?.preferences) {
+      const preferences = normalizeProjectDirectoryPreferences(inspection, activeProject);
+      setPackageExportDirectory(preferences.packageExportDirectory);
+      setPackageExportHealth(inspection.health || null);
+    }
+    setStatus({
+      type: 'warning',
+      text: packageExportDirectory
+        ? '当前项目资料包输出目录已失效，请重新选择。'
+        : '当前项目尚未设置资料包输出目录，请先选择。'
+    });
+    return choosePackageExportDirectory();
+  }
+
   async function startPackageFlow() {
     if (packageSourceRecords.length === 0) {
       setStatus({ type: 'error', text: '当前没有可生成资料包的记录，请调整筛选条件。' });
@@ -294,20 +470,23 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
       setStatus({ type: 'error', text: '当前记录没有任何可复制照片，无法生成资料包。' });
       return;
     }
-    let targetRoot = '';
-    if (systemSettings?.pathStatus?.defaultArchivePackageRootExists) {
-      targetRoot = systemSettings.defaultArchivePackageRoot;
-    } else if (systemSettings?.defaultArchivePackageRoot) {
-      setStatus({ type: 'warning', text: '默认资料包导出目录不可用，请重新选择。' });
-    }
-    if (!targetRoot) {
-      targetRoot = await window.archiveAssistant.selectArchivePackageTargetRoot();
-    }
+    const targetRoot = await ensurePackageExportDirectory();
     if (!targetRoot) return;
     try {
       const packageSettings = getDefaultArchivePackageSettings(systemSettings);
-      const plan = await window.archiveAssistant.buildArchivePackagePlan(packageSourceRecords, targetRoot, packageSettings);
-      setPackagePlan({ ...plan, sourceLabel: packageSourceLabel, records: packageSourceRecords, packageSettings });
+      const plan = await window.archiveAssistant.buildArchivePackagePlan(
+        activeProject,
+        packageSourceRecords,
+        packageSettings
+      );
+      if (plan?.success === false) throw new Error(plan.message || '生成资料包计划失败。');
+      setPackagePlan({
+        ...plan,
+        projectName: activeProject.projectName,
+        sourceLabel: packageSourceLabel,
+        records: packageSourceRecords,
+        packageSettings
+      });
     } catch (error) {
       recordRuntimeLog({ page: '归档记录', operation: '生成资料包预检查', errorType: '资料包生成失败', summary: error.message, error });
       setStatus({ type: 'error', text: `生成资料包预检查失败：${error.message}` });
@@ -319,11 +498,11 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
     setIsPackageGenerating(true);
     setStatus({ type: 'idle', text: `正在生成资料包：0 / ${packagePlan.total}` });
     try {
-      const result = await window.archiveAssistant.generateArchivePackage(packagePlan.records, {
-        targetRoot: packagePlan.targetRoot,
+      const result = await window.archiveAssistant.generateArchivePackage(activeProject, packagePlan.records, {
         packagePath: packagePlan.packagePath,
         ...(packagePlan.packageSettings || {})
       });
+      if (result?.success === false) throw new Error(result.message || '资料包生成失败。');
       setPackageResult(result);
       setPackagePlan(null);
       setStatus({
@@ -349,20 +528,37 @@ export default function ArchiveRecordsPage({ archiveState, navigationRequest }) 
           <p>查询、核对历史照片归档记录，支持筛选、定位、导出和记录维护。</p>
         </div>
         <div className="archive-hero-actions">
-          <button type="button" className="primary" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
-          <button type="button" onClick={() => loadLedger()} disabled={!archiveRoot || isLoading}>刷新</button>
+          <button type="button" className="primary" onClick={() => loadLedger()} disabled={isLoading}>{isLoading ? '加载中...' : '加载台账'}</button>
+          <button type="button" onClick={() => loadLedger()} disabled={isLoading}>刷新</button>
           <button type="button" onClick={exportResults} disabled={filteredRecords.length === 0}>导出结果</button>
           <button ref={packageButtonRef} type="button" onClick={startPackageFlow} disabled={packageSourceRecords.length === 0 || isPackageGenerating}>生成资料包</button>
         </div>
       </section>
 
-      <section className="archive-query-toolbar panel archive-directory-toolbar">
+      <section className="archive-query-toolbar panel archive-directory-toolbar archive-project-directory-toolbar">
         <div className="archive-root-box">
-          <span>当前归档根目录</span>
-          <strong title={archiveRoot}>{archiveRoot || '请选择归档根目录'}</strong>
+          <span>当前项目</span>
+          <strong>{activeProject?.projectName || '未选择项目'}</strong>
         </div>
-        <button type="button" className="primary" onClick={chooseArchiveRoot}>选择归档根目录</button>
-        <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载台账'}</span>
+        <div className="archive-root-box">
+          <span>归档目录</span>
+          <strong title={archiveRoot}>{archiveDirectoryState.invalid ? '目录已失效' : archiveDirectoryState.displayText}</strong>
+        </div>
+        <div className="archive-directory-actions">
+          <button type="button" onClick={openArchiveRoot} disabled={!archiveDirectoryState.canOpen}>打开</button>
+          <button type="button" className="primary" onClick={chooseArchiveRoot}>{archiveDirectoryState.selectLabel}</button>
+          <button type="button" onClick={clearArchiveRoot} disabled={!archiveDirectoryState.canClear}>清除</button>
+        </div>
+        <div className="archive-root-box">
+          <span>资料包输出目录</span>
+          <strong title={packageExportDirectory}>{packageDirectoryState.invalid ? '目录已失效' : packageDirectoryState.displayText}</strong>
+        </div>
+        <div className="archive-directory-actions">
+          <button type="button" onClick={openPackageExportDirectory} disabled={!packageDirectoryState.canOpen}>打开</button>
+          <button type="button" className="primary" onClick={choosePackageExportDirectory}>{packageDirectoryState.selectLabel}</button>
+          <button type="button" onClick={clearPackageExportDirectory} disabled={!packageDirectoryState.canClear}>清除</button>
+        </div>
+        <span className="archive-ledger-path" title={ledgerPath}>{ledgerPath || '尚未加载项目历史台账'}</span>
       </section>
 
       <section className="archive-query-summary">
@@ -637,6 +833,7 @@ function ArchivePackageConfirmDialog({ plan, isGenerating, onCancel, onConfirm }
           <h3>生成范围</h3>
           <dl className="archive-confirm-grid">
             <div><dt>来源范围</dt><dd>{plan.sourceLabel}</dd></div>
+            <div><dt>当前项目</dt><dd>{plan.projectName || '-'}</dd></div>
             <div><dt>记录总数</dt><dd>{plan.total}</dd></div>
             <div><dt>文件存在</dt><dd>{plan.existsCount}</dd></div>
             <div><dt>文件缺失</dt><dd>{plan.missingCount}</dd></div>

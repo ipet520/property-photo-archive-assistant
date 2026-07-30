@@ -13,7 +13,6 @@ export function useAppWorkspace() {
   const [settings, setSettings] = useState(null);
   const [appPaths, setAppPaths] = useState(null);
   const [configPaths, setConfigPaths] = useState(null);
-  const [archiveRoot, setArchiveRoot] = useState('');
   const [runtimeConfiguration, setRuntimeConfiguration] = useState(null);
   const [activeProject, setActiveProject] = useState(null);
   const [status, setStatus] = useState({ type: 'idle', text: '正在读取基础配置。' });
@@ -27,7 +26,6 @@ export function useAppWorkspace() {
       setRuntimeConfiguration(normalized);
       setConfigs(normalized.configs);
       setSettings(normalized.settings);
-      setArchiveRoot(normalized.archiveRootDirectory);
     };
     Promise.all([
       window.archiveAssistant.loadRuntimeConfiguration(),
@@ -81,14 +79,8 @@ export function useAppWorkspace() {
     setRuntimeConfiguration(normalized);
     setConfigs(normalized.configs);
     setSettings(normalized.settings);
-    setArchiveRoot(normalized.archiveRootDirectory);
     setStatus({ type: 'success', text: '基础数据已更新。' });
   }
-
-  const setCurrentArchiveRoot = useCallback((nextArchiveRoot, nextSettings = null) => {
-    setArchiveRoot(String(nextArchiveRoot || '').trim());
-    if (nextSettings) setSettings(nextSettings);
-  }, []);
 
   const applySavedSettings = useCallback((nextSettings) => {
     if (!nextSettings) return;
@@ -97,7 +89,6 @@ export function useAppWorkspace() {
       setRuntimeConfiguration(normalized);
       setConfigs(normalized.configs);
       setSettings(normalized.settings);
-      setArchiveRoot(normalized.archiveRootDirectory);
       return;
     }
     setSettings(nextSettings);
@@ -160,8 +151,6 @@ export function useAppWorkspace() {
     hasActiveProject: activeProjectValidation.valid,
     activeProjectValidation,
     projectOptions,
-    archiveRoot,
-    setCurrentArchiveRoot,
     applySavedSettings,
     status,
     handleConfigsSaved,

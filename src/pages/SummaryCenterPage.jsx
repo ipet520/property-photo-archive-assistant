@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getUsableArchiveRoot } from '../utils/runtimeConfig.js';
+import {
+  normalizeProjectDirectoryPreferences,
+  PROJECT_DIRECTORY_TYPES,
+  resolveLegacyDirectoryInitialPath
+} from '../utils/projectDirectoryPreferences.js';
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const defaultFilters = {
@@ -20,8 +24,9 @@ const detailTabs = [
 ];
 
 export default function SummaryCenterPage({ archiveState, navigationRequest }) {
+  const activeProject = archiveState?.activeProject;
   const handledNavigationRef = useRef(0);
-  const [archiveRoot, setArchiveRoot] = useState(archiveState?.archiveRoot || '');
+  const [archiveRoot, setArchiveRoot] = useState('');
   const [ledgerPath, setLedgerPath] = useState('');
   const [rectificationPath, setRectificationPath] = useState('');
   const [photoRecords, setPhotoRecords] = useState([]);
@@ -31,21 +36,23 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
   const [activeDetailTab, setActiveDetailTab] = useState('photos');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [status, setStatus] = useState({ type: 'idle', text: '请选择归档根目录并加载资料汇总数据。' });
+  const [status, setStatus] = useState({ type: 'idle', text: '可加载当前项目的全部历史归档记录。' });
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    window.archiveAssistant.loadSettings?.().then((settings) => {
-      const usableRoot = archiveState?.archiveRoot || getUsableArchiveRoot(settings) || '';
-      if (usableRoot) setArchiveRoot(usableRoot);
+    window.archiveAssistant.getProjectDirectoryPreferences(activeProject).then((result) => {
+      if (result?.success !== true) return;
+      setArchiveRoot(
+        normalizeProjectDirectoryPreferences(result, activeProject).archiveRootDirectory
+      );
     }).catch(() => {});
-  }, [archiveState?.archiveRoot]);
+  }, [activeProject?.projectId]);
 
   useEffect(() => {
-    if (!archiveRoot || navigationRequest?.action !== 'load-summary' || handledNavigationRef.current === navigationRequest.nonce) return;
+    if (!activeProject || navigationRequest?.action !== 'load-summary' || handledNavigationRef.current === navigationRequest.nonce) return;
     handledNavigationRef.current = navigationRequest.nonce;
-    loadSummary(archiveRoot);
-  }, [archiveRoot, navigationRequest?.nonce]);
+    loadSummary();
+  }, [activeProject?.projectId, navigationRequest?.nonce]);
 
   const options = useMemo(() => ({
     project: unique([
@@ -92,33 +99,40 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
   }, [activeDetailTab, filters, pageSize]);
 
   async function chooseArchiveRoot() {
-    const selected = await window.archiveAssistant.selectArchiveRoot();
+    const initialPath = archiveRoot || resolveLegacyDirectoryInitialPath(
+      archiveState?.runtimeConfiguration,
+      PROJECT_DIRECTORY_TYPES.archiveRoot
+    );
+    const selected = await window.archiveAssistant.selectArchiveRoot(initialPath);
     if (!selected) return;
-    setArchiveRoot(selected);
-    const nextSettings = await window.archiveAssistant.updateLastArchiveRoot?.(selected);
-    archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
-    await loadSummary(selected);
-  }
-
-  async function loadSummary(root = archiveRoot) {
-    if (!root) {
-      setStatus({ type: 'error', text: '请先选择归档根目录。' });
+    const saved = await window.archiveAssistant.setProjectArchiveRootDirectory(activeProject, selected);
+    if (saved?.success !== true) {
+      setStatus({ type: 'error', text: saved?.message || '当前项目归档目录保存失败。' });
       return;
     }
+    const nextRoot = normalizeProjectDirectoryPreferences(saved, activeProject).archiveRootDirectory;
+    setArchiveRoot(nextRoot);
+    await loadSummary();
+  }
+
+  async function loadSummary() {
     setIsLoading(true);
     try {
-      const result = await window.archiveAssistant.loadSummaryData(root);
+      const result = await window.archiveAssistant.loadSummaryData(activeProject);
       setLedgerPath(result.ledgerPath || '');
       setRectificationPath(result.rectificationSourcePath || '');
       setPhotoRecords(result.photoRecords || []);
       setRectificationItems(result.rectificationItems || []);
       setPage(1);
       if (result.missingLedger) {
-        setStatus({ type: 'warning', text: '当前归档目录下未找到照片归档台账，请先完成归档或重新选择归档目录。' });
+        setStatus({ type: 'warning', text: '当前项目尚无可读取的历史归档记录，请先完成归档。' });
       } else if (result.rectificationError) {
         setStatus({ type: 'warning', text: `已加载照片台账，但整改事项读取失败：${result.rectificationError}` });
       } else {
-        setStatus({ type: 'success', text: `已加载 ${result.photoRecords.length} 条照片记录、${result.rectificationItems.length} 条整改事项。` });
+        setStatus({
+          type: result.failedCount > 0 ? 'warning' : 'success',
+          text: `已从项目历史归档目录加载 ${result.photoRecords.length} 条照片记录、${result.rectificationItems.length} 条整改事项。${result.failedCount > 0 ? `另有 ${result.failedCount} 个历史目录读取失败。` : ''}`
+        });
       }
     } catch (error) {
       recordRuntimeLog({ page: '资料汇总中心', operation: '加载资料汇总', errorType: '资料汇总加载失败', summary: error.message, error });
@@ -224,7 +238,7 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
           <p>汇总照片归档台账与整改闭环事项，生成项目、分类、责任部门和整改状态维度的本地资料统计。</p>
         </div>
         <div className="summary-hero-actions">
-          <button type="button" className="primary" onClick={() => loadSummary()} disabled={!archiveRoot || isLoading}>{isLoading ? '加载中...' : '加载汇总数据'}</button>
+          <button type="button" className="primary" onClick={() => loadSummary()} disabled={isLoading}>{isLoading ? '加载中...' : '加载汇总数据'}</button>
           <button type="button" onClick={exportWorkbook} disabled={filteredPhotos.length === 0 && filteredRectifications.length === 0}>导出汇总台账</button>
           <button type="button" onClick={copySummary} disabled={filteredPhotos.length === 0 && filteredRectifications.length === 0}>复制汇总摘要</button>
         </div>
@@ -233,10 +247,10 @@ export default function SummaryCenterPage({ archiveState, navigationRequest }) {
       <section className="summary-toolbar panel">
         <div className="summary-path-box">
           <span>归档根目录</span>
-          <strong title={archiveRoot}>{archiveRoot || '请选择归档根目录'}</strong>
+          <strong title={archiveRoot}>{archiveRoot || '未设置（仍可读取历史记录）'}</strong>
         </div>
-        <button type="button" onClick={chooseArchiveRoot}>选择归档根目录</button>
-        <button type="button" onClick={() => loadSummary()} disabled={!archiveRoot || isLoading}>刷新</button>
+        <button type="button" onClick={chooseArchiveRoot}>{archiveRoot ? '更改当前归档目录' : '选择当前归档目录'}</button>
+        <button type="button" onClick={() => loadSummary()} disabled={isLoading}>刷新</button>
         <div className="summary-path-box secondary">
           <span>照片台账</span>
           <strong title={ledgerPath}>{ledgerPath || '尚未加载'}</strong>

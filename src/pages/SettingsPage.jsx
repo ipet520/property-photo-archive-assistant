@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import ConfigManager from '../components/ConfigManager.jsx';
 import { APP_NAME, APP_VERSION, OCR_COMPONENT_VERSION } from '../constants/app.js';
 import {
@@ -18,7 +18,6 @@ import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const SETTING_TABS = [
   { key: 'baseData', label: '基础数据' },
-  { key: 'defaultPaths', label: '默认目录' },
   { key: 'packageSettings', label: '资料包设置' },
   { key: 'recognition', label: '识别服务配置' },
   { key: 'marki', label: '马克平台' },
@@ -47,7 +46,6 @@ const PACKAGE_GROUPING_OPTIONS = [
 
 export default function SettingsPage({ archiveState, navigationRequest }) {
   const [activeTab, setActiveTab] = useState('baseData');
-  const [highlightedPathKey, setHighlightedPathKey] = useState('');
   const [settings, setSettings] = useState(archiveState.settings || null);
   const [message, setMessage] = useState({ type: 'idle', text: '' });
   const [recognitionConfig, setRecognitionConfig] = useState(null);
@@ -88,7 +86,6 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
   useEffect(() => {
     const targetTab = {
       'settings-base-data': 'baseData',
-      'settings-default-paths': 'defaultPaths',
       'settings-package': 'packageSettings',
       'settings-recognition': 'recognition',
       'settings-marki': 'marki',
@@ -97,21 +94,8 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     }[navigationRequest?.action];
     if (targetTab) {
       setActiveTab(targetTab);
-      const settingKey = navigationRequest?.payload?.settingKey || '';
-      setHighlightedPathKey(settingKey);
-      if (settingKey) {
-        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-          document.querySelector(`[data-setting-key="${settingKey}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }));
-      }
     }
   }, [navigationRequest?.nonce]);
-
-  const pathRows = useMemo(() => ([
-    { key: 'defaultPhotoFolder', label: '默认照片导入目录', value: settings?.defaultPhotoFolder || '' },
-    { key: 'defaultArchiveRoot', label: '默认归档根目录', value: settings?.defaultArchiveRoot || '' },
-    { key: 'defaultArchivePackageRoot', label: '默认资料包导出目录', value: settings?.defaultArchivePackageRoot || '' }
-  ]), [settings]);
 
   function updateSettings(patch) {
     setSettings((current) => ({ ...(current || {}), ...patch }));
@@ -306,32 +290,9 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
     }
   }
 
-  async function choosePath(key) {
-    const selected = key === 'defaultPhotoFolder'
-      ? await window.archiveAssistant.selectPhotoFolder()
-      : await window.archiveAssistant.selectArchiveRoot();
-    if (!selected) return;
-    updateSettings({ [key]: selected });
-    setMessage({ type: 'idle', text: '目录已选择，请点击“保存设置”写入本地。' });
-  }
-
-  async function openDirectory(key, pathValue) {
+  async function openDirectory(pathValue) {
     if (!pathValue) return;
-    const directoryKind = key === 'defaultPhotoFolder'
-      ? 'photoSource'
-      : key === 'defaultArchiveRoot'
-        ? 'archiveRoot'
-        : 'archivePackage';
-    const persistedPath = directoryKind === 'photoSource'
-      ? archiveState.runtimeConfiguration?.photoSourceDirectory
-      : directoryKind === 'archiveRoot'
-        ? archiveState.runtimeConfiguration?.archiveRootDirectory
-        : archiveState.runtimeConfiguration?.archivePackageDirectory;
-    if (String(pathValue || '').trim() !== String(persistedPath || '').trim()) {
-      setMessage({ type: 'error', text: '请先保存设置，再打开该目录。' });
-      return;
-    }
-    const result = await window.archiveAssistant.openConfiguredDirectory(directoryKind);
+    const result = await window.archiveAssistant.openPath(pathValue);
     setMessage(result?.success
       ? { type: 'success', text: '目录已打开。' }
       : { type: 'error', text: result?.message || '目录当前不可用。' });
@@ -397,14 +358,14 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
         <div>
           <p className="eyebrow">系统设置</p>
           <h1>系统设置</h1>
-          <p>统一维护基础数据、默认目录、资料包设置、设置备份与导入、系统信息等本地配置。</p>
+          <p>统一维护基础数据、资料包规则、识别服务、平台连接、设置备份与系统信息。</p>
         </div>
         <button className="primary" type="button" onClick={saveSettings} disabled={!settings}>保存设置</button>
       </section>
 
       {message.text && <div className={`config-message ${message.type}`}>{message.text}</div>}
       <div className="settings-impact-note">
-        归档分类、工作内容和关键词会影响照片分拣工作台；项目作为归档上下文写入目录与台账；责任部门仅供整改闭环使用。默认目录会影响分拣工作台、归档记录和资料包导出。
+        归档分类、工作内容和关键词会影响照片分拣工作台；项目作为归档上下文写入目录与台账；本地来源目录、归档目录和资料包输出目录由对应业务页面按当前项目管理。
       </div>
 
       <section className="settings-center-layout">
@@ -430,41 +391,6 @@ export default function SettingsPage({ archiveState, navigationRequest }) {
                 <p>表单字段与照片分拣工作台保持一致；项目作为归档默认项维护，责任部门作为整改基础数据维护。</p>
               </header>
               <ConfigManager open embedded onClose={() => {}} onSaved={archiveState.handleConfigsSaved} />
-            </div>
-          )}
-
-          {activeTab === 'defaultPaths' && (
-            <div className="settings-module">
-              <header>
-                <p className="eyebrow">默认目录</p>
-                <h2>常用目录与路径记忆</h2>
-                <p>目录不存在时不会崩溃，对应页面会继续提示重新选择。</p>
-              </header>
-              <label className="settings-toggle">
-                <input
-                  type="checkbox"
-                  checked={settings?.rememberLastPaths !== false}
-                  onChange={(event) => updateSettings({ rememberLastPaths: event.target.checked })}
-                />
-                启动时尽量记住并恢复上次目录
-              </label>
-              <div className="settings-path-list">
-                {pathRows.map((row) => (
-                  <article className={`settings-path-row ${highlightedPathKey === row.key ? 'highlighted' : ''}`} key={row.key} data-setting-key={row.key}>
-                    <div>
-                      <span>{row.label}</span>
-                      <strong title={row.value}>{row.value || '未设置'}</strong>
-                    </div>
-                    <button type="button" onClick={() => choosePath(row.key)}>选择目录</button>
-                    <button type="button" onClick={() => updateSettings({ [row.key]: '' })} disabled={!row.value}>清空</button>
-                    <button type="button" onClick={() => openDirectory(row.key, row.value)} disabled={!row.value}>打开</button>
-                  </article>
-                ))}
-              </div>
-              <div className="recent-path-grid">
-                <RecentPathList title="最近照片文件夹" items={settings?.recentPhotoFolders || []} onClear={() => updateSettings({ recentPhotoFolders: [] })} />
-                <RecentPathList title="最近归档根目录" items={settings?.recentArchiveRoots || []} onClear={() => updateSettings({ recentArchiveRoots: [] })} />
-              </div>
             </div>
           )}
 
@@ -911,18 +837,6 @@ function RecognitionProviderCard({
       </div>
       <p className="muted" title={providerStatus?.reason || diagnostic?.reason || ''}>{providerStatus?.reason || diagnostic?.reason || '暂无诊断原因。'}</p>
     </article>
-  );
-}
-
-function RecentPathList({ title, items, onClear }) {
-  return (
-    <div className="recent-path-card">
-      <div className="config-row-actions">
-        <h3>{title}</h3>
-        <button className="mini-button" type="button" onClick={onClear}>清空</button>
-      </div>
-      {items.length === 0 ? <p className="muted">暂无记录。</p> : items.map((item) => <small key={item} title={item}>{item}</small>)}
-    </div>
   );
 }
 

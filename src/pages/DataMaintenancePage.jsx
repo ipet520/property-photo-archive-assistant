@@ -370,7 +370,7 @@ function OverviewSection({ report, onNavigate }) {
         <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'load-ledger' })}>核对归档台账</button>
         <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' })}>生成资料包</button>
         <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' })}>查看整改事项数据</button>
-        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-default-paths' })}>设置默认目录</button>
+        <button type="button" onClick={() => onNavigate({ page: PAGE_KEYS.sortWorkspace })}>管理照片来源</button>
       </div>
     </div>
   );
@@ -511,23 +511,23 @@ function PackageSection({ report, onOpen, onCopy, onNavigate }) {
     <div className="maintenance-section-stack">
       <SummaryGrid
         items={[
-          ['疑似资料包数量', `${packageStatus.packageCount} 个`],
-          ['最近资料包', packageStatus.latestPackage || '暂无'],
-          ['最近生成时间', formatDateTime(packageStatus.latestTime) || '暂无']
+          ['管理方式', '按当前项目管理'],
+          ['检查状态', packageStatus.message],
+          ['业务入口', '归档记录']
         ]}
       />
       <ActionRow
-        label="默认资料包导出目录"
-        value={packageStatus.root || '未配置'}
+        label="项目资料包输出目录"
+        value="请在归档记录页查看当前项目目录"
         status={packageStatus.status}
         description={packageStatus.message}
-        onOpen={() => onOpen(packageStatus.root)}
-        onCopy={() => onCopy(packageStatus.root)}
-        canOpen={Boolean(packageStatus.exists && packageStatus.readable)}
-        canCopy={Boolean(packageStatus.exists && packageStatus.readable)}
-        extraAction={{ label: '生成资料包', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' }) }}
+        onOpen={() => {}}
+        onCopy={() => {}}
+        canOpen={false}
+        canCopy={false}
+        extraAction={{ label: '管理并生成资料包', onClick: () => onNavigate({ page: PAGE_KEYS.searchCenter, action: 'package' }) }}
       />
-      <p className="maintenance-muted">资料包状态只检查默认导出目录的直接子目录，不扫描整盘，也不会删除、移动或压缩资料包。</p>
+      <p className="maintenance-muted">资料包输出目录由归档记录页按当前项目管理；本页不读取或自动采用旧全局目录。</p>
     </div>
   );
 }
@@ -770,28 +770,28 @@ function SuggestionSection({ report, onNavigate }) {
 
 function getDirectoryAction(key, onNavigate) {
   const actions = {
-    defaultPhotoFolder: { label: '设置照片目录', action: 'settings-default-paths', settingKey: 'defaultPhotoFolder' },
-    defaultArchiveRoot: { label: '设置归档目录', action: 'settings-default-paths', settingKey: 'defaultArchiveRoot' },
-    defaultArchivePackageRoot: { label: '设置资料包目录', action: 'settings-default-paths', settingKey: 'defaultArchivePackageRoot' },
-    sortDrafts: { label: '打开分拣工作台', action: null },
-    configBackup: { label: '前往备份设置', action: 'settings-backup' }
+    defaultPhotoFolder: { label: '管理项目照片来源', page: PAGE_KEYS.sortWorkspace },
+    defaultArchiveRoot: { label: '管理项目归档目录', action: 'load-ledger', page: PAGE_KEYS.searchCenter },
+    defaultArchivePackageRoot: { label: '管理资料包目录', action: 'load-ledger', page: PAGE_KEYS.searchCenter },
+    sortDrafts: { label: '打开分拣工作台', page: PAGE_KEYS.sortWorkspace },
+    configBackup: { label: '前往备份设置', action: 'settings-backup', page: PAGE_KEYS.settings }
   };
-  const target = actions[key] || { label: '打开系统设置', action: 'settings-default-paths' };
+  const target = actions[key] || { label: '打开系统设置', action: 'settings-base-data', page: PAGE_KEYS.settings };
   return {
     label: target.label,
     onClick: () => onNavigate(target.action
-      ? { page: PAGE_KEYS.settings, action: target.action, payload: { settingKey: target.settingKey || '' } }
-      : PAGE_KEYS.sortWorkspace)
+      ? { page: target.page, action: target.action }
+      : target.page)
   };
 }
 
 function getSuggestionTarget(suggestion) {
   const actionTargets = {
     'settings-base-data': { page: PAGE_KEYS.settings, action: 'settings-base-data' },
-    'settings-default-paths': { page: PAGE_KEYS.settings, action: 'settings-default-paths' },
-    'settings-default-photo': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultPhotoFolder' } },
-    'settings-default-archive': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchiveRoot' } },
-    'settings-package': { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchivePackageRoot' } },
+    'settings-default-paths': { page: PAGE_KEYS.sortWorkspace },
+    'settings-default-photo': { page: PAGE_KEYS.sortWorkspace },
+    'settings-default-archive': { page: PAGE_KEYS.searchCenter, action: 'load-ledger' },
+    'settings-package': { page: PAGE_KEYS.searchCenter, action: 'load-ledger' },
     'settings-backup': { page: PAGE_KEYS.settings, action: 'settings-backup' },
     'sort-workspace': PAGE_KEYS.sortWorkspace,
     ledger: { page: PAGE_KEYS.searchCenter, action: 'load-ledger' },
@@ -800,16 +800,16 @@ function getSuggestionTarget(suggestion) {
   if (suggestion.action && actionTargets[suggestion.action]) return actionTargets[suggestion.action];
   if (suggestion.level === 'success') return null;
   const text = `${suggestion.title || ''} ${suggestion.text || ''}`;
-  if (text.includes('资料包导出目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchivePackageRoot' } };
-  if (text.includes('默认照片') || text.includes('照片导入目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultPhotoFolder' } };
-  if (text.includes('归档根目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths', payload: { settingKey: 'defaultArchiveRoot' } };
+  if (text.includes('资料包导出目录')) return { page: PAGE_KEYS.searchCenter, action: 'load-ledger' };
+  if (text.includes('默认照片') || text.includes('照片导入目录')) return { page: PAGE_KEYS.sortWorkspace };
+  if (text.includes('归档根目录')) return { page: PAGE_KEYS.searchCenter, action: 'load-ledger' };
   if (text.includes('设置备份') || text.includes('配置备份')) return { page: PAGE_KEYS.settings, action: 'settings-backup' };
   if (text.includes('配置')) return { page: PAGE_KEYS.settings, action: 'settings-base-data' };
   if (text.includes('文件缺失') || text.includes('台账')) return { page: PAGE_KEYS.searchCenter, action: text.includes('文件缺失') ? 'missing-files' : 'load-ledger' };
   if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
   if (text.includes('资料包')) return { page: PAGE_KEYS.reportCenter, action: 'load-summary' };
   if (text.includes('分拣草稿') || text.includes('分拣进度')) return { page: PAGE_KEYS.sortWorkspace };
-  return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
+  return { page: PAGE_KEYS.sortWorkspace };
 }
 
 function getVisibleSuggestions(report) {

@@ -61,7 +61,6 @@ export default function RectificationCenterPage({ archiveState, navigationReques
   const [ledgerRecords, setLedgerRecords] = useState([]);
   const [ledgerSelectedIds, setLedgerSelectedIds] = useState(() => new Set());
   const [ledgerFilters, setLedgerFilters] = useState(defaultLedgerFilters);
-  const [ledgerArchiveRoot, setLedgerArchiveRoot] = useState(archiveState?.archiveRoot || '');
   const [status, setStatus] = useState({ type: 'idle', text: '整改闭环中心已就绪。' });
   const [isLoading, setIsLoading] = useState(false);
 
@@ -109,15 +108,13 @@ export default function RectificationCenterPage({ archiveState, navigationReques
   async function loadInitialData() {
     setIsLoading(true);
     try {
-      const [configResult, itemResult, settings] = await Promise.all([
+      const [configResult, itemResult] = await Promise.all([
         window.archiveAssistant.loadConfigs().catch(() => null),
-        window.archiveAssistant.loadRectificationItems(),
-        window.archiveAssistant.loadSettings().catch(() => null)
+        window.archiveAssistant.loadRectificationItems()
       ]);
       const nextItems = itemResult.items || [];
       setConfigs(configResult);
       setItems(nextItems);
-      setLedgerArchiveRoot(archiveState?.archiveRoot || settings?.defaultArchiveRoot || settings?.lastArchiveRoot || '');
       setSelectedId(nextItems[0]?.id || '');
       setStatus({ type: 'success', text: `已加载 ${nextItems.length} 条整改事项。` });
     } catch (error) {
@@ -258,22 +255,12 @@ export default function RectificationCenterPage({ archiveState, navigationReques
     if (!result.success) setStatus({ type: 'error', text: result.message || '打开所在文件夹失败。' });
   }
 
-  async function chooseArchiveRoot() {
-    const selected = await window.archiveAssistant.selectArchiveRoot();
-    if (selected) {
-      setLedgerArchiveRoot(selected);
-      const nextSettings = await window.archiveAssistant.updateLastArchiveRoot(selected);
-      archiveState?.setCurrentArchiveRoot?.(selected, nextSettings);
-    }
-  }
-
   async function loadLedger() {
-    if (!ledgerArchiveRoot) {
-      setStatus({ type: 'warning', text: '请先选择或填写归档根目录。' });
-      return;
-    }
     try {
-      const result = await window.archiveAssistant.loadLedgerRecords(ledgerArchiveRoot);
+      const result = await window.archiveAssistant.loadProjectLedgerRecords(
+        archiveState?.activeProject
+      );
+      if (result?.success !== true) throw new Error(result?.message || '加载项目台账失败。');
       setLedgerRecords(result.records || []);
       setLedgerSelectedIds(new Set());
       setStatus({ type: 'success', text: `已加载 ${result.records?.length || 0} 条归档记录，可选择照片创建整改事项。` });
@@ -476,15 +463,13 @@ export default function RectificationCenterPage({ archiveState, navigationReques
 
       {showLedgerPicker ? (
         <LedgerPickerDialog
-          archiveRoot={ledgerArchiveRoot}
-          setArchiveRoot={setLedgerArchiveRoot}
+          projectName={archiveState?.activeProject?.projectName}
           filters={ledgerFilters}
           setFilters={setLedgerFilters}
           records={ledgerFilteredRecords}
           allRecords={ledgerRecords}
           selectedIds={ledgerSelectedIds}
           onToggle={toggleLedgerRecord}
-          onChooseArchiveRoot={chooseArchiveRoot}
           onLoadLedger={loadLedger}
           onCreate={createFromLedger}
           onClose={() => setShowLedgerPicker(false)}
@@ -621,7 +606,7 @@ function PhotoGroup({ title, photos, onAdd, onOpenPhoto, onShowPhoto }) {
   );
 }
 
-function LedgerPickerDialog({ archiveRoot, setArchiveRoot, filters, setFilters, records, allRecords, selectedIds, onToggle, onChooseArchiveRoot, onLoadLedger, onCreate, onClose }) {
+function LedgerPickerDialog({ projectName, filters, setFilters, records, allRecords, selectedIds, onToggle, onLoadLedger, onCreate, onClose }) {
   function updateFilter(key, value) {
     setFilters((current) => ({ ...current, [key]: value }));
   }
@@ -634,11 +619,7 @@ function LedgerPickerDialog({ archiveRoot, setArchiveRoot, filters, setFilters, 
           <button className="ghost" onClick={onClose}>关闭</button>
         </header>
         <div className="rectification-ledger-toolbar">
-          <label className="wide">
-            <span>归档根目录</span>
-            <input value={archiveRoot} onChange={(event) => setArchiveRoot(event.target.value)} />
-          </label>
-          <button className="ghost" onClick={onChooseArchiveRoot}>选择目录</button>
+          <span className="wide">当前项目：{projectName || '未选择项目'}</span>
           <button onClick={onLoadLedger}>加载台账</button>
           <SelectField label="项目" value={filters.project} onChange={(value) => updateFilter('project', value)} options={unique(allRecords.map((record) => record.project))} />
           <SelectField label="分类" value={filters.category} onChange={(value) => updateFilter('category', value)} options={unique(allRecords.map((record) => record.watermarkCategory))} />

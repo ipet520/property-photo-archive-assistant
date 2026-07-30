@@ -17,7 +17,12 @@ const { exportServiceBriefImages } = require('./services/serviceBriefService.cjs
 const { getDataMaintenanceReport } = require('./services/dataMaintenanceService.cjs');
 const { clearHandledTrialIssues, deleteTrialIssue, exportTrialIssues, loadTrialIssues, saveTrialIssue } = require('./services/trialIssueService.cjs');
 const { loadDashboardData } = require('./services/dashboardService.cjs');
-const { deleteLedgerRecords, exportLedgerRecords, loadLedgerRecords } = require('./services/ledgerQueryService.cjs');
+const {
+  deleteLedgerRecords,
+  exportLedgerRecords,
+  loadLedgerRecords,
+  loadProjectLedgerRecordsAcrossRoots
+} = require('./services/ledgerQueryService.cjs');
 const {
   getRecognitionConfig,
   getRecognitionProviders,
@@ -102,6 +107,13 @@ const {
   saveRuntimeSettings
 } = require('./services/runtimeConfigurationService.cjs');
 const { inspectDirectoryHealth } = require('./services/directoryHealthService.cjs');
+const {
+  ProjectDirectoryPreferencesError,
+  clearProjectDirectoryPreference,
+  getProjectDirectoryPreferences,
+  listProjectArchiveRoots,
+  setProjectDirectoryPreference
+} = require('./services/projectDirectoryPreferencesService.cjs');
 const { inspectPhotoSourceFile } = require('./services/photoFileHealthService.cjs');
 const {
   clearMarkiCredentials,
@@ -375,6 +387,296 @@ function createDirectoryHealthMessage(directoryKind, health) {
   return `${label}当前不可用。`;
 }
 
+async function resolveCurrentActiveProject(activeProject) {
+  const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
+  return {
+    activeProject: normalizeActiveProjectAgainstRuntime(activeProject, runtimeConfiguration),
+    runtimeConfiguration
+  };
+}
+
+function getProjectDirectoryLabel(directoryType) {
+  if (directoryType === 'archive_root') return '归档目录';
+  if (directoryType === 'package_export') return '资料包输出目录';
+  throw new ProjectDirectoryPreferencesError(
+    'project_directory_preferences_invalid',
+    '项目目录类型无效。'
+  );
+}
+
+function getProjectDirectoryPath(preferences, directoryType) {
+  if (directoryType === 'archive_root') return preferences.archiveRootDirectory;
+  if (directoryType === 'package_export') return preferences.packageExportDirectory;
+  getProjectDirectoryLabel(directoryType);
+  return '';
+}
+
+async function inspectProjectDirectory(activeProjectInput, directoryType) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const preferences = await getProjectDirectoryPreferences(app.getPath('userData'), activeProject);
+  const configuredPath = getProjectDirectoryPath(preferences, directoryType);
+  const health = await inspectDirectoryHealth(configuredPath, {
+    readable: true,
+    writable: true,
+    allowCreate: false,
+    checkOnly: true
+  });
+  const label = getProjectDirectoryLabel(directoryType);
+  return {
+    success: health.healthStatus === 'healthy',
+    directoryType,
+    preferences,
+    health,
+    message: health.healthStatus === 'healthy'
+      ? `${label}可用。`
+      : health.healthStatus === 'not_configured'
+        ? `当前项目尚未设置${label}。`
+        : `${label}当前不可用，请重新选择。`
+  };
+}
+
+async function setProjectDirectory(activeProjectInput, directoryType, directory) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const health = await inspectDirectoryHealth(directory, {
+    readable: true,
+    writable: true,
+    allowCreate: false,
+    checkOnly: true
+  });
+  if (health.healthStatus !== 'healthy') {
+    throw new ProjectDirectoryPreferencesError(
+      directoryType === 'archive_root'
+        ? 'project_archive_directory_invalid'
+        : 'project_package_directory_invalid',
+      directoryType === 'archive_root'
+        ? '所选归档目录不可用或不可写。'
+        : '所选资料包输出目录不可用或不可写。'
+    );
+  }
+  const preferences = await setProjectDirectoryPreference(
+    app.getPath('userData'),
+    activeProject,
+    directoryType,
+    health.normalizedPath
+  );
+  return {
+    success: true,
+    directoryType,
+    preferences,
+    health,
+    message: directoryType === 'archive_root'
+      ? '当前项目归档目录已保存。'
+      : '当前项目资料包输出目录已保存。'
+  };
+}
+
+async function clearProjectDirectory(activeProjectInput, directoryType) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const preferences = await clearProjectDirectoryPreference(
+    app.getPath('userData'),
+    activeProject,
+    directoryType
+  );
+  return {
+    success: true,
+    directoryType,
+    preferences,
+    message: directoryType === 'archive_root'
+      ? '当前项目归档目录已清除。'
+      : '当前项目资料包输出目录已清除。'
+  };
+}
+
+async function openProjectDirectory(activeProjectInput, directoryType) {
+  const inspection = await inspectProjectDirectory(activeProjectInput, directoryType);
+  if (!inspection.success) return inspection;
+  const error = await shell.openPath(inspection.health.normalizedPath);
+  if (error) {
+    return {
+      ...inspection,
+      success: false,
+      error: {
+        code: 'project_directory_open_failed',
+        message: '项目目录打开失败。'
+      },
+      message: '项目目录打开失败。'
+    };
+  }
+  return { ...inspection, success: true, message: '目录已打开。' };
+}
+
+async function safeProjectDirectoryCall(action) {
+  try {
+    return await action();
+  } catch (error) {
+    const safeCode = /^(active_project|project_directory|project_archive|project_package)_/.test(
+      String(error?.code || '')
+    )
+      ? String(error.code)
+      : 'project_directory_preferences_load_failed';
+    return {
+      success: false,
+      error: {
+        code: safeCode,
+        message: safeCode === 'project_directory_preferences_load_failed'
+          ? '项目目录偏好暂不可用。'
+          : String(error?.message || '项目目录操作失败。')
+      },
+      message: safeCode === 'project_directory_preferences_load_failed'
+        ? '项目目录偏好暂不可用。'
+        : String(error?.message || '项目目录操作失败。')
+    };
+  }
+}
+
+async function requireHealthyProjectDirectory(activeProject, directoryType, options = {}) {
+  const inspection = await inspectProjectDirectory(activeProject, directoryType);
+  if (inspection.success) return inspection;
+  const configuredPath = getProjectDirectoryPath(inspection.preferences || {}, directoryType);
+  const missingCode = directoryType === 'archive_root'
+    ? 'archive_directory_required'
+    : 'project_package_directory_invalid';
+  const invalidCode = directoryType === 'archive_root'
+    ? 'project_archive_directory_invalid'
+    : 'project_package_directory_invalid';
+  throw new ProjectDirectoryPreferencesError(
+    configuredPath ? invalidCode : missingCode,
+    configuredPath
+      ? `${getProjectDirectoryLabel(directoryType)}当前不可用，请重新选择。`
+      : `当前项目尚未设置${getProjectDirectoryLabel(directoryType)}。`
+  );
+}
+
+async function loadCurrentProjectLedger(activeProjectInput) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const roots = await listProjectArchiveRoots(app.getPath('userData'), activeProject);
+  const result = await loadProjectLedgerRecordsAcrossRoots(roots, activeProject);
+  return {
+    ...result,
+    activeProject,
+    archiveRoots: roots
+  };
+}
+
+async function loadCurrentProjectSummary(activeProjectInput) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const [ledgerResult, summaryResult, preferences] = await Promise.all([
+    loadCurrentProjectLedger(activeProject),
+    loadSummaryData({
+      archiveRoot: '',
+      documentsPath: getWritableDocumentsPath(),
+      projectRoot: path.resolve(__dirname, '..')
+    }),
+    getProjectDirectoryPreferences(app.getPath('userData'), activeProject)
+  ]);
+  const rectificationItems = (summaryResult.rectificationItems || []).filter((item) => (
+    normalizeProjectNameForLedger(item.project) === normalizeProjectNameForLedger(
+      activeProject.projectName
+    )
+  ));
+  return {
+    ...summaryResult,
+    activeProject,
+    archiveRoot: preferences.archiveRootDirectory,
+    archiveRoots: ledgerResult.archiveRoots,
+    ledgerPath: ledgerResult.ledgerPaths.join('；'),
+    ledgerPaths: ledgerResult.ledgerPaths,
+    missingLedger: ledgerResult.missingLedger,
+    photoRecords: ledgerResult.records,
+    rectificationItems,
+    failedCount: ledgerResult.failedCount
+  };
+}
+
+async function deleteCurrentProjectLedgerRecords(
+  activeProjectInput,
+  selections = [],
+  options = {}
+) {
+  const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+  const allowedRoots = new Set(
+    (await listProjectArchiveRoots(app.getPath('userData'), activeProject))
+      .map((value) => normalizePathKey(value))
+  );
+  const groups = new Map();
+  for (const selection of Array.isArray(selections) ? selections : []) {
+    const archiveRoot = path.resolve(String(selection?.archiveRoot || '').trim());
+    if (!allowedRoots.has(normalizePathKey(archiveRoot))) {
+      throw new ProjectDirectoryPreferencesError(
+        'project_archive_directory_invalid',
+        '所选归档记录不属于当前项目目录。'
+      );
+    }
+    const list = groups.get(archiveRoot) || [];
+    list.push(selection);
+    groups.set(archiveRoot, list);
+  }
+  const results = [];
+  for (const [archiveRoot, groupSelections] of groups) {
+    results.push(await deleteLedgerRecords(archiveRoot, groupSelections, options));
+  }
+  return results.reduce((summary, result) => ({
+    success: summary.success && result.success !== false,
+    selectedCount: summary.selectedCount + Number(result.selectedCount || 0),
+    deletedRecordCount: summary.deletedRecordCount + Number(result.deletedRecordCount || 0),
+    deletedFileCount: summary.deletedFileCount + Number(result.deletedFileCount || 0),
+    missingFileCount: summary.missingFileCount + Number(result.missingFileCount || 0),
+    failedCount: summary.failedCount + Number(result.failedCount || 0),
+    backupPaths: [...summary.backupPaths, result.backupPath].filter(Boolean),
+    notes: [...summary.notes, ...(result.notes || [])]
+  }), {
+    success: true,
+    selectedCount: 0,
+    deletedRecordCount: 0,
+    deletedFileCount: 0,
+    missingFileCount: 0,
+    failedCount: 0,
+    backupPaths: [],
+    notes: []
+  });
+}
+
+function normalizeProjectNameForLedger(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizePathKey(value) {
+  const normalized = path.resolve(String(value || '').trim());
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function assertPackageRecordsBelongToProject(records, activeProject) {
+  const mismatch = (Array.isArray(records) ? records : []).some((record) => (
+    record?.projectId
+      ? String(record.projectId).trim() !== activeProject.projectId
+      : normalizeProjectNameForLedger(record?.project) !== normalizeProjectNameForLedger(
+          activeProject.projectName
+        )
+  ));
+  if (mismatch) {
+    throw new ProjectDirectoryPreferencesError(
+      'project_context_mismatch',
+      '资料包记录与当前项目不一致。'
+    );
+  }
+}
+
+function assertPackagePathInsideRoot(packagePath, targetRoot) {
+  const supplied = String(packagePath || '').trim();
+  if (!supplied) return;
+  const relative = path.relative(path.resolve(targetRoot), path.resolve(supplied));
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new ProjectDirectoryPreferencesError(
+      'project_package_directory_invalid',
+      '资料包计划与当前项目输出目录不一致，请重新生成。'
+    );
+  }
+}
+
 async function inspectConfiguredDirectory(directoryKind, overrides = {}) {
   const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
   const configured = getConfiguredDirectory(runtimeConfiguration, directoryKind);
@@ -618,9 +920,11 @@ ipcMain.handle('dialog:selectPhotoFolder', async (_event, input = {}) => {
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle('dialog:selectArchiveRoot', async () => {
+ipcMain.handle('dialog:selectArchiveRoot', async (_event, input = {}) => {
+  const initialPath = String(input?.initialPath || '').trim();
   const result = await dialog.showOpenDialog({
     title: '选择归档根目录',
+    ...(initialPath && path.isAbsolute(initialPath) ? { defaultPath: initialPath } : {}),
     properties: ['openDirectory', 'createDirectory']
   });
   return result.canceled ? null : result.filePaths[0];
@@ -956,6 +1260,37 @@ ipcMain.handle('runtimeConfiguration:openDirectory', async (_event, directoryKin
     };
   }
 });
+ipcMain.handle('projectDirectories:get', async (_event, activeProject) => safeProjectDirectoryCall(
+  async () => {
+    const resolved = await resolveCurrentActiveProject(activeProject);
+    const preferences = await getProjectDirectoryPreferences(
+      app.getPath('userData'),
+      resolved.activeProject
+    );
+    return { success: true, preferences };
+  }
+));
+ipcMain.handle('projectDirectories:setArchiveRoot', async (_event, activeProject, directory) => (
+  safeProjectDirectoryCall(() => setProjectDirectory(activeProject, 'archive_root', directory))
+));
+ipcMain.handle('projectDirectories:clearArchiveRoot', async (_event, activeProject) => (
+  safeProjectDirectoryCall(() => clearProjectDirectory(activeProject, 'archive_root'))
+));
+ipcMain.handle('projectDirectories:setPackageExport', async (_event, activeProject, directory) => (
+  safeProjectDirectoryCall(() => setProjectDirectory(activeProject, 'package_export', directory))
+));
+ipcMain.handle('projectDirectories:clearPackageExport', async (_event, activeProject) => (
+  safeProjectDirectoryCall(() => clearProjectDirectory(activeProject, 'package_export'))
+));
+ipcMain.handle('projectDirectories:checkHealth', async (_event, activeProject, directoryType) => (
+  safeProjectDirectoryCall(() => inspectProjectDirectory(activeProject, directoryType))
+));
+ipcMain.handle('projectDirectories:openArchiveRoot', async (_event, activeProject) => (
+  safeProjectDirectoryCall(() => openProjectDirectory(activeProject, 'archive_root'))
+));
+ipcMain.handle('projectDirectories:openPackageExport', async (_event, activeProject) => (
+  safeProjectDirectoryCall(() => openProjectDirectory(activeProject, 'package_export'))
+));
 ipcMain.handle('configs:load', async () => (await loadCurrentRuntimeConfiguration()).configs);
 ipcMain.handle('configs:loadUserConfigs', async () => loadRuntimeEditableConfigs(getRuntimeConfigurationStorageRoots()));
 ipcMain.handle('configs:saveUserConfig', async (_event, configName, data) => {
@@ -1019,16 +1354,13 @@ ipcMain.handle('configs:import', async () => {
 });
 ipcMain.handle('archive:buildPreview', async (_event, payload) => safeArchiveCall(
   async () => {
-    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
-    const activeProject = normalizeActiveProjectAgainstRuntime(
-      payload?.activeProject,
-      runtimeConfiguration
-    );
+    const { activeProject } = await resolveCurrentActiveProject(payload?.activeProject);
     assertArchivePreviewProject(payload, activeProject);
+    const directory = await requireHealthyProjectDirectory(activeProject, 'archive_root');
     const result = await buildArchivePreview({
       ...payload,
       activeProject,
-      archiveRoot: runtimeConfiguration.archiveRootDirectory
+      archiveRoot: directory.health.normalizedPath
     });
     return attachActiveProjectToArchivePreview(result, activeProject);
   },
@@ -1039,24 +1371,19 @@ ipcMain.handle('archive:buildPreview', async (_event, payload) => safeArchiveCal
 ));
 ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchiveCall(
   async () => {
-    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
-    const activeProject = normalizeActiveProjectAgainstRuntime(
-      archivePlan?.activeProject,
-      runtimeConfiguration
-    );
+    const { activeProject } = await resolveCurrentActiveProject(archivePlan?.activeProject);
     assertArchivePlanProject(archivePlan, activeProject);
+    const directory = await requireHealthyProjectDirectory(activeProject, 'archive_root');
+    const previewRoot = path.resolve(String(archivePlan?.previewPlan?.archiveRoot || '').trim());
+    if (previewRoot !== directory.health.normalizedPath) {
+      throw new ProjectDirectoryPreferencesError(
+        'archive_preview_directory_stale',
+        '归档目录已发生变化，请重新生成预览后再归档。'
+      );
+    }
     return archivePhotos({
       ...archivePlan,
-      activeProject,
-      archiveRoot: runtimeConfiguration.archiveRootDirectory,
-      ...(archivePlan?.previewPlan
-        ? {
-            previewPlan: {
-              ...archivePlan.previewPlan,
-              archiveRoot: runtimeConfiguration.archiveRootDirectory
-            }
-          }
-        : {})
+      activeProject
     });
   },
   (error) => createArchiveIpcErrorResult(
@@ -1064,10 +1391,11 @@ ipcMain.handle('archive:archivePhotos', async (_event, archivePlan) => safeArchi
     Array.isArray(archivePlan?.previewPlan?.items) ? archivePlan.previewPlan.items.length : 0
   )
 ));
-ipcMain.handle('archive:recoverPendingTransactions', async () => safeArchiveCall(
+ipcMain.handle('archive:recoverPendingTransactions', async (_event, activeProjectInput) => safeArchiveCall(
   async () => {
-    const runtimeConfiguration = await loadCurrentRuntimeConfiguration();
-    return recoverPendingArchiveTransactions(runtimeConfiguration.archiveRootDirectory);
+    const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+    const directory = await requireHealthyProjectDirectory(activeProject, 'archive_root');
+    return recoverPendingArchiveTransactions(directory.health.normalizedPath);
   },
   createArchiveRecoveryIpcError
 ));
@@ -1347,6 +1675,15 @@ ipcMain.handle('ledger:open', async (_event, archiveRoot) => {
 ipcMain.handle('ledger:loadRecords', async (_event, archiveRoot) => loadLedgerRecords(archiveRoot));
 
 ipcMain.handle('ledger:deleteRecords', async (_event, archiveRoot, selections, options) => deleteLedgerRecords(archiveRoot, selections, options));
+ipcMain.handle('ledger:loadProjectRecords', async (_event, activeProject) => safeProjectDirectoryCall(
+  () => loadCurrentProjectLedger(activeProject)
+));
+ipcMain.handle(
+  'ledger:deleteProjectRecords',
+  async (_event, activeProject, selections, options) => safeProjectDirectoryCall(
+    () => deleteCurrentProjectLedgerRecords(activeProject, selections, options)
+  )
+);
 
 ipcMain.handle('ledger:exportRecords', async (_event, records) => {
   if (!Array.isArray(records) || records.length === 0) {
@@ -1364,20 +1701,39 @@ ipcMain.handle('ledger:exportRecords', async (_event, records) => {
   return exportLedgerRecords(result.filePath, records);
 });
 
-ipcMain.handle('archivePackage:selectTargetRoot', async () => {
+ipcMain.handle('archivePackage:selectTargetRoot', async (_event, input = {}) => {
+  const initialPath = String(input?.initialPath || '').trim();
   const result = await dialog.showOpenDialog({
     title: '选择资料包保存位置',
+    ...(initialPath && path.isAbsolute(initialPath) ? { defaultPath: initialPath } : {}),
     properties: ['openDirectory', 'createDirectory']
   });
   return result.canceled ? null : result.filePaths[0];
 });
 
-ipcMain.handle('archivePackage:buildPlan', async (_event, records, targetRoot, options) => buildPackagePlan(records, targetRoot, options));
+ipcMain.handle('archivePackage:buildPlan', async (_event, activeProjectInput, records, options) => (
+  safeProjectDirectoryCall(async () => {
+    const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+    assertPackageRecordsBelongToProject(records, activeProject);
+    const directory = await requireHealthyProjectDirectory(activeProject, 'package_export');
+    return buildPackagePlan(records, directory.health.normalizedPath, options);
+  })
+));
 
-ipcMain.handle('archivePackage:generate', async (event, records, options) => generateArchivePackage(records, {
-  ...options,
-  onProgress: (progress) => event.sender.send('archivePackage:progress', progress)
-}));
+ipcMain.handle(
+  'archivePackage:generate',
+  async (event, activeProjectInput, records, options) => safeProjectDirectoryCall(async () => {
+    const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+    assertPackageRecordsBelongToProject(records, activeProject);
+    const directory = await requireHealthyProjectDirectory(activeProject, 'package_export');
+    assertPackagePathInsideRoot(options?.packagePath, directory.health.normalizedPath);
+    return generateArchivePackage(records, {
+      ...options,
+      targetRoot: directory.health.normalizedPath,
+      onProgress: (progress) => event.sender.send('archivePackage:progress', progress)
+    });
+  })
+);
 
 ipcMain.handle('serviceBrief:exportImages', async (_event, payload) => {
   const result = await dialog.showOpenDialog({
@@ -1413,10 +1769,26 @@ ipcMain.handle('trialIssues:export', async (_event, items, format = 'xlsx') => {
   return exportTrialIssues(result.filePath, items, normalizedFormat);
 });
 
-ipcMain.handle('dashboard:loadData', async () => loadDashboardData({
-  documentsPath: getWritableDocumentsPath(),
-  projectRoot: path.resolve(__dirname, '..')
-}));
+ipcMain.handle('dashboard:loadData', async (_event, activeProjectInput) => safeProjectDirectoryCall(
+  async () => {
+    const { activeProject } = await resolveCurrentActiveProject(activeProjectInput);
+    const [projectLedgerResult, archiveDirectory, packageDirectory] = await Promise.all([
+      loadCurrentProjectLedger(activeProject),
+      inspectProjectDirectory(activeProject, 'archive_root'),
+      inspectProjectDirectory(activeProject, 'package_export')
+    ]);
+    return loadDashboardData({
+      documentsPath: getWritableDocumentsPath(),
+      projectRoot: path.resolve(__dirname, '..'),
+      activeProject,
+      projectLedgerResult,
+      projectDirectories: {
+        archive: archiveDirectory,
+        package: packageDirectory
+      }
+    });
+  }
+));
 
 ipcMain.handle('rectification:loadItems', async () => loadRectificationItems(getWritableDocumentsPath()));
 ipcMain.handle('rectification:saveItem', async (_event, item) => saveRectificationItem(getWritableDocumentsPath(), item));
@@ -1451,11 +1823,9 @@ ipcMain.handle('rectification:exportItems', async (_event, items) => {
   return exportRectificationItems(result.filePath, items);
 });
 
-ipcMain.handle('summary:loadData', async (_event, archiveRoot) => loadSummaryData({
-  archiveRoot,
-  documentsPath: getWritableDocumentsPath(),
-  projectRoot: path.resolve(__dirname, '..')
-}));
+ipcMain.handle('summary:loadData', async (_event, activeProject) => safeProjectDirectoryCall(
+  () => loadCurrentProjectSummary(activeProject)
+));
 
 ipcMain.handle('summary:exportWorkbook', async (_event, payload) => {
   const now = new Date();

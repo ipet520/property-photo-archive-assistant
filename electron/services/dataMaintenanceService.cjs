@@ -2,8 +2,6 @@ const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
 const { CONFIG_FILES, getConfigPaths, normalizeEditableConfigs } = require('./configService.cjs');
-const { getLedgerPath } = require('./excelService.cjs');
-const { loadLedgerRecords } = require('./ledgerQueryService.cjs');
 const { loadSettings } = require('./settingsService.cjs');
 
 async function getDataMaintenanceReport(options = {}) {
@@ -154,27 +152,6 @@ async function inspectConfigStatus(configPaths) {
 async function inspectDirectories({ settings, configPaths, appDataDir }) {
   const directories = [
     {
-      key: 'defaultPhotoFolder',
-      label: '默认照片导入目录',
-      path: settings?.defaultPhotoFolder || settings?.lastPhotoFolder || '',
-      source: settings?.defaultPhotoFolder ? '默认目录' : '上次照片目录',
-      writeRequired: false
-    },
-    {
-      key: 'defaultArchiveRoot',
-      label: '默认归档根目录',
-      path: settings?.defaultArchiveRoot || settings?.lastArchiveRoot || '',
-      source: settings?.defaultArchiveRoot ? '默认目录' : '上次归档目录',
-      writeRequired: true
-    },
-    {
-      key: 'defaultArchivePackageRoot',
-      label: '默认资料包导出目录',
-      path: settings?.defaultArchivePackageRoot || '',
-      source: '系统设置',
-      writeRequired: true
-    },
-    {
       key: 'sortDrafts',
       label: '分拣进度保存目录',
       path: path.join(appDataDir, 'sort-drafts'),
@@ -208,88 +185,20 @@ async function inspectDirectories({ settings, configPaths, appDataDir }) {
   };
 }
 
-async function inspectLedgerStatus(settings) {
-  const archiveRoot = settings?.defaultArchiveRoot || settings?.lastArchiveRoot || '';
-  const rootStatus = await inspectPath(archiveRoot, 'directory');
-  const ledgerPath = archiveRoot ? getLedgerPath(archiveRoot) : '';
-  const ledgerFileStatus = await inspectPath(ledgerPath, 'file');
-
-  if (!archiveRoot) {
-    return {
-      status: 'unset',
-      archiveRoot: '',
-      ledgerPath: '',
-      total: 0,
-      existsCount: 0,
-      missingCount: 0,
-      missingPathCount: 0,
-      latestDate: '',
-      projectCount: 0,
-      categoryCount: 0,
-      message: '未配置默认归档根目录，暂无法检查台账。'
-    };
-  }
-
-  if (!rootStatus.exists) {
-    return {
-      status: 'warning',
-      archiveRoot,
-      ledgerPath,
-      total: 0,
-      existsCount: 0,
-      missingCount: 0,
-      missingPathCount: 0,
-      latestDate: '',
-      projectCount: 0,
-      categoryCount: 0,
-      message: '归档根目录不可用，暂无法读取台账。'
-    };
-  }
-
-  try {
-    const result = await loadLedgerRecords(archiveRoot);
-    const records = result.records || [];
-    const latestDate = records
-      .map((record) => record.archivedAt || record.date || '')
-      .filter(Boolean)
-      .sort()
-      .at(-1) || '';
-    const missingPathCount = records.filter((record) => !record.archivePath).length;
-    const existsCount = records.filter((record) => record.fileExists).length;
-    const missingCount = records.length - existsCount;
-    return {
-      status: result.missingLedger ? 'warning' : (missingCount > 0 ? 'warning' : 'normal'),
-      archiveRoot,
-      ledgerPath: result.ledgerPath || ledgerPath,
-      ledgerExists: ledgerFileStatus.exists,
-      total: records.length,
-      existsCount,
-      missingCount,
-      missingPathCount,
-      latestDate,
-      projectCount: uniqueCount(records.map((record) => record.project)),
-      categoryCount: uniqueCount(records.map((record) => record.watermarkCategory)),
-      projectTop: topCounts(records.map((record) => record.project)),
-      categoryTop: topCounts(records.map((record) => record.watermarkCategory)),
-      message: result.missingLedger
-        ? '当前归档根目录下未找到照片归档台账。'
-        : `已读取 ${records.length} 条台账记录。`
-    };
-  } catch (error) {
-    return {
-      status: 'error',
-      archiveRoot,
-      ledgerPath,
-      total: 0,
-      existsCount: 0,
-      missingCount: 0,
-      missingPathCount: 0,
-      latestDate: '',
-      projectCount: 0,
-      categoryCount: 0,
-      message: `台账读取失败：${error.message}`
-    };
-  }
+async function inspectLedgerStatus() {
+  return {
+    status: 'project_managed',
+    archiveRoot: '',
+    ledgerPath: '',
+    total: 0,
+    existsCount: 0,
+    missingCount: 0,
+    missingPathCount: 0,
+    latestDate: '',
+    projectCount: 0,
+    categoryCount: 0,
+    message: '归档台账按当前项目在归档记录页检查。'
+  };
 }
 
 async function inspectSortProgressStatus(appDataDir) {
@@ -325,64 +234,21 @@ async function inspectSortProgressStatus(appDataDir) {
   };
 }
 
-async function inspectArchivePackageStatus(settings) {
-  const root = settings?.defaultArchivePackageRoot || '';
-  const rootStatus = await inspectPath(root, 'directory');
-  if (!root) {
-    return {
-      status: 'unset',
-      root: '',
-      exists: false,
-      readable: false,
-      writable: false,
-      packageCount: 0,
-      latestPackage: '',
-      latestTime: '',
-      message: '未配置默认资料包导出目录。'
-    };
-  }
-  if (!rootStatus.exists || !rootStatus.readable || !rootStatus.writable) {
-    return {
-      status: 'warning',
-      root,
-      exists: rootStatus.exists,
-      readable: rootStatus.readable,
-      writable: rootStatus.writable,
-      packageCount: 0,
-      latestPackage: '',
-      latestTime: '',
-      message: !rootStatus.exists
-        ? '默认资料包导出目录不可用。'
-        : (!rootStatus.readable ? '默认资料包导出目录不可读取。' : '默认资料包导出目录不可写入。')
-    };
-  }
-
-  const dirs = await listDirectDirectories(root);
-  const packages = [];
-  for (const dir of dirs) {
-    const markerCount = await countPackageMarkers(dir.fullPath);
-    if (markerCount > 0) {
-      packages.push({ ...dir, markerCount });
-    }
-  }
-  packages.sort((a, b) => b.mtimeMs - a.mtimeMs);
+async function inspectArchivePackageStatus() {
   return {
-    status: 'normal',
-    root,
-    exists: true,
-    readable: true,
-    writable: true,
-    packageCount: packages.length,
-    latestPackage: packages[0]?.name || '',
-    latestTime: packages[0] ? new Date(packages[0].mtimeMs).toISOString() : '',
-    message: packages.length > 0 ? `发现 ${packages.length} 个疑似资料包目录。` : '目录可用，尚未生成资料包。'
+    status: 'project_managed',
+    root: '',
+    exists: false,
+    readable: false,
+    writable: false,
+    packageCount: 0,
+    latestPackage: '',
+    latestTime: '',
+    message: '资料包输出目录按当前项目在归档记录页管理。'
   };
 }
 
 function buildOverview({ configStatus, directoryStatus, ledgerStatus, sortProgressStatus, packageStatus, checkedAt }) {
-  const photoDir = directoryStatus.items.find((item) => item.key === 'defaultPhotoFolder');
-  const archiveDir = directoryStatus.items.find((item) => item.key === 'defaultArchiveRoot');
-  const packageDir = directoryStatus.items.find((item) => item.key === 'defaultArchivePackageRoot');
   return [
     {
       key: 'config',
@@ -392,15 +258,15 @@ function buildOverview({ configStatus, directoryStatus, ledgerStatus, sortProgre
     },
     {
       key: 'photoDir',
-      label: '默认照片目录状态',
-      status: photoDir?.status || 'unset',
-      summary: photoDir?.message || '未检查'
+      label: '本地照片来源目录',
+      status: 'project_managed',
+      summary: '由照片分拣工作台按当前项目管理。'
     },
     {
       key: 'archiveRoot',
-      label: '默认归档根目录状态',
-      status: archiveDir?.status || 'unset',
-      summary: archiveDir?.message || '未检查'
+      label: '项目归档目录',
+      status: 'project_managed',
+      summary: '由照片分拣工作台和归档记录页按当前项目管理。'
     },
     {
       key: 'ledger',
@@ -416,8 +282,8 @@ function buildOverview({ configStatus, directoryStatus, ledgerStatus, sortProgre
     },
     {
       key: 'packageRoot',
-      label: '资料包导出目录状态',
-      status: packageDir?.status || packageStatus.status,
+      label: '项目资料包输出目录',
+      status: packageStatus.status,
       summary: packageStatus.message
     },
     {
@@ -429,7 +295,7 @@ function buildOverview({ configStatus, directoryStatus, ledgerStatus, sortProgre
   ];
 }
 
-function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatus, sortProgressStatus, packageStatus }) {
+function buildSuggestions({ configStatus, directoryStatus, ledgerStatus, sortProgressStatus, packageStatus }) {
   const suggestions = [];
   if (configStatus.status !== 'normal') {
     suggestions.push({
@@ -439,27 +305,10 @@ function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatu
       action: 'settings-base-data'
     });
   }
-  if (!settings?.defaultArchiveRoot) {
-    suggestions.push({
-      level: 'warning',
-      title: '未配置默认归档根目录',
-      text: '建议在系统设置中配置默认归档根目录，便于归档记录查询和资料包导出使用。',
-      action: 'settings-default-archive'
-    });
-  }
   const invalidDirectories = directoryStatus.items.filter((item) => item.status === 'error');
   invalidDirectories.forEach((item) => {
     suggestions.push(buildDirectorySuggestion(item));
   });
-  const archiveDirectory = directoryStatus.items.find((item) => item.key === 'defaultArchiveRoot');
-  if (archiveDirectory?.status === 'normal' && ledgerStatus.status === 'warning' && ledgerStatus.total === 0) {
-    suggestions.push({
-      level: 'info',
-      title: '未发现归档台账',
-      text: '当前归档根目录下未发现照片归档台账。请先完成一次归档，或检查默认归档根目录是否正确。',
-      action: 'ledger'
-    });
-  }
   if (ledgerStatus.missingCount > 0) {
     suggestions.push({
       level: 'warning',
@@ -476,21 +325,6 @@ function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatu
       action: 'sort-workspace'
     });
   }
-  if (packageStatus.status === 'unset') {
-    suggestions.push({
-      level: 'info',
-      title: '资料包导出目录未配置（可选）',
-      text: '仅在需要生成资料包时配置；不影响照片扫描、智拣、预览和归档。',
-      action: 'settings-package'
-    });
-  } else if (packageStatus.status === 'warning' || packageStatus.status === 'error') {
-    suggestions.push({
-      level: 'warning',
-      title: '资料包导出目录不可用',
-      text: packageStatus.message || '建议在系统设置中重新选择可读写的资料包导出目录。',
-      action: 'settings-package'
-    });
-  }
   if (suggestions.length === 0) {
     suggestions.push({
       level: 'success',
@@ -503,9 +337,6 @@ function buildSuggestions({ settings, configStatus, directoryStatus, ledgerStatu
 
 function buildDirectorySuggestion(item) {
   const actionMap = {
-    defaultPhotoFolder: 'settings-default-photo',
-    defaultArchiveRoot: 'settings-default-archive',
-    defaultArchivePackageRoot: 'settings-package',
     sortDrafts: 'sort-workspace',
     configBackup: 'settings-backup'
   };
@@ -520,7 +351,7 @@ function buildDirectorySuggestion(item) {
     level: 'warning',
     title: `${item.label}${reason === '目录不可写入' ? '不可写入' : '不可用'}`,
     text: textMap[item.key] || `当前${item.label}${reason}，建议到系统设置中重新选择可访问的目录。`,
-    action: actionMap[item.key] || 'settings-default-paths'
+    action: actionMap[item.key] || 'settings-base-data'
   };
 }
 

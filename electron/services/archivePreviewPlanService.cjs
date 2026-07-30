@@ -13,6 +13,8 @@ const PREVIEW_PLAN_KEYS = new Set([
   'schemaVersion',
   'planId',
   'createdAt',
+  'projectId',
+  'projectName',
   'archiveRoot',
   'items'
 ]);
@@ -32,6 +34,7 @@ const PREVIEW_ITEM_KEYS = new Set([
 ]);
 const LEDGER_ROW_KEYS = new Set([
   'date',
+  'projectId',
   'project',
   'watermarkCategory',
   'workContent',
@@ -132,6 +135,8 @@ async function createArchivePreviewPlan(input = {}, options = {}) {
   const unsigned = {
     schemaVersion: PREVIEW_PLAN_SCHEMA_VERSION,
     createdAt,
+    projectId: normalizeText(input.projectId),
+    projectName: normalizeText(input.projectName),
     archiveRoot,
     items
   };
@@ -172,6 +177,8 @@ function normalizeArchivePreviewPlan(input = {}) {
       'archive_preview_plan_invalid',
       '归档预览计划时间无效。'
     ),
+    projectId: normalizeText(input.projectId),
+    projectName: normalizeText(input.projectName),
     archiveRoot,
     items
   };

@@ -16,6 +16,13 @@ import {
   withRuntimeConfigFallback
 } from '../utils/runtimeConfig.js';
 import {
+  buildProjectDirectoryState,
+  isArchivePreviewPlanCurrent,
+  normalizeProjectDirectoryPreferences,
+  PROJECT_DIRECTORY_TYPES,
+  resolveLegacyDirectoryInitialPath
+} from '../utils/projectDirectoryPreferences.js';
+import {
   beginSmartSortExecution,
   buildSmartSortGroupMembershipByPhotoId,
   buildSourceAwareRecognitionNotice,
@@ -250,7 +257,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
   const [localPhotoSourceInspection, setLocalPhotoSourceInspection] = useState(null);
-  const [archiveRoot, setArchiveRoot] = useState(() => cachedSession.archiveRoot || '');
+  const [archiveRoot, setArchiveRoot] = useState('');
+  const [archiveDirectoryHealth, setArchiveDirectoryHealth] = useState(null);
   const [photos, setPhotos] = useState(() => Array.isArray(cachedSession.photos) ? cachedSession.photos : []);
   const [form, setForm] = useState(() => cachedSession.form || defaultForm);
   const [filter, setFilter] = useState(() => normalizeStatusFilter(cachedSession.filter));
@@ -346,17 +354,32 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     });
   }
 
+  async function loadProjectArchiveDirectoryState() {
+    try {
+      const result = await window.archiveAssistant.getProjectDirectoryPreferences(activeProject);
+      assertSuccessfulBusinessResult(result, '读取项目目录偏好失败。');
+      const preferences = normalizeProjectDirectoryPreferences(result, activeProject);
+      const healthResult = await window.archiveAssistant.checkProjectDirectoryHealth(
+        activeProject,
+        PROJECT_DIRECTORY_TYPES.archiveRoot
+      );
+      return {
+        archiveRootDirectory: preferences.archiveRootDirectory,
+        health: healthResult?.health || null
+      };
+    } catch {
+      return {
+        archiveRootDirectory: '',
+        health: null
+      };
+    }
+  }
+
   useEffect(() => {
     const runtimeConfiguration = archiveState?.runtimeConfiguration;
     if (!runtimeConfiguration?.revision) return;
     setConfigs(withRuntimeConfigFallback(runtimeConfiguration.configs));
     setSettings(runtimeConfiguration.settings || {});
-    setArchiveRoot(runtimeConfiguration.archiveRootDirectory || '');
-    setArchivePreviewPlan((current) => (
-      current?.archiveRoot === runtimeConfiguration.archiveRootDirectory
-        ? current
-        : null
-    ));
   }, [archiveState?.runtimeConfiguration?.revision]);
 
   useEffect(() => {
@@ -373,14 +396,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
               message: '工作台快照读取失败，已使用空工作台。'
             }
           }))
-        : Promise.resolve({ success: true, found: false, snapshot: null })
-    ]).then(async ([runtimeResult, snapshotResult]) => {
+        : Promise.resolve({ success: true, found: false, snapshot: null }),
+      loadProjectArchiveDirectoryState()
+    ]).then(async ([runtimeResult, snapshotResult, projectDirectoryResult]) => {
       const cachedSession = cachedSessionRef.current;
       const loadedRuntimeConfiguration = runtimeResult.value;
       const loadedConfigs = loadedRuntimeConfiguration?.configs;
       const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
-      const restoredArchiveRoot = loadedRuntimeConfiguration?.archiveRootDirectory || '';
+      const restoredArchiveRoot = projectDirectoryResult.archiveRootDirectory;
       const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
       const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
       const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
@@ -388,9 +412,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         restoredPhotoFolder,
         { apply: false }
       );
-      const restoredPhotos = restoredFromSnapshot
+      let restoredPhotos = restoredFromSnapshot
         ? restoreAutomaticSnapshotPhotos(restoredWorkspace.photos)
         : (Array.isArray(restoredWorkspace.photos) ? restoredWorkspace.photos : []);
+      const restoredPreviewPlanIsCurrent = (
+        projectDirectoryResult.health?.healthStatus === 'healthy'
+        && isArchivePreviewPlanCurrent(
+          restoredWorkspace.archivePreviewPlan,
+          activeProject,
+          restoredArchiveRoot
+        )
+      );
+      if (restoredWorkspace.archivePreviewPlan && !restoredPreviewPlanIsCurrent) {
+        restoredPhotos = restoredPhotos.map(clearGeneratedPreview);
+      }
       const restoredSelectedIds = Array.isArray(restoredWorkspace.selectedIds)
         ? restoredWorkspace.selectedIds.filter((id) => restoredPhotos.some((photo) => photo.id === id))
         : [];
@@ -445,6 +480,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setPhotoFolder(restoredPhotoFolder);
       setLocalPhotoSourceInspection(restoredPhotoEntry.inspection);
       setArchiveRoot(restoredArchiveRoot);
+      setArchiveDirectoryHealth(projectDirectoryResult.health);
       setPhotos(restoredPhotos);
       setRecognitionResultsByPhoto(restoredRecognitionMap);
       setWatermarkRecordsByPhoto(restoredWatermarkMap);
@@ -452,7 +488,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setPhotoDraftByPhotoId(restoredPhotoDrafts);
       setGroupDraftByGroupId(restoredGroupDrafts);
       setArchivePreviewPlan(
-        restoredWorkspace.archivePreviewPlan?.archiveRoot === restoredArchiveRoot
+        restoredPreviewPlanIsCurrent
           ? restoredWorkspace.archivePreviewPlan
           : null
       );
@@ -514,7 +550,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     let active = true;
     void (async () => {
       if (typeof window.archiveAssistant.recoverPendingArchiveTransactions !== 'function') return;
-      const recovery = await window.archiveAssistant.recoverPendingArchiveTransactions();
+      const recovery = await window.archiveAssistant.recoverPendingArchiveTransactions(activeProject);
       if (!active) return;
       if (recovery?.committedCount > 0 && photos.length > 0) {
         try {
@@ -811,6 +847,16 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     localPhotoSourceInspection
   );
   const effectivePhotoFolder = localPhotoEntryState.photoFolder;
+  const archiveDirectoryState = buildProjectDirectoryState(
+    archiveRoot,
+    archiveDirectoryHealth,
+    {
+      select: '选择归档目录',
+      change: '更改归档目录',
+      reselect: '重新选择归档目录',
+      empty: '未设置'
+    }
+  );
   const selectedStateText = getSelectedStateText(selectedPhotos);
   const selectedHasIgnored = selectedPhotos.some(isIgnoredPhoto);
   const selectedEditablePhotos = selectedPhotos.filter((photo) => (
@@ -3435,10 +3481,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       return;
     }
     if (blockProjectMismatch(targets, '生成预览')) return;
-    if (!archiveRoot) {
-      setStatus({ type: 'warning', text: '请先选择归档根目录。' });
-      return;
-    }
+    const currentArchiveRoot = await ensureProjectArchiveDirectory();
+    if (!currentArchiveRoot) return;
     const confirmed = window.confirm(`确定把右侧当前表单套用到已选 ${targets.length} 张照片并生成预览吗？\n\n这些照片原有的归档建议将被当前表单覆盖，但不会修改 OCR 原文和原始照片。`);
     if (!confirmed) return;
 
@@ -3562,10 +3606,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setStatus({ type: 'error', text: '当前没有照片，无法生成归档预览。' });
       return;
     }
-    if (!archiveRoot) {
-      setStatus({ type: 'error', text: '请先选择归档根目录。' });
-      return;
-    }
+    const currentArchiveRoot = await ensureProjectArchiveDirectory();
+    if (!currentArchiveRoot) return;
     const assigned = photos.filter((photo) => photo.sortStatus === 'assigned' && photo.archiveInfo);
     if (assigned.length === 0) {
       setStatus({ type: 'error', text: '当前没有待预览照片，无法生成归档预览。' });
@@ -3710,6 +3752,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       return;
     }
     if (blockProjectMismatch(previewPhotos, '归档')) return;
+    if (!isArchivePreviewPlanCurrent(archivePreviewPlan, activeProject, archiveRoot)) {
+      setArchivePreviewPlan(null);
+      setStatus({ type: 'error', text: '归档目录已发生变化，请重新生成预览后再归档。' });
+      return;
+    }
     setShowConfirm(true);
   }
 
@@ -3719,6 +3766,24 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     try {
       if (!archivePreviewPlan) {
         setStatus({ type: 'error', text: '归档预览计划已失效，请重新生成预览。' });
+        return;
+      }
+      const inspection = await window.archiveAssistant.checkProjectDirectoryHealth(
+        activeProject,
+        PROJECT_DIRECTORY_TYPES.archiveRoot
+      );
+      if (
+        inspection?.success !== true
+        || !isArchivePreviewPlanCurrent(
+          archivePreviewPlan,
+          activeProject,
+          inspection?.health?.normalizedPath
+        )
+      ) {
+        applyArchiveDirectoryState(inspection?.preferences || {}, inspection?.health || null);
+        setArchivePreviewPlan(null);
+        setShowConfirm(false);
+        setStatus({ type: 'error', text: '归档目录已发生变化，请重新生成预览后再归档。' });
         return;
       }
       const result = await window.archiveAssistant.archivePhotos({
@@ -3812,14 +3877,91 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     }
   }
 
+  function applyArchiveDirectoryState(preferencesResult, healthResult) {
+    const preferences = normalizeProjectDirectoryPreferences(preferencesResult, activeProject);
+    const nextRoot = preferences.archiveRootDirectory;
+    const previewRemainsCurrent = isArchivePreviewPlanCurrent(
+      archivePreviewPlan,
+      activeProject,
+      nextRoot
+    );
+    if (archivePreviewPlan && !previewRemainsCurrent) {
+      setPhotos((current) => current.map(clearGeneratedPreview));
+      setShowConfirm(false);
+    }
+    setArchiveRoot(nextRoot);
+    setArchiveDirectoryHealth(healthResult?.health || healthResult || null);
+    setArchivePreviewPlan(previewRemainsCurrent ? archivePreviewPlan : null);
+    return nextRoot;
+  }
+
+  async function chooseProjectArchiveDirectory({ closeMenu = true } = {}) {
+    if (closeMenu) closeMoreMenu();
+    const initialPath = archiveRoot || resolveLegacyDirectoryInitialPath(
+      archiveState?.runtimeConfiguration,
+      PROJECT_DIRECTORY_TYPES.archiveRoot
+    );
+    const selected = await window.archiveAssistant.selectArchiveRoot(initialPath);
+    if (!selected) return '';
+    const result = await window.archiveAssistant.setProjectArchiveRootDirectory(
+      activeProject,
+      selected
+    );
+    assertSuccessfulBusinessResult(result, '保存项目归档目录失败。');
+    const nextRoot = applyArchiveDirectoryState(result, result.health);
+    setStatus({ type: 'success', text: '当前项目归档目录已更新；旧目录中的归档照片和历史记录保持不变。' });
+    return nextRoot;
+  }
+
+  async function ensureProjectArchiveDirectory() {
+    const inspection = await window.archiveAssistant.checkProjectDirectoryHealth(
+      activeProject,
+      PROJECT_DIRECTORY_TYPES.archiveRoot
+    );
+    if (inspection?.success) {
+      applyArchiveDirectoryState(inspection.preferences, inspection.health);
+      return inspection.health.normalizedPath;
+    }
+    if (inspection?.preferences) {
+      applyArchiveDirectoryState(inspection.preferences, inspection.health);
+    }
+    setStatus({
+      type: 'warning',
+      text: archiveRoot
+        ? '当前项目归档目录已失效，请重新选择。'
+        : '当前项目尚未设置归档目录，请先选择。'
+    });
+    return chooseProjectArchiveDirectory({ closeMenu: false });
+  }
+
+  async function clearProjectArchiveDirectory() {
+    closeMoreMenu();
+    if (!archiveRoot) return;
+    const confirmed = window.confirm(
+      '确定清除当前项目的归档目录吗？\n\n'
+      + '此操作不会移动或删除已经归档的照片，也不会修改历史归档记录。\n'
+      + '清除后，下次生成预览或归档时需要重新选择目录。'
+    );
+    if (!confirmed) return;
+    const result = await window.archiveAssistant.clearProjectArchiveRootDirectory(activeProject);
+    assertSuccessfulBusinessResult(result, '清除项目归档目录失败。');
+    applyArchiveDirectoryState(result, null);
+    setArchivePreviewPlan(null);
+    setStatus({ type: 'success', text: '当前项目归档目录已清除；照片、表单、分组和历史归档记录均已保留。' });
+  }
+
   async function openArchiveDirectory() {
     closeMoreMenu();
+    if (!archiveDirectoryState.canOpen) {
+      setStatus({ type: 'warning', text: '当前项目没有可用的归档目录。' });
+      return;
+    }
     try {
-      const result = await window.archiveAssistant.openConfiguredDirectory('archiveRoot');
+      const result = await window.archiveAssistant.openProjectArchiveRootDirectory(activeProject);
       setStatus({
         type: result?.success ? 'success' : 'error',
         text: result?.success
-          ? '已打开当前归档根目录。'
+          ? '已打开当前项目归档目录。'
           : result?.message || '归档目录打开失败，请核对目录权限。'
       });
     } catch {
@@ -3887,7 +4029,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                   <button type="button" className="wide" title={localPhotoEntryState.selectSourceLabel} onClick={selectPhotoFolderFromMenu} disabled={batchActionsBusy || !isSessionHydrated}>{localPhotoEntryState.selectSourceLabel}</button>
                   <button type="button" className="wide" title="清除当前项目的本地照片来源目录" onClick={clearProjectPhotoFolder} disabled={batchActionsBusy || !isSessionHydrated || !localPhotoEntryState.canClearSource}>清除来源目录</button>
                   <span className="sort-toolbar-more-label">归档目录</span>
-                  <button type="button" className="wide" title="打开当前归档目录" onClick={openArchiveDirectory} disabled={batchActionsBusy}>打开归档目录</button>
+                  <span className="sort-toolbar-more-path" title={archiveRoot}>{archiveDirectoryState.invalid ? '目录已失效' : archiveDirectoryState.displayText}</span>
+                  <button type="button" className="wide" title="打开当前项目归档目录" onClick={openArchiveDirectory} disabled={batchActionsBusy || !isSessionHydrated || !archiveDirectoryState.canOpen}>打开归档目录</button>
+                  <button type="button" className="wide" title={archiveDirectoryState.selectLabel} onClick={() => chooseProjectArchiveDirectory()} disabled={batchActionsBusy || !isSessionHydrated}>{archiveDirectoryState.selectLabel}</button>
+                  <button type="button" className="wide" title="清除当前项目归档目录" onClick={clearProjectArchiveDirectory} disabled={batchActionsBusy || !isSessionHydrated || !archiveDirectoryState.canClear}>清除归档目录</button>
                   <span className="sort-toolbar-more-label">归档进度</span>
                   <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || batchActionsBusy}>保存</button>
                   <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || batchActionsBusy}>恢复</button>
@@ -3913,6 +4058,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                 </select>
               </div>
               <div className="sort-toolbar-view-right">
+                <span className="sort-toolbar-directory-readonly" title={archiveRoot}>归档目录：{archiveDirectoryState.invalid ? '目录已失效' : archiveDirectoryState.displayText}</span>
                 <label className="sort-search">
                   <input value={searchText} placeholder="搜索" title="搜索文件名" onChange={(event) => handleSearchTextChange(event.target.value)} disabled={photos.length === 0} />
                 </label>
@@ -4272,9 +4418,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                     ? '当前选择包含已忽略照片，请先还原或取消选择'
                     : selectedEditablePhotos.length === 0
                       ? '请先选择需要整理的照片'
-                      : !archiveRoot
-                        ? '请先选择归档根目录'
-                        : !currentRequiredFieldsComplete
+                      : !currentRequiredFieldsComplete
                           ? `请先补齐必填字段：${currentMissingRequiredFields.join('、')}`
                           : `将右侧当前表单套用到 ${selectedEditablePhotos.length} 张已选照片并生成预览`}
                 onClick={applyCurrentInfoAndBuildPreview}
@@ -4282,13 +4426,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                   || currentFormLocked
                   || selectedHasIgnored
                   || selectedEditablePhotos.length === 0
-                  || !archiveRoot
                   || !currentRequiredFieldsComplete}
               >
                 <span>套用并预览</span>
                 <b>{selectedEditablePhotos.length}</b>
               </button>
-              <button type="button" className="cancel-preview-action" title={previewPhotos.length > 0 ? `取消全部 ${previewPhotos.length} 张照片的归档预览` : archiveRoot ? `为已有的 ${assignedCount} 张待预览照片重新生成归档预览` : '请先选择归档目录'} onClick={previewPhotos.length > 0 ? cancelSortPreview : buildSortPreview} disabled={batchActionsBusy || (previewPhotos.length === 0 && (!archiveRoot || assignedCount === 0))}><span>{previewPhotos.length > 0 ? '取消预览' : '生成待预览'}</span><b>{previewPhotos.length > 0 ? previewPhotos.length : assignedCount}</b></button>
+              <button type="button" className="cancel-preview-action" title={previewPhotos.length > 0 ? `取消全部 ${previewPhotos.length} 张照片的归档预览` : `为已有的 ${assignedCount} 张待预览照片生成归档预览；未设置目录时会先选择`} onClick={previewPhotos.length > 0 ? cancelSortPreview : buildSortPreview} disabled={batchActionsBusy || (previewPhotos.length === 0 && assignedCount === 0)}><span>{previewPhotos.length > 0 ? '取消预览' : '生成待预览'}</span><b>{previewPhotos.length > 0 ? previewPhotos.length : assignedCount}</b></button>
               <button type="button" className="orange" title={previewPhotos.length > 0 ? `归档全部 ${previewPhotos.length} 张已生成预览照片` : '请先生成归档预览'} onClick={requestArchive} disabled={batchActionsBusy || previewPhotos.length === 0}><span>归档照片</span><b>{previewPhotos.length}</b></button>
             </div>
           </section>
@@ -4329,9 +4472,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           count={previewPhotos.length}
           pendingCount={pendingCount}
           ignoredCount={ignoredCount}
-          archiveRoot={archiveRoot}
+          archiveRoot={archivePreviewPlan?.archiveRoot || archiveRoot}
+          activeProject={activeProject}
           photos={previewPhotos}
           onCancel={() => setShowConfirm(false)}
+          onChangeArchiveRoot={async () => {
+            setShowConfirm(false);
+            await chooseProjectArchiveDirectory({ closeMenu: false });
+          }}
           onConfirm={archivePreviewedPhotos}
           isBusy={isBusy}
         />
@@ -4628,7 +4776,18 @@ function PhotoCard({ photo, recognitionResult, smartSortGroupMember, selected, c
   );
 }
 
-function SortArchiveConfirm({ count, pendingCount, ignoredCount, archiveRoot, photos, onCancel, onConfirm, isBusy }) {
+function SortArchiveConfirm({
+  count,
+  pendingCount,
+  ignoredCount,
+  archiveRoot,
+  activeProject,
+  photos,
+  onCancel,
+  onChangeArchiveRoot,
+  onConfirm,
+  isBusy
+}) {
   const projects = unique(photos.map((photo) => photo.archiveInfo?.project));
   const categories = unique(photos.map((photo) => photo.archiveInfo?.watermarkCategory));
   const contents = unique(photos.map((photo) => photo.archiveInfo?.workContent));
@@ -4649,7 +4808,7 @@ function SortArchiveConfirm({ count, pendingCount, ignoredCount, archiveRoot, ph
             <div><dt>尚未进入预览</dt><dd>{pendingCount} 张</dd></div>
             <div><dt>不参与归档</dt><dd>{ignoredCount} 张已忽略</dd></div>
             <div><dt>归档根目录</dt><dd title={archiveRoot}>{archiveRoot}</dd></div>
-            <div><dt>涉及项目</dt><dd>{projects.join('、') || '-'}</dd></div>
+            <div><dt>当前项目</dt><dd>{activeProject?.projectName || projects.join('、') || '-'}</dd></div>
             <div><dt>归档分类</dt><dd>{categories.join('、') || '-'}</dd></div>
             <div><dt>工作内容</dt><dd>{contents.join('、') || '-'}</dd></div>
           </dl>
@@ -4666,6 +4825,7 @@ function SortArchiveConfirm({ count, pendingCount, ignoredCount, archiveRoot, ph
         </section>
         <footer className="archive-confirm-actions">
           <button type="button" onClick={onCancel} disabled={isBusy}>返回修改</button>
+          <button type="button" onClick={onChangeArchiveRoot} disabled={isBusy}>更改归档目录</button>
           <button type="button" className="primary" disabled={isBusy} onClick={onConfirm}>{isBusy ? '正在归档...' : '确认归档'}</button>
         </footer>
       </section>

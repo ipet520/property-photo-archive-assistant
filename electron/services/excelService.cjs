@@ -32,7 +32,8 @@ const LEDGER_HEADERS = [
   '施工单位',
   '施工单位原始文本',
   '施工单位已确认',
-  '施工单位来源'
+  '施工单位来源',
+  '项目ID'
 ];
 
 const LEDGER_HEADER_ALIASES = {
@@ -62,7 +63,8 @@ const LEDGER_HEADER_ALIASES = {
   施工单位: ['施工单位', 'constructionUnitName'],
   施工单位原始文本: ['施工单位原始文本', 'constructionUnitOriginalText'],
   施工单位已确认: ['施工单位已确认', 'constructionUnitConfirmed'],
-  施工单位来源: ['施工单位来源', 'constructionUnitSource']
+  施工单位来源: ['施工单位来源', 'constructionUnitSource'],
+  项目ID: ['项目ID', 'projectId']
 };
 const LEDGER_SWAP_PREFIX = '.photo-ledger-swap-';
 const ledgerWriteQueues = new Map();
@@ -365,7 +367,8 @@ function toLedgerDataRow(item) {
     item.constructionUnitName,
     item.constructionUnitOriginalText,
     item.constructionUnitConfirmed,
-    item.constructionUnitSource
+    item.constructionUnitSource,
+    item.projectId
   ];
 }
 

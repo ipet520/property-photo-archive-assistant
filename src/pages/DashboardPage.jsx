@@ -11,7 +11,7 @@ const QUICK_ENTRIES = [
   { key: PAGE_KEYS.rectificationCenter, title: '整改闭环中心', text: '建立整改事项，关联整改前中后照片。' },
   { key: PAGE_KEYS.serviceBrief, title: '每日服务简报', text: '按日期汇总已归档照片事项，生成可直接发布的每日服务简报图片。' },
   { key: PAGE_KEYS.dataMaintenance, title: '数据维护中心', text: '检查目录、台账、运行日志、问题反馈和本地数据状态。' },
-  { key: PAGE_KEYS.settings, title: '系统设置', text: '维护基础数据、默认目录、资料包规则和本地配置备份。' }
+  { key: PAGE_KEYS.settings, title: '系统设置', text: '维护基础数据、资料包规则、识别服务和本地配置备份。' }
 ];
 
 const NAV_ICON_BY_PAGE = Object.fromEntries(NAV_GROUPS.flatMap((group) => group.items.map((item) => [item.key, item.icon])));
@@ -22,7 +22,7 @@ const AUTO_LOAD_ACTIONS = {
   [PAGE_KEYS.rectificationCenter]: 'load-rectifications'
 };
 
-export default function DashboardPage({ onNavigate }) {
+export default function DashboardPage({ archiveState, onNavigate }) {
   const [data, setData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notice, setNotice] = useState({ type: 'idle', text: '正在加载首页数据…' });
@@ -31,7 +31,7 @@ export default function DashboardPage({ onNavigate }) {
     setIsLoading(true);
     setNotice((current) => ({ type: 'loading', text: current.text || '正在加载首页数据…' }));
     try {
-      const result = await window.archiveAssistant.loadDashboardData();
+      const result = await window.archiveAssistant.loadDashboardData(archiveState?.activeProject);
       setData(result);
       const errorCount = Object.values(result?.errors || {}).filter(Boolean).length;
       setNotice({
@@ -44,7 +44,7 @@ export default function DashboardPage({ onNavigate }) {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [archiveState?.activeProject?.projectId]);
 
   useEffect(() => {
     refreshDashboard();
@@ -171,15 +171,14 @@ function getHealthTarget(alert) {
   if (text.includes('缺失')) return { page: PAGE_KEYS.searchCenter, action: 'missing-files' };
   if (text.includes('资料包')) return { page: PAGE_KEYS.searchCenter, action: 'package' };
   if (text.includes('整改')) return { page: PAGE_KEYS.rectificationCenter, action: 'load-rectifications' };
-  if (text.includes('目录')) return { page: PAGE_KEYS.settings, action: 'settings-default-paths' };
+  if (text.includes('目录')) return { page: PAGE_KEYS.searchCenter, action: 'load-ledger' };
   return { page: alert.targetPage, action: AUTO_LOAD_ACTIONS[alert.targetPage] || '' };
 }
 
 function SystemStatusList({ status, onNavigate }) {
   const rows = [
-    ['当前照片导入目录', status?.photoFolder, status?.photoFolderStatus],
-    ['当前归档根目录', status?.archiveRoot, status?.archiveRootStatus],
-    ['默认资料包导出目录', status?.packageRoot, status?.packageRootStatus],
+    ['当前项目归档目录', status?.archiveRoot, status?.archiveRootStatus],
+    ['当前项目资料包输出目录', status?.packageRoot, status?.packageRootStatus],
     ['整改事项数据', status?.rectificationPath, status?.rectificationStatus],
     ['分拣进度', status?.sortDraftPath, status?.sortDraftStatus],
     ['配置文件', status?.configPath, status?.configStatus]

@@ -5,6 +5,7 @@ const { getLedgerPath, normalizeExistingLedgerRows } = require('./excelService.c
 
 const FIELD_ALIASES = {
   date: ['日期', '归档日期', '拍摄日期', '时间'],
+  projectId: ['项目ID', 'projectId'],
   project: ['项目', '项目名称'],
   watermarkCategory: ['归档分类', '水印分类', '分类'],
   workContent: ['工作内容', '标准工作项'],
@@ -36,6 +37,7 @@ const FIELD_ALIASES = {
 
 const EXPORT_HEADERS = [
   ['date', '日期'],
+  ['projectId', '项目ID'],
   ['project', '项目'],
   ['watermarkCategory', '归档分类'],
   ['workContent', '工作内容'],
@@ -103,6 +105,50 @@ async function loadLedgerRecords(archiveRoot) {
   };
 }
 
+async function loadProjectLedgerRecordsAcrossRoots(
+  archiveRoots,
+  activeProject,
+  options = {}
+) {
+  const roots = uniquePaths(archiveRoots);
+  const projectId = String(activeProject?.projectId || '').trim();
+  const projectName = normalizeProjectName(activeProject?.projectName);
+  if (!projectId || !projectName) throw new TypeError('当前项目无效。');
+  const loader = options.loadLedgerRecords || loadLedgerRecords;
+  const records = [];
+  const ledgerPaths = [];
+  let failedCount = 0;
+  for (const archiveRoot of roots) {
+    try {
+      const result = await loader(archiveRoot);
+      if (result?.ledgerPath) ledgerPaths.push(result.ledgerPath);
+      for (const record of result?.records || []) {
+        const matchesProject = record.projectId
+          ? String(record.projectId).trim() === projectId
+          : normalizeProjectName(record.project) === projectName;
+        if (!matchesProject) continue;
+        records.push({
+          ...record,
+          id: `${Buffer.from(archiveRoot).toString('base64url')}:${record.rowNumber}`,
+          archiveRoot,
+          archiveDirectory: record.archiveDirectory
+            || path.dirname(record.archivePath || archiveRoot)
+        });
+      }
+    } catch {
+      failedCount += 1;
+    }
+  }
+  return {
+    success: true,
+    archiveRoots: roots,
+    ledgerPaths,
+    missingLedger: ledgerPaths.length === 0 || records.length === 0,
+    records,
+    failedCount
+  };
+}
+
 function normalizeLedgerRow(row, index, archiveRoot) {
   const sourceRow = repairCurrentRowUnderLegacyHeaders(row);
   const record = {};
@@ -118,6 +164,8 @@ function normalizeLedgerRow(row, index, archiveRoot) {
     rowNumber: index + 2,
     ...record,
     date: normalizeDate(record.date),
+    archiveRoot,
+    archiveDirectory: archivePath ? path.dirname(archivePath) : '',
     archivePath,
     fileExists,
     fileStatus: archivePath ? (fileExists ? '文件存在' : '文件缺失') : '文件缺失',
@@ -169,6 +217,28 @@ function normalizeDate(value) {
   if (Number.isNaN(date.getTime())) return text;
   const pad = (number) => String(number).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function normalizeProjectName(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/\u3000/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function uniquePaths(values) {
+  const seen = new Set();
+  return (Array.isArray(values) ? values : []).reduce((result, value) => {
+    const text = String(value || '').trim();
+    if (!text) return result;
+    const normalized = path.resolve(text);
+    const key = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return result;
+    seen.add(key);
+    result.push(normalized);
+    return result;
+  }, []);
 }
 
 async function exportLedgerRecords(filePath, records = []) {
@@ -336,4 +406,9 @@ function formatTimestamp(date) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}_${pad(date.getMilliseconds(), 3)}`;
 }
 
-module.exports = { loadLedgerRecords, exportLedgerRecords, deleteLedgerRecords };
+module.exports = {
+  deleteLedgerRecords,
+  exportLedgerRecords,
+  loadLedgerRecords,
+  loadProjectLedgerRecordsAcrossRoots
+};
