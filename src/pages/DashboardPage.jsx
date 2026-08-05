@@ -4,7 +4,6 @@ import { APP_NAME, NAV_GROUPS, PAGE_KEYS, VERSION_SUMMARY } from '../constants/a
 import { recordRuntimeLog } from '../utils/runtimeLogger.js';
 
 const QUICK_ENTRIES = [
-  { key: PAGE_KEYS.markiImport, title: '马克照片导入', text: '按团队、成员和时间查询马克平台照片，选择后安全导入现有分拣工作台。' },
   { key: PAGE_KEYS.sortWorkspace, title: '照片分拣工作台', text: '导入物业工作照片，支持智能分拣架构和手动归档流程，后续可基于水印识别自动生成事项组和归档建议。' },
   { key: PAGE_KEYS.searchCenter, title: '归档记录', text: '查询、核对历史照片并导出筛选结果。' },
   { key: PAGE_KEYS.reportCenter, title: '资料汇总中心', text: '按项目、分类、责任部门和整改状态汇总资料。' },

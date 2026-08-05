@@ -12,7 +12,8 @@ export default function App() {
   const [navigationRequest, setNavigationRequest] = useState({ page: PAGE_KEYS.dashboard, action: '', payload: null, nonce: 0 });
 
   function handleNavigate(target) {
-    const request = typeof target === 'string' ? { page: target } : target;
+    const rawRequest = typeof target === 'string' ? { page: target } : target;
+    const request = normalizeNavigationRequest(rawRequest);
     if (!request?.page) return;
     setCurrentPage(request.page);
     setNavigationRequest({ page: request.page, action: request.action || '', payload: request.payload || null, nonce: Date.now() });
@@ -36,4 +37,25 @@ export default function App() {
       </AppLayout>
     </RuntimeErrorBoundary>
   );
+}
+
+function normalizeNavigationRequest(request) {
+  if (!request || typeof request !== 'object') return request;
+  if (request.page === PAGE_KEYS.markiImport) {
+    return {
+      ...request,
+      page: PAGE_KEYS.sortWorkspace,
+      action: 'openMarkiPanel',
+      payload: { tab: 'query' }
+    };
+  }
+  if (request.action === 'openMarkiRecovery' || request.action === 'showMarkiRecovery') {
+    return {
+      ...request,
+      page: PAGE_KEYS.sortWorkspace,
+      action: 'openMarkiPanel',
+      payload: { ...(request.payload || {}), tab: 'recovery' }
+    };
+  }
+  return request;
 }

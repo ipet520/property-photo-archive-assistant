@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import MarkiRehydrateDialog from '../components/MarkiRehydrateDialog.jsx';
+import MarkiPhotoImportPanel from '../components/MarkiPhotoImportPanel.jsx';
 import ThumbnailHoverPreview from '../components/ThumbnailHoverPreview.jsx';
 import {
   SMART_SORT_CONFIDENCE_LABELS,
@@ -50,11 +50,8 @@ import {
   hasArchivedPhotoState,
   isPhotoWorkflowActionable
 } from '../utils/photoWorkflowStage.js';
-import {
-  buildMarkiRecoveryCompletionNotice,
-  summarizeMarkiRecoveryCandidates
-} from '../utils/markiRecoveryDialog.js';
 import { prepareMarkiWorkspaceFileRepairs } from '../utils/markiImportLifecycle.js';
+import useMarkiPhotoWorkspace from '../hooks/useMarkiPhotoWorkspace.js';
 import {
   buildSortWorkspaceManualDraft,
   buildSortWorkspaceSnapshotWorkspace,
@@ -294,11 +291,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [recognitionServiceStatus, setRecognitionServiceStatus] = useState(null);
   const [rightPanelMode, setRightPanelMode] = useState(() => ['form', 'recognition'].includes(cachedSession.rightPanelMode) ? cachedSession.rightPanelMode : 'form');
   const [batchPreparationUndo, setBatchPreparationUndo] = useState(() => cachedSession.batchPreparationUndo || null);
-  const [showMarkiRecovery, setShowMarkiRecovery] = useState(false);
-  const [markiRecoveryCandidates, setMarkiRecoveryCandidates] = useState([]);
-  const [selectedMarkiRecoveryTokens, setSelectedMarkiRecoveryTokens] = useState([]);
-  const [isMarkiRecoveryBusy, setIsMarkiRecoveryBusy] = useState(false);
-  const [markiRecoveryNotice, setMarkiRecoveryNotice] = useState({ type: 'idle', text: '' });
+  const [markiPanelInitialized, setMarkiPanelInitialized] = useState(false);
+  const [markiPanelOpen, setMarkiPanelOpen] = useState(false);
+  const [markiPanelTab, setMarkiPanelTab] = useState('query');
+
+  const markiWorkspace = useMarkiPhotoWorkspace({
+    archiveState,
+    enabled: markiPanelInitialized,
+    onBatchReady: appendMarkiBatchToCurrentWorkspace,
+    getCurrentWorkspace: () => markiWorkbenchStateRef.current,
+    saveWorkspaceSnapshot: saveAutomaticSnapshotImmediately,
+    restoreWorkspaceSnapshot: applyAutomaticSnapshotWorkspace,
+    onWorkspaceStatus: setStatus,
+    externalBusy: isBusy
+  });
 
   markiWorkbenchStateRef.current = buildSortWorkspaceSnapshotWorkspace({
     activeProject,
@@ -679,24 +685,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       isBusy
       || isSmartSortBusy
       || isRecognitionBusy
-      || isMarkiRecoveryBusy
+      || markiWorkspace.controller.isBusy()
     ),
     flush: async () => {
       const workspace = markiWorkbenchStateRef.current;
       if (!workspace) return { success: true };
       return saveAutomaticSnapshotImmediately(workspace);
     },
-    clear: () => {
+    clear: async () => {
       sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
       sessionSnapshotRef.current = null;
       markiWorkbenchStateRef.current = null;
+      await markiWorkspace.controller.clear();
     }
   }), [
     archiveState?.registerProjectWorkspaceController,
     isBusy,
-    isMarkiRecoveryBusy,
     isRecognitionBusy,
     isSmartSortBusy,
+    markiWorkspace.controller,
     projectCacheKey
   ]);
 
@@ -967,7 +974,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     smartSortGroupMember: smartSortGroupPhotoIds.has(currentPanelPhoto?.id)
   });
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
-  const batchActionsBusy = isBusy || isRecognitionBusy || isSmartSortBusy || isMarkiRecoveryBusy;
+  const markiPanelBusy = markiWorkspace.controller.isBusy();
+  const batchActionsBusy = isBusy || isRecognitionBusy || isSmartSortBusy || markiPanelBusy;
   const smartSortProgressVisible = isRecognitionBusy || isSmartSortBusy;
   const smartSortProgressPercent = isSmartSortBusy
     ? 92
@@ -1026,62 +1034,58 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (currentPhotoId !== activePhotoId) setActivePhotoId(currentPhotoId);
   }, [activePhotoId, currentPanelPhoto?.id]);
 
-  useEffect(() => {
-    if (!isSessionHydrated || navigationRequest?.action !== 'appendMarkiImportBatch') return undefined;
-    const batchId = typeof navigationRequest?.payload?.batchId === 'string'
-      ? navigationRequest.payload.batchId.trim()
-      : '';
-    const nonce = navigationRequest?.nonce;
-    if (!batchId || nonce === undefined || nonce === null || nonce === '') return undefined;
-    const nonceKey = `${typeof nonce}:${String(nonce)}`;
-    if (processedMarkiImportRequestNoncesRef.current.has(nonceKey)) return undefined;
-    processedMarkiImportRequestNoncesRef.current.add(nonceKey);
+  async function appendMarkiBatchToCurrentWorkspace(batchId) {
+    const safeBatchId = String(batchId || '').trim();
+    const markiApi = window.archiveAssistant?.marki;
+    if (!safeBatchId) return { success: false, error: { message: '马克导入批次编号无效。' } };
+    if (typeof markiApi?.getImportBatch !== 'function' || typeof markiApi?.consumeImportBatch !== 'function') {
+      const error = { message: '马克导入批次服务暂不可用，请重新打开软件后再试。' };
+      setStatus({ type: 'error', text: error.message });
+      return { success: false, error };
+    }
 
-    void (async () => {
-      const markiApi = window.archiveAssistant?.marki;
-      if (typeof markiApi?.getImportBatch !== 'function' || typeof markiApi?.consumeImportBatch !== 'function') {
-        if (isSortWorkspaceMountedRef.current) {
-          setStatus({ type: 'error', text: '马克导入批次服务暂不可用，请重新打开软件后再试。' });
-        }
-        return;
-      }
-
+    setIsBusy(true);
+    try {
       let batchResult;
       try {
-        batchResult = await markiApi.getImportBatch(batchId, activeProject);
+        batchResult = await markiApi.getImportBatch(safeBatchId, activeProject);
       } catch {
-        if (isSortWorkspaceMountedRef.current) {
-          setStatus({ type: 'error', text: '读取马克导入批次失败，请重试。' });
-        }
-        return;
+        const error = { message: '读取马克导入批次失败，请重试。' };
+        setStatus({ type: 'error', text: error.message });
+        return { success: false, error };
       }
-      if (!isSortWorkspaceMountedRef.current) return;
+      if (!isSortWorkspaceMountedRef.current) return { success: false, error: { message: '当前工作台已关闭。' } };
       if (batchResult?.success === false) {
-        setStatus({ type: 'error', text: getSafeMarkiImportMessage(batchResult, '读取马克导入批次失败，请重试。') });
-        return;
+        const error = { message: getSafeMarkiImportMessage(batchResult, '读取马克导入批次失败，请重试。') };
+        setStatus({ type: 'error', text: error.message });
+        return { success: false, error };
       }
       if (batchResult?.status === 'preparing') {
-        setStatus({ type: 'idle', text: '导入批次仍在准备，请稍后重新发起导入。' });
-        return;
+        const error = { message: '导入批次仍在准备，请稍后重新发起导入。' };
+        setStatus({ type: 'idle', text: error.message });
+        return { success: false, error };
       }
       if (batchResult?.status === 'failed') {
-        setStatus({ type: 'warning', text: `马克导入批次处理失败 ${Number(batchResult.failedCount) || 0} 项，可重新发起导入。` });
-        return;
+        const error = { message: `马克导入批次处理失败 ${Number(batchResult.failedCount) || 0} 项，可重新发起导入。` };
+        setStatus({ type: 'warning', text: error.message });
+        return { success: false, error };
       }
       if (batchResult?.status === 'consumed') {
-        setStatus({ type: 'warning', text: '该马克导入批次已经处理。' });
-        return;
+        const error = { message: '该马克导入批次已经处理。' };
+        setStatus({ type: 'warning', text: error.message });
+        return { success: false, error };
       }
       if (batchResult?.status !== 'ready' || !batchResult.workbenchImportPackage) {
-        setStatus({ type: 'error', text: '马克导入批次状态无效，请重新发起导入。' });
-        return;
+        const error = { message: '马克导入批次状态无效，请重新发起导入。' };
+        setStatus({ type: 'error', text: error.message });
+        return { success: false, error };
       }
 
-      let transactionResult;
       const repairPreparation = prepareMarkiWorkspaceFileRepairs(
         markiWorkbenchStateRef.current,
         batchResult.workbenchImportPackage
       );
+      let transactionResult;
       try {
         transactionResult = await persistMarkiWorkbenchImport({
           currentWorkspace: repairPreparation.workspace,
@@ -1097,7 +1101,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             })
           ),
           saveSnapshot: (workspace) => saveAutomaticSnapshotImmediately(workspace),
-          consumeBatch: () => markiApi.consumeImportBatch(batchId, activeProject),
+          consumeBatch: () => markiApi.consumeImportBatch(safeBatchId, activeProject),
           commitWorkspace: (merged, workspace) => {
             if (!isSortWorkspaceMountedRef.current) return;
             markiWorkbenchStateRef.current = workspace;
@@ -1110,10 +1114,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             };
             sessionSnapshotRef.current = nextSession;
             sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
-            if (
-              merged.stats.addedCount > 0
-              && workspace.smartSortViewMode !== 'smartSortGroup'
-            ) {
+            if (merged.stats.addedCount > 0 && workspace.smartSortViewMode !== 'smartSortGroup') {
               pendingMarkiFocusPhotoIdRef.current = merged.addedPhotoIds[0];
             }
             setPhotos(workspace.photos);
@@ -1129,50 +1130,70 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             setSearchText(workspace.searchText);
             setSmartSortViewMode(workspace.smartSortViewMode);
             setActiveSmartSortGroupId(workspace.activeSmartSortGroupId);
-            if (merged.stats.addedCount > 0 || repairPreparation.repairedCount > 0) {
-              setHasUnsavedChanges(true);
-            }
+            if (merged.stats.addedCount > 0 || repairPreparation.repairedCount > 0) setHasUnsavedChanges(true);
           }
         });
       } catch {
-        setStatus({ type: 'error', text: '马克工作台导入包校验失败，未修改当前工作台。' });
-        return;
+        const error = { message: '马克工作台导入包校验失败，未修改当前工作台。' };
+        setStatus({ type: 'error', text: error.message });
+        return { success: false, error };
       }
-      if (!isSortWorkspaceMountedRef.current) return;
+      if (!isSortWorkspaceMountedRef.current) return { success: false, error: { message: '当前工作台已关闭。' } };
       if (transactionResult.stage === 'snapshot') {
-        setStatus({
-          type: 'error',
-          text: '马克照片尚未加入工作台：自动快照保存失败，导入批次仍可重试。'
-        });
-        return;
-      }
-      if (transactionResult.consumeResult?.success !== true) {
-        setStatus({
-          type: 'warning',
-          text: '照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。'
-        });
-        return;
+        const error = { message: '马克照片尚未加入工作台：自动快照保存失败，导入批次仍可重试。' };
+        setStatus({ type: 'error', text: error.message });
+        return { success: false, error };
       }
 
       const merged = transactionResult.merged;
       const { addedCount, duplicateCount, conflictCount } = merged.stats;
+      if (transactionResult.consumeResult?.success !== true) {
+        setStatus({ type: 'warning', text: '照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。' });
+        return {
+          success: true,
+          consumeFailed: true,
+          addedCount,
+          duplicateCount,
+          conflictCount,
+          failureCount: 0
+        };
+      }
       if (repairPreparation.repairedCount > 0 && addedCount === 0 && conflictCount === 0) {
-        setStatus({
-          type: 'success',
-          text: `已修复 ${repairPreparation.repairedCount} 张马克照片文件；照片编号、识别结果和人工草稿保持不变。`
-        });
-        return;
-      }
-      if (addedCount === 0 && duplicateCount > 0 && conflictCount === 0) {
+        setStatus({ type: 'success', text: `已修复 ${repairPreparation.repairedCount} 张马克照片文件；照片编号、识别结果和人工草稿保持不变。` });
+      } else if (addedCount === 0 && duplicateCount > 0 && conflictCount === 0) {
         setStatus({ type: 'success', text: '本批照片均已存在，未重复追加。' });
-        return;
+      } else {
+        setStatus({
+          type: conflictCount > 0 ? 'warning' : 'success',
+          text: `已追加 ${addedCount} 张马克照片；跳过 ${duplicateCount} 张重复照片、${conflictCount} 张冲突照片。`
+        });
       }
-      setStatus({
-        type: conflictCount > 0 ? 'warning' : 'success',
-        text: `已追加 ${addedCount} 张马克照片；跳过 ${duplicateCount} 张重复照片、${conflictCount} 张冲突照片。`
-      });
-    })();
+      return { success: true, addedCount, duplicateCount, conflictCount, failureCount: 0 };
+    } finally {
+      if (isSortWorkspaceMountedRef.current) setIsBusy(false);
+    }
+  }
 
+  useEffect(() => {
+    if (!navigationRequest?.nonce || navigationRequest.action !== 'openMarkiPanel') return;
+    setMarkiPanelInitialized(true);
+    setMarkiPanelTab(navigationRequest.payload?.tab || 'query');
+    setMarkiPanelOpen(true);
+    if (navigationRequest.payload?.tab === 'recovery') void markiWorkspace.recovery.onRefresh();
+  }, [navigationRequest?.nonce]);
+
+  useEffect(() => {
+    if (!isSessionHydrated || navigationRequest?.action !== 'appendMarkiImportBatch') return undefined;
+    const batchId = typeof navigationRequest?.payload?.batchId === 'string'
+      ? navigationRequest.payload.batchId.trim()
+      : '';
+    const nonce = navigationRequest?.nonce;
+    if (!batchId || nonce === undefined || nonce === null || nonce === '') return undefined;
+    const nonceKey = `${typeof nonce}:${String(nonce)}`;
+    if (processedMarkiImportRequestNoncesRef.current.has(nonceKey)) return undefined;
+    processedMarkiImportRequestNoncesRef.current.add(nonceKey);
+
+    void appendMarkiBatchToCurrentWorkspace(batchId);
     return undefined;
   }, [isSessionHydrated, navigationRequest]);
 
@@ -1395,179 +1416,28 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setHasUnsavedChanges(true);
   }
 
-  async function scanDownloadedMarkiPhotos() {
-    if (isMarkiRecoveryBusy) return;
-    setIsMarkiRecoveryBusy(true);
-    setShowMarkiRecovery(true);
-    setMarkiRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
-    setStatus({ type: 'idle', text: '正在核对已下载的马克照片...' });
-    try {
-      const snapshotResult = await saveAutomaticSnapshotImmediately(
-        markiWorkbenchStateRef.current
-      );
-      if (snapshotResult?.success !== true) {
-        setStatus({
-          type: 'error',
-          text: '当前工作台快照保存失败，已停止扫描以避免重复照片。'
-        });
-        setMarkiRecoveryNotice({
-          type: 'error',
-          text: '当前工作台快照保存失败，已停止核对以避免重复照片。'
-        });
-        return;
-      }
-      const markiApi = window.archiveAssistant?.marki;
-      if (typeof markiApi?.scanWorkbenchRecoveryCandidates !== 'function') {
-        setStatus({ type: 'error', text: '马克照片恢复服务暂不可用，请重新打开软件后再试。' });
-        setMarkiRecoveryNotice({
-          type: 'error',
-          text: 'Marki 照片恢复服务暂不可用，请重新打开软件后再试。'
-        });
-        return;
-      }
-      const result = await markiApi.scanWorkbenchRecoveryCandidates(activeProject);
-      if (result?.success !== true) {
-        setMarkiRecoveryCandidates([]);
-        setSelectedMarkiRecoveryTokens([]);
-        setStatus({
-          type: 'error',
-          text: result?.error?.message || '已下载马克照片扫描失败，请重试。'
-        });
-        setMarkiRecoveryNotice({
-          type: 'error',
-          text: result?.error?.message || '已下载 Marki 照片核对失败，请重试。'
-        });
-        return;
-      }
-      const items = Array.isArray(result.items) ? result.items : [];
-      const summary = summarizeMarkiRecoveryCandidates(items);
-      const recoverableCount = summary.recoverable;
-      const abnormalCount = summary.missingFile + summary.abnormal;
-      setMarkiRecoveryCandidates(items);
-      setSelectedMarkiRecoveryTokens([]);
-      setMarkiRecoveryNotice({
-        type: abnormalCount > 0 ? 'warning' : 'success',
-        text: recoverableCount > 0
-          ? `发现 ${recoverableCount} 张可恢复照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常` : ''}。`
-          : `当前没有可恢复照片${abnormalCount > 0 ? `，检测到 ${abnormalCount} 项异常` : ''}。`
-      });
-      setStatus({
-        type: abnormalCount > 0 ? 'warning' : 'success',
-        text: recoverableCount > 0
-          ? `发现 ${recoverableCount} 张已下载但不在工作台的马克照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常需核对` : ''}。`
-          : `没有发现可恢复的马克照片${abnormalCount > 0 ? `；检测到 ${abnormalCount} 项异常来源资料` : ''}。`
-      });
-    } catch {
-      setMarkiRecoveryNotice({ type: 'error', text: '已下载 Marki 照片核对失败，请重试。' });
-      setStatus({ type: 'error', text: '已下载马克照片扫描失败，请重试。' });
-    } finally {
-      setIsMarkiRecoveryBusy(false);
-    }
-  }
-
   function closeMoreMenu() {
     if (moreMenuRef.current) moreMenuRef.current.open = false;
   }
 
-  function openMarkiRecoveryDialog() {
+  function openMarkiPanel(tab = 'query') {
     closeMoreMenu();
-    if (showMarkiRecovery) return;
-    setShowMarkiRecovery(true);
-    setMarkiRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
-    void scanDownloadedMarkiPhotos();
+    setMarkiPanelInitialized(true);
+    setMarkiPanelTab(tab);
+    setMarkiPanelOpen(true);
+    if (tab === 'recovery') void markiWorkspace.recovery.onRefresh();
   }
 
-  function closeMarkiRecoveryDialog() {
-    if (isMarkiRecoveryBusy) return;
-    setShowMarkiRecovery(false);
-  }
-
-  function toggleMarkiRecoverySelection(recoveryToken) {
-    setSelectedMarkiRecoveryTokens((current) => (
-      current.includes(recoveryToken)
-        ? current.filter((token) => token !== recoveryToken)
-        : [...current, recoveryToken]
-    ));
-  }
-
-  async function recoverDownloadedMarkiPhotos(recoveryTokens = selectedMarkiRecoveryTokens) {
-    const safeRecoveryTokens = Array.from(new Set(
-      (Array.isArray(recoveryTokens) ? recoveryTokens : [])
-        .map((token) => String(token || '').trim())
-        .filter(Boolean)
-    ));
-    if (isMarkiRecoveryBusy || safeRecoveryTokens.length === 0) return;
-    setIsMarkiRecoveryBusy(true);
-    setMarkiRecoveryNotice({ type: 'idle', text: '正在恢复选中的 Marki 照片...' });
-    setStatus({ type: 'idle', text: '正在恢复已下载的马克照片...' });
-    try {
-      const markiApi = window.archiveAssistant?.marki;
-      const result = await markiApi?.recoverWorkbenchCandidates?.({
-        recoveryTokens: safeRecoveryTokens,
-        activeProject
-      });
-      if (result?.success !== true) {
-        setMarkiRecoveryNotice({
-          type: 'error',
-          text: result?.error?.message || '恢复已下载 Marki 照片失败，请重试。'
-        });
-        setStatus({
-          type: 'error',
-          text: result?.error?.message || '恢复已下载马克照片失败，请重试。'
-        });
-        return;
-      }
-      if (result.status === 'nothing_to_recover') {
-        const recoveredTokens = new Set(safeRecoveryTokens);
-        setMarkiRecoveryCandidates((current) => current.map((item) => (
-          recoveredTokens.has(item.recoveryToken)
-            ? { ...item, status: 'already_in_workbench' }
-            : item
-        )));
-        setSelectedMarkiRecoveryTokens([]);
-        setMarkiRecoveryNotice({ type: 'success', text: '所选照片已在当前工作台中，未重复恢复。' });
-        setStatus({ type: 'success', text: '所选马克照片已在当前工作台中，未重复恢复。' });
-        return;
-      }
-      const snapshotResult = await window.archiveAssistant.loadSortWorkspaceSnapshot(activeProject);
-      if (
-        snapshotResult?.success !== true
-        || snapshotResult?.found !== true
-        || !snapshotResult.snapshot?.workspace
-      ) {
-        setStatus({
-          type: 'warning',
-          text: '马克照片已写入自动快照，但界面刷新失败；重新进入工作台即可恢复。'
-        });
-        setMarkiRecoveryNotice({
-          type: 'warning',
-          text: '照片已写入自动快照，但界面刷新失败；重新进入工作台即可恢复。'
-        });
-        return;
-      }
-      applyAutomaticSnapshotWorkspace(snapshotResult.snapshot.workspace);
-      const recoveredTokens = new Set(safeRecoveryTokens);
-      setMarkiRecoveryCandidates((current) => current.map((item) => (
-        recoveredTokens.has(item.recoveryToken)
-          ? { ...item, status: 'already_in_workbench' }
-          : item
-      )));
-      setSelectedMarkiRecoveryTokens([]);
-      const completionNotice = buildMarkiRecoveryCompletionNotice(result);
-      setMarkiRecoveryNotice({
-        type: Number(result.conflictCount) > 0 ? 'warning' : 'success',
-        text: completionNotice
-      });
-      setStatus({
-        type: Number(result.conflictCount) > 0 ? 'warning' : 'success',
-        text: completionNotice
-      });
-    } catch {
-      setMarkiRecoveryNotice({ type: 'error', text: '恢复已下载 Marki 照片失败，请重试。' });
-      setStatus({ type: 'error', text: '恢复已下载马克照片失败，请重试。' });
-    } finally {
-      setIsMarkiRecoveryBusy(false);
+  function changeMarkiPanelTab(tab) {
+    setMarkiPanelTab(tab);
+    if (tab === 'recovery' && markiWorkspace.recovery.items.length === 0 && !markiWorkspace.recovery.busy) {
+      void markiWorkspace.recovery.onRefresh();
     }
+  }
+
+  function closeMarkiPanel() {
+    if (batchActionsBusy) return;
+    setMarkiPanelOpen(false);
   }
 
   // Only source-state mutations invalidate the one-step batch undo snapshot.
@@ -3360,7 +3230,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     if (missingLocalPhotos.length === 0) {
       setStatus({
         type: 'warning',
-        text: '缺失项均为 Marki 照片，请回到“马克照片导入”重新查询并执行可信修复。'
+        text: '缺失项均为 Marki 照片，请打开工作台“马克照片”面板重新查询并执行可信修复。'
       });
       return;
     }
@@ -4006,6 +3876,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
             <div className="sort-toolbar-main-row">
               <div className="sort-toolbar-group sort-toolbar-import-group">
               <button type="button" className="primary orange" title={localPhotoEntryState.buttonTitle} disabled={batchActionsBusy || !isSessionHydrated} onClick={importOrScanPhotos}>{localPhotoEntryState.buttonLabel}</button>
+              <button type="button" className="marki-toolbar-entry" title="打开马克照片导入与管理" disabled={batchActionsBusy} onClick={() => openMarkiPanel('query')}>马克照片</button>
               <button type="button" title="清空当前照片列表" onClick={clearList} disabled={photos.length === 0 || batchActionsBusy}>清空</button>
               </div>
               <div className="sort-toolbar-group sort-toolbar-select-group">
@@ -4036,8 +3907,6 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                   <span className="sort-toolbar-more-label">归档进度</span>
                   <button type="button" title="保存当前分拣进度" onClick={saveDraft} disabled={photos.length === 0 || batchActionsBusy}>保存</button>
                   <button type="button" title="恢复已保存的分拣进度" onClick={loadDraft} disabled={!hasSavedDraft || batchActionsBusy}>恢复</button>
-                  <span className="sort-toolbar-more-label">马克照片</span>
-                  <button type="button" className="wide marki-recovery-menu-action" title="核对并恢复已下载、但未进入工作台的 Marki 照片" onClick={openMarkiRecoveryDialog} disabled={batchActionsBusy}>恢复 Marki 照片</button>
                 </div>
               </details>
             </div>
@@ -4484,18 +4353,20 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
           isBusy={isBusy}
         />
       )}
-      <MarkiRehydrateDialog
-        open={showMarkiRecovery}
-        items={markiRecoveryCandidates}
-        selectedTokens={selectedMarkiRecoveryTokens}
-        busy={isMarkiRecoveryBusy}
-        notice={markiRecoveryNotice}
-        onToggle={toggleMarkiRecoverySelection}
-        onRefresh={scanDownloadedMarkiPhotos}
-        onRecoverSelected={() => recoverDownloadedMarkiPhotos(selectedMarkiRecoveryTokens)}
-        onRecoverAll={recoverDownloadedMarkiPhotos}
-        onClose={closeMarkiRecoveryDialog}
-      />
+      {markiPanelInitialized && (
+        <MarkiPhotoImportPanel
+          open={markiPanelOpen}
+          activeTab={markiPanelTab}
+          onTabChange={changeMarkiPanelTab}
+          onClose={closeMarkiPanel}
+          workspace={markiWorkspace}
+          onOpenSettings={() => onNavigate({ page: PAGE_KEYS.settings, action: 'settings-marki' })}
+          recovery={{
+            ...markiWorkspace.recovery,
+            onClose: closeMarkiPanel
+          }}
+        />
+      )}
       </>
     </div>
   );

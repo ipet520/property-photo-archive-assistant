@@ -182,6 +182,30 @@ export async function cleanupMarkiImportCache(batchId, activeProject) {
   return callMarkiLocalMethod('cleanupImportCache', [batchId, activeProject], '马克下载缓存清理失败。');
 }
 
+export async function scanMarkiWorkbenchRecoveryCandidates(activeProject) {
+  const api = getMarkiApi();
+  if (!api?.scanWorkbenchRecoveryCandidates) {
+    return createUnavailableResult('马克照片恢复扫描接口不可用。');
+  }
+  try {
+    return await api.scanWorkbenchRecoveryCandidates(activeProject);
+  } catch {
+    return createUnavailableResult('已下载马克照片核对失败。');
+  }
+}
+
+export async function recoverMarkiWorkbenchCandidates(input = {}) {
+  const api = getMarkiApi();
+  if (!api?.recoverWorkbenchCandidates) {
+    return createUnavailableResult('马克照片恢复接口不可用。');
+  }
+  try {
+    return await api.recoverWorkbenchCandidates(input);
+  } catch {
+    return createUnavailableResult('恢复已下载马克照片失败。');
+  }
+}
+
 export function createMarkiReadyBatchRefresh(
   requestReadyBatches = listReadyMarkiImportBatches
 ) {
@@ -234,9 +258,9 @@ export function normalizeReadyBatchRefreshResult(result) {
     failedCount,
     notice: {
       type: items.length > 0 ? 'success' : 'info',
-      text: items.length > 0
-        ? `已刷新，找到 ${items.length} 个待进入工作台的导入批次。`
-        : '当前没有待进入工作台的导入批次。'
+        text: items.length > 0
+          ? `已刷新，找到 ${items.length} 个待加入照片池的导入批次。`
+          : '当前没有待加入照片池的导入批次。'
     }
   };
 }

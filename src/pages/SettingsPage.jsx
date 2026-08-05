@@ -531,7 +531,7 @@ function MarkiSettingsPanel({
       <header>
         <p className="eyebrow">马克开放平台</p>
         <h2>组织配置与连接诊断</h2>
-        <p>团队、成员和照片筛选统一在“马克照片导入”页面进行；这里仅维护安全凭证并检查连接状态。</p>
+        <p>团队、成员和照片筛选统一在照片分拣工作台的“马克照片”面板进行；这里仅维护安全凭证并检查连接状态。</p>
       </header>
 
       <div className="settings-protection-note">

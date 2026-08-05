@@ -4795,7 +4795,7 @@ async function checkMarkiReadyBatchRefresh() {
   assert.equal(empty.success, true, '空 ready 列表应视为成功刷新');
   assert.deepEqual(empty.items, [], '空 ready 列表应保持空数组');
   assert.equal(empty.notice.type, 'info', '空 ready 列表应显示空结果提示');
-  assert.match(empty.notice.text, /当前没有待进入工作台/, '空 ready 列表提示应明确当前无批次');
+  assert.match(empty.notice.text, /当前没有待加入照片池/, '空 ready 列表提示应明确当前无批次');
 
   const available = normalizeReadyBatchRefreshResult({
     success: true,
@@ -8619,6 +8619,9 @@ async function checkMarkiWorkbenchImport() {
   const glueStart = workspaceSource.indexOf("navigationRequest?.action !== 'appendMarkiImportBatch'");
   const glueEnd = workspaceSource.indexOf('}, [isSessionHydrated, navigationRequest]);', glueStart);
   const glueSource = workspaceSource.slice(glueStart, glueEnd);
+  const appendStart = workspaceSource.indexOf('async function appendMarkiBatchToCurrentWorkspace');
+  const appendEnd = workspaceSource.indexOf('\n  useEffect(() => {', appendStart);
+  const appendSource = workspaceSource.slice(appendStart, appendEnd);
 
   assert.equal(
     (mainRouterSource.match(/<SortWorkspacePage[^>]*navigationRequest=\{navigationRequest\}[^>]*\/>/g) || []).length,
@@ -8636,26 +8639,26 @@ async function checkMarkiWorkbenchImport() {
   scenarioCount += 1;
 
   assert.equal(
-    glueSource.indexOf('getImportBatch(batchId, activeProject)') < glueSource.indexOf('persistMarkiWorkbenchImport({')
-      && glueSource.indexOf('persistMarkiWorkbenchImport({')
-        < glueSource.indexOf('consumeImportBatch(batchId, activeProject)'),
+    appendSource.indexOf('getImportBatch(safeBatchId, activeProject)') < appendSource.indexOf('persistMarkiWorkbenchImport({')
+      && appendSource.indexOf('persistMarkiWorkbenchImport({')
+        < appendSource.indexOf('consumeImportBatch(safeBatchId, activeProject)'),
     true,
-    '页面粘合层必须先查询，再通过持久化事务合并并消费批次'
+    '工作台唯一追加函数必须先查询，再通过持久化事务合并并消费批次'
   );
   scenarioCount += 1;
 
-  const mergeCallIndex = glueSource.indexOf('persistMarkiWorkbenchImport({');
+  const mergeCallIndex = appendSource.indexOf('persistMarkiWorkbenchImport({');
   assert.equal(
     mergeCallIndex >= 0
-      && /catch\s*\{[\s\S]*工作台导入包校验失败，未修改当前工作台。[\s\S]*return;[\s\S]*\}/.test(glueSource.slice(mergeCallIndex)),
+      && /catch\s*\{[\s\S]*工作台导入包校验失败，未修改当前工作台。[\s\S]*return\s*\{\s*success:\s*false[\s\S]*\}/.test(appendSource.slice(mergeCallIndex)),
     true,
     '纯合并异常必须在消费前返回'
   );
   scenarioCount += 1;
 
-  const addedBranch = glueSource.slice(
-    glueSource.indexOf('prepareWorkspace:'),
-    glueSource.indexOf('saveSnapshot:')
+  const addedBranch = appendSource.slice(
+    appendSource.indexOf('prepareWorkspace:'),
+    appendSource.indexOf('saveSnapshot:')
   );
   assert.equal(
     addedBranch.includes('prepareWorkspaceAfterPhotoAppend({'),
@@ -8674,12 +8677,12 @@ async function checkMarkiWorkbenchImport() {
   );
   scenarioCount += 1;
 
-  assert.equal(glueSource.includes('setSortMode('), false, '马克批次合并不得修改当前 sortMode');
+  assert.equal(appendSource.includes('setSortMode('), false, '马克批次合并不得修改当前 sortMode');
   scenarioCount += 1;
 
-  const consumeFailureBranch = glueSource.slice(
-    glueSource.indexOf("if (transactionResult.consumeResult?.success !== true)"),
-    glueSource.indexOf('const { addedCount, duplicateCount, conflictCount }')
+  const consumeFailureBranch = appendSource.slice(
+    appendSource.indexOf("if (transactionResult.consumeResult?.success !== true)"),
+    appendSource.indexOf('if (repairPreparation.repairedCount > 0')
   );
   assert.equal(
     consumeFailureBranch.includes('照片已追加，但批次消费状态未更新；再次处理时会按 sourceKey 自动去重。'),
@@ -8703,7 +8706,7 @@ async function checkMarkiWorkbenchImport() {
     'antiCounterfeitCode',
     '.stack'
   ]) {
-    assert.equal(glueSource.includes(forbidden), false, `页面批次处理不得记录或展示 ${forbidden}`);
+    assert.equal(appendSource.includes(forbidden), false, `页面批次处理不得记录或展示 ${forbidden}`);
   }
   scenarioCount += 1;
 
@@ -9978,14 +9981,18 @@ async function checkMarkiWorkbenchRehydration(root) {
     clientSource,
     mainSource,
     preloadSource,
-    pageSource
+    pageSource,
+    panelSource,
+    hookSource
   ] = await Promise.all([
     fs.readFile(path.join(process.cwd(), 'electron/services/markiWorkbenchRehydrateService.cjs'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/services/markiWorkbenchImportCore.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/utils/markiWorkbenchImport.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8')
+    fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/components/MarkiPhotoImportPanel.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/hooks/useMarkiPhotoWorkspace.js'), 'utf8')
   ]);
   check(!serviceSource.includes('downloadMarkiPhoto'), '恢复服务不得调用照片下载服务');
   counters.sourceContractCount += 1;
@@ -10015,10 +10022,11 @@ async function checkMarkiWorkbenchRehydration(root) {
   );
   counters.sourceContractCount += 1;
   check(
-    pageSource.includes('恢复 Marki 照片')
-      && pageSource.includes('recoveryTokens: safeRecoveryTokens')
+    panelSource.includes('异常与恢复')
+      && pageSource.includes('MarkiPhotoImportPanel')
+      && hookSource.includes('recoveryTokens: safeRecoveryTokens')
       && pageSource.includes('activeProject'),
-    '工作台应提供历史 Marki 照片恢复入口并只提交令牌和当前项目'
+    '统一工作台面板应提供历史 Marki 照片恢复入口并只提交令牌和当前项目'
   );
   counters.sourceContractCount += 1;
   check(
@@ -15210,14 +15218,16 @@ async function checkActiveProjectBusinessBoundary(root) {
     sortWorkspaceSource,
     snapshotUiSource,
     querySessionSource,
-    markiPageSource,
+    markiPanelSource,
+    markiWorkspaceSource,
     routerSource,
     workspaceHookSource
   ] = await Promise.all([
     fs.readFile(path.join(process.cwd(), 'src/pages/SortWorkspacePage.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/utils/sortWorkspaceSnapshot.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/services/markiPhotoQuerySessionService.cjs'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'src/pages/MarkiPhotoImportPage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/components/MarkiPhotoImportPanel.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/hooks/useMarkiPhotoWorkspace.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/pages/MainRouter.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/hooks/useAppWorkspace.js'), 'utf8')
   ]);
@@ -15235,27 +15245,27 @@ async function checkActiveProjectBusinessBoundary(root) {
     '查询会话必须贯通来源项目锁定安全摘要'
   );
   sourceCheck(
-    markiPageSource.includes('assignedProjectId: photo.assignedProjectId')
-      && markiPageSource.includes('assignedProjectName: photo.assignedProjectName'),
-    'Marki 页面兼容性判断必须使用安全项目锁字段'
+    markiWorkspaceSource.includes('assignedProjectId: photo.assignedProjectId')
+      && markiWorkspaceSource.includes('assignedProjectName: photo.assignedProjectName'),
+    '统一 Marki hook 兼容性判断必须使用安全项目锁字段'
   );
   sourceCheck(
-    markiPageSource.includes('registerProjectWorkspaceController')
-      && markiPageSource.includes('createMarkiProjectWorkspaceController'),
-    'Marki 页面必须注册统一项目切换控制器'
+    sortWorkspaceSource.includes('registerProjectWorkspaceController')
+      && markiWorkspaceSource.includes('clearProjectState'),
+    '统一面板必须接入工作台项目切换控制器'
   );
   sourceCheck(
-    routerSource.includes('<MarkiPhotoImportPage key={archiveState.activeProject.projectId}'),
-    'Marki 页面必须按 activeProject ID 重新挂载'
+    routerSource.includes('<SortWorkspacePage key={archiveState.activeProject.projectId}'),
+    '统一面板必须随 activeProject ID 重新挂载工作台'
   );
   sourceCheck(
     workspaceHookSource.includes('await runProjectWorkspaceTransition'),
     '项目切换必须等待 flush 和异步 clear 完成'
   );
   sourceCheck(
-    markiPageSource.includes('executionGenerationRef.current += 1')
-      && markiPageSource.includes('isCurrentExecution(executionToken)'),
-    'Marki 页面必须使用执行代次阻止旧异步结果回写'
+    markiWorkspaceSource.includes('executionGenerationRef.current += 1')
+      && markiWorkspaceSource.includes('isCurrentExecution(executionToken)'),
+    '统一 Marki hook 必须使用执行代次阻止旧异步结果回写'
   );
 
   equal(scenarioCount, 22, '系统级项目业务边界必须保留 15 个原场景并新增 7 个审查阻断场景');
@@ -16055,7 +16065,10 @@ async function checkSourceContracts() {
     serviceBriefSource,
     appConstantsSource,
     mainRouterSource,
-    markiImportPageSource,
+    appSource,
+    markiPanelSource,
+    markiHookSource,
+    markiRecoverySectionSource,
     markiClientSource,
     mainCssSource
   ] = await Promise.all([
@@ -16066,7 +16079,10 @@ async function checkSourceContracts() {
     fs.readFile(path.join(process.cwd(), 'src/pages/ServiceBriefPage.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/constants/app.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/pages/MainRouter.jsx'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'src/pages/MarkiPhotoImportPage.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/App.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/components/MarkiPhotoImportPanel.jsx'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/hooks/useMarkiPhotoWorkspace.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/components/MarkiPhotoRecoverySection.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/utils/markiClient.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/styles/main.css'), 'utf8')
   ]);
@@ -16101,12 +16117,14 @@ async function checkSourceContracts() {
   assert.equal(/项目部门照片来源/.test(settingsSource), false, '系统设置不应继续暴露已停用的旧版基础数据入口');
   assert.equal(serviceBriefSource.includes('archivedDateCounts'), true, '每日服务简报日期选择器应统计有归档的日期');
   assert.equal(serviceBriefSource.includes('archive-date-dot'), true, '每日服务简报日历应显示归档日期圆点');
-  assert.match(
-    appConstantsSource,
-    /dashboard[\s\S]*markiImport[\s\S]*sortWorkspace/,
-    '工作台导航顺序应为首页、马克照片导入、照片分拣工作台'
+  assert.equal(
+    /title:\s*'工作台'[\s\S]*?PAGE_KEYS\.markiImport/.test(appConstantsSource),
+    false,
+    '工作台侧栏不得再暴露独立马克照片导入入口'
   );
-  assert.equal(mainRouterSource.includes('MarkiPhotoImportPage'), true, '主路由应接入马克照片导入页');
+  assert.equal(mainRouterSource.includes('MarkiPhotoImportPage'), false, '主路由不得再渲染独立马克照片导入页');
+  assert.equal(appSource.includes("action: 'openMarkiPanel'"), true, '旧马克导航必须规范化为工作台统一面板');
+  assert.equal(appSource.includes("request.action === 'openMarkiRecovery'"), true, '旧恢复动作必须进入统一面板兼容层');
   assert.equal(
     settingsSource.includes('listMarkiTeams') || settingsSource.includes('listMarkiMembers'),
     false,
@@ -16120,31 +16138,46 @@ async function checkSourceContracts() {
     'importMarkiPhotoQuerySelection',
     'listReadyMarkiImportBatches'
   ]) {
-    assert.equal(markiImportPageSource.includes(method), true, `马克照片导入页应使用 ${method}`);
+    assert.equal(
+      method === 'listReadyMarkiImportBatches'
+        ? markiHookSource.includes('createMarkiReadyBatchRefresh')
+        : markiHookSource.includes(method),
+      true,
+      `统一 Marki hook 应使用 ${method}`
+    );
     assert.equal(markiClientSource.includes(`function ${method}`), true, `Marki 客户端应公开 ${method}`);
   }
-  assert.equal(markiImportPageSource.includes('sessionStorage'), true, '马克照片查询会话应支持页面刷新恢复');
-  assert.equal(markiImportPageSource.includes('appendMarkiImportBatch'), true, 'ready 批次应导航到现有工作台');
-  assert.equal(markiImportPageSource.includes('selectionToken'), true, '页面选择只能使用不透明 selectionToken');
+  assert.equal(markiHookSource.includes('sessionStorage'), true, '统一 Marki hook 应支持页面刷新恢复');
+  assert.equal(markiHookSource.includes('onBatchReady'), true, 'ready 批次应回调工作台唯一追加函数');
+  assert.equal(markiHookSource.includes('recoveryCandidates'), true, '统一 Marki hook 应持有恢复候选状态');
+  assert.equal(markiHookSource.includes('scanRecoveryCandidates'), true, '统一 Marki hook 应持有恢复扫描操作');
+  assert.equal(markiHookSource.includes('recoverCandidates'), true, '统一 Marki hook 应持有令牌恢复操作');
+  assert.equal(workspaceSource.includes('markiRecoveryCandidates'), false, '工作台页面不得保留第二套 Marki 恢复状态');
+  assert.equal(markiPanelSource.includes('selectionToken'), true, '统一面板选择只能使用不透明 selectionToken');
   assert.equal(
-    markiImportPageSource.includes("isRefreshingReadyBatches ? '刷新中...'"),
+    markiHookSource.includes("isRefreshingReadyBatches"),
     true,
-    '待处理批次刷新按钮应显示独立加载状态'
+    '待加入照片池批次刷新必须有独立加载状态'
   );
   assert.equal(
-    markiImportPageSource.includes('setNotice(result.notice)'),
+    markiHookSource.includes('setNotice(result.notice)'),
     true,
     '待处理批次刷新结果必须进入页面可见提示'
   );
   assert.equal(
-    markiImportPageSource.includes('createMarkiReadyBatchRefresh'),
+    markiHookSource.includes('createMarkiReadyBatchRefresh'),
     true,
     '待处理批次刷新必须使用单飞控制器避免并发请求'
   );
-  assert.equal(markiImportPageSource.includes('.url'), false, '页面不得读取远程照片 URL');
-  assert.equal(markiImportPageSource.includes('momentId'), false, '页面不得读取真实 momentId');
-  assert.equal(markiImportPageSource.includes('sourceKey'), false, '页面不得读取 sourceKey');
-  assert.equal(mainCssSource.includes('.marki-import-page'), true, '马克导入页面样式应使用独立前缀');
+  assert.equal(markiPanelSource.includes('.url'), false, '统一面板不得读取远程照片 URL');
+  assert.equal(markiPanelSource.includes('momentId'), false, '统一面板不得读取真实 momentId');
+  assert.equal(markiPanelSource.includes('sourceKey'), false, '统一面板不得读取 sourceKey');
+  assert.equal(markiRecoverySectionSource.includes('sourceKey'), false, '恢复区不得显示 sourceKey');
+  assert.equal(mainCssSource.includes('.marki-import-panel'), true, '统一 Marki 面板样式必须使用独立作用域');
+  assert.equal(mainCssSource.includes('.marki-import-panel-overlay'), true, '统一 Marki 面板必须使用覆盖层承载');
+  assert.equal(workspaceSource.includes('MarkiPhotoImportPanel'), true, '工作台必须直接承载统一 Marki 面板');
+  assert.equal(workspaceSource.includes('onNavigate({\n        page: PAGE_KEYS.sortWorkspace,\n        action: \'appendMarkiImportBatch\''), false, '导入成功不得再次导航到工作台');
+  assert.equal(workspaceSource.includes('appendMarkiBatchToCurrentWorkspace'), true, '批次追加必须收口为工作台唯一函数');
   assert.match(
     mainSource,
     /marki:import-photo-query-selection[\s\S]*safeMarkiCall/,
@@ -16641,8 +16674,12 @@ async function checkSortWorkspaceToolbar(root) {
     path.resolve(process.cwd(), 'src/pages/SortWorkspacePage.jsx'),
     'utf8'
   );
-  const dialogSource = await fs.readFile(
-    path.resolve(process.cwd(), 'src/components/MarkiRehydrateDialog.jsx'),
+  const panelSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/components/MarkiPhotoImportPanel.jsx'),
+    'utf8'
+  );
+  const recoverySectionSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/components/MarkiPhotoRecoverySection.jsx'),
     'utf8'
   );
   const cssSource = await fs.readFile(
@@ -16655,22 +16692,20 @@ async function checkSortWorkspaceToolbar(root) {
   };
   sourceCheck(pageSource.includes('ref={moreMenuRef}'), '更多菜单必须可受控关闭');
   sourceCheck(pageSource.includes('moreMenuRef.current.open = false'), '打开恢复弹窗前必须关闭更多菜单');
-  sourceCheck(pageSource.includes('>恢复 Marki 照片</button>'), '更多菜单应使用可完整显示的短文案');
-  sourceCheck(pageSource.includes('<MarkiRehydrateDialog'), '恢复内容必须由独立弹窗承载');
-  sourceCheck(!pageSource.includes('aria-label="已下载马克照片恢复"'), '恢复面板不得继续内嵌在照片池');
-  sourceCheck(dialogSource.includes('createPortal'), '恢复弹窗必须使用 React portal');
-  sourceCheck(dialogSource.includes('document.body'), '恢复弹窗必须挂载到 document.body');
-  sourceCheck(dialogSource.includes('document.body.style.overflow = \'hidden\''), '弹窗打开时必须锁定背景滚动');
-  sourceCheck(dialogSource.includes('role="dialog"'), '恢复容器必须声明 dialog 语义');
-  sourceCheck(dialogSource.includes('aria-modal="true"'), '恢复容器必须阻止背景交互语义');
-  sourceCheck(dialogSource.includes('marki-rehydrate-table-wrap'), '长列表必须使用独立滚动容器');
-  sourceCheck(dialogSource.includes('恢复全部可恢复项'), '弹窗必须保留恢复全部入口');
-  sourceCheck(!dialogSource.includes('sourceKey'), '恢复弹窗不得显示 sourceKey');
-  sourceCheck(!dialogSource.includes('originalPath'), '恢复弹窗不得显示完整路径');
-  sourceCheck(!dialogSource.includes('url'), '恢复弹窗不得显示 URL');
-  sourceCheck(cssSource.includes('width: min(840px, 90vw)'), '恢复弹窗宽度必须受视口约束');
-  sourceCheck(cssSource.includes('max-height: 80vh'), '恢复弹窗高度必须受视口约束');
-  sourceCheck(cssSource.includes('grid-template-rows: auto auto minmax(0, 1fr) auto'), '标题、列表和底部操作区必须保持稳定布局');
+  sourceCheck(pageSource.includes('className="marki-toolbar-entry"'), '工作台应使用单一马克照片入口按钮');
+  sourceCheck(pageSource.includes("openMarkiPanel('query')"), '马克入口应打开工作台统一面板');
+  sourceCheck(panelSource.includes('createPortal'), '统一 Marki 面板必须使用 React portal');
+  sourceCheck(panelSource.includes('document.body'), '统一 Marki 面板必须挂载到 document.body');
+  sourceCheck(panelSource.includes('role="dialog"'), '统一面板必须声明 dialog 语义');
+  sourceCheck(panelSource.includes('aria-modal="true"'), '统一面板必须阻止背景交互语义');
+  sourceCheck(recoverySectionSource.includes('marki-rehydrate-table-wrap'), '恢复区长列表必须使用独立滚动容器');
+  sourceCheck(recoverySectionSource.includes('恢复全部可恢复项'), '恢复区必须保留恢复全部入口');
+  sourceCheck(!recoverySectionSource.includes('sourceKey'), '恢复区不得显示 sourceKey');
+  sourceCheck(!recoverySectionSource.includes('originalPath'), '恢复区不得显示完整路径');
+  sourceCheck(!recoverySectionSource.includes('url'), '恢复区不得显示 URL');
+  sourceCheck(cssSource.includes('width: min(1180px, 92vw)'), '统一面板宽度必须受视口约束');
+  sourceCheck(cssSource.includes('height: min(860px, 86vh)'), '统一面板高度必须受视口约束');
+  sourceCheck(cssSource.includes('grid-template-rows: auto auto minmax(0, 1fr)'), '标题、标签和内容区必须保持稳定布局');
 
   scenarioCount += 1;
   const searchHandlerSource = pageSource.slice(
@@ -17292,7 +17327,15 @@ async function checkMarkiImportLifecycleClosure(root) {
   behavior(activeAfterClear.bySourceKey['marki_api:12345:clearable'] === 'imported_active', '清除记录不得释放工作池活跃 sourceKey');
 
   const pageSource = await fs.readFile(
-    path.resolve(process.cwd(), 'src/pages/MarkiPhotoImportPage.jsx'),
+    path.resolve(process.cwd(), 'src/pages/SortWorkspacePage.jsx'),
+    'utf8'
+  );
+  const panelSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/components/MarkiPhotoImportPanel.jsx'),
+    'utf8'
+  );
+  const hookSource = await fs.readFile(
+    path.resolve(process.cwd(), 'src/hooks/useMarkiPhotoWorkspace.js'),
     'utf8'
   );
   const cssSource = await fs.readFile(
@@ -17301,17 +17344,17 @@ async function checkMarkiImportLifecycleClosure(root) {
   );
   const mainSource = await fs.readFile(path.resolve(process.cwd(), 'electron/main.cjs'), 'utf8');
   const preloadSource = await fs.readFile(path.resolve(process.cwd(), 'electron/preload.cjs'), 'utf8');
-  sourceContract(pageSource.includes('<strong>平台查询条件</strong>'), '页面必须明确平台查询条件区域');
-  sourceContract(pageSource.includes('<strong>已加载结果筛选</strong>'), '页面必须明确已加载结果筛选区域');
-  sourceContract(pageSource.includes('<span>水印模板</span>'), '已加载结果筛选必须包含动态水印模板');
-  sourceContract(pageSource.includes('<span>导入状态</span>'), '已加载结果筛选必须包含导入状态');
-  sourceContract(!pageSource.includes('全部有水印'), '页面不得保留虚构的全部有水印选项');
-  sourceContract(!pageSource.includes('水印状态待确认'), '页面不得保留虚构的水印状态待确认文案');
-  sourceContract(!pageSource.includes('只有已确认有水印的照片可以导入'), '页面不得以虚构水印状态阻断导入');
-  sourceContract(pageSource.includes('全选当前筛选结果'), '查询工具栏必须使用当前筛选全选语义');
-  sourceContract(pageSource.includes('rawQueryResults'), '页面必须保留原始查询结果');
-  sourceContract(pageSource.includes('filteredQueryResults'), '页面必须派生当前筛选结果');
-  sourceContract(!pageSource.includes('BUSY_SOURCE_STATUSES'), '页面不得继续引用旧模糊状态集合');
+  sourceContract(panelSource.includes('查询并导入'), '统一面板必须明确查询并导入区域');
+  sourceContract(panelSource.includes('待加入照片池'), '统一面板必须明确 ready 批次区域');
+  sourceContract(panelSource.includes('<span>水印模板</span>'), '已加载结果筛选必须包含动态水印模板');
+  sourceContract(panelSource.includes('<span>导入状态</span>'), '已加载结果筛选必须包含导入状态');
+  sourceContract(!panelSource.includes('全部有水印'), '页面不得保留虚构的全部有水印选项');
+  sourceContract(!panelSource.includes('水印状态待确认'), '页面不得保留虚构的水印状态待确认文案');
+  sourceContract(!panelSource.includes('只有已确认有水印的照片可以导入'), '页面不得以虚构水印状态阻断导入');
+  sourceContract(panelSource.includes('全选当前筛选结果'), '查询工具栏必须使用当前筛选全选语义');
+  sourceContract(hookSource.includes('rawQueryResults'), '统一 hook 必须保留原始查询结果');
+  sourceContract(hookSource.includes('filteredQueryResults'), '统一 hook 必须派生当前筛选结果');
+  sourceContract(!hookSource.includes('BUSY_SOURCE_STATUSES'), '统一 hook 不得继续引用旧模糊状态集合');
   sourceContract(cssSource.includes('grid-template-columns: repeat(4, minmax(150px, 1fr))'), '顶部查询卡片必须使用响应式四列布局');
   sourceContract(cssSource.includes('@media (max-width: 900px)'), '小窗口必须有单列响应式规则');
   sourceContract(mainSource.includes("marki:list-import-records"), '主进程必须提供导入记录 IPC');
