@@ -8726,7 +8726,8 @@ async function checkSortWorkspaceSnapshot(root) {
   const {
     buildSortWorkspaceSnapshotWorkspace,
     createDebouncedSnapshotSaver,
-    persistMarkiWorkbenchImport
+    persistMarkiWorkbenchImport,
+    resolveWorkspaceHydrationSource
   } = await import(`${snapshotUtilityUrl}?snapshot-check=${Date.now()}`);
   const { mergeMarkiWorkbenchImportPackage } = await import(
     `${workbenchUtilityUrl}?snapshot-check=${Date.now()}`
@@ -9097,6 +9098,77 @@ async function checkSortWorkspaceSnapshot(root) {
     saver.schedule(makeWorkspace([], { searchText: 'initial-empty' }));
     await saver.whenIdle();
     equal(saveCount, 0, '初始化完成前不得保存空工作台');
+    scenarioCount += 1;
+  }
+
+  {
+    const cachedSessionA = {
+      projectId: 'project-hydration',
+      revision: 'A',
+      photos: [{ id: 'photo-A' }]
+    };
+    const failedRead = resolveWorkspaceHydrationSource({
+      activeProjectId: 'project-hydration',
+      forceDiskReload: false,
+      cachedSession: cachedSessionA,
+      snapshotResult: {
+        success: false,
+        found: true,
+        snapshot: null
+      }
+    });
+    equal(failedRead.authoritative, false, '磁盘快照读取失败不得视为权威工作台');
+    equal(failedRead.canUseCachedSession, false, '磁盘快照失败时不得采用旧缓存 A');
+    let forceDiskReload = false;
+    let cachedSession = cachedSessionA;
+    if (!failedRead.authoritative) {
+      forceDiskReload = true;
+      cachedSession = null;
+    }
+    equal(forceDiskReload, true, '磁盘快照失败后必须设置强制重载标记');
+    equal(cachedSession, null, '磁盘快照失败后必须清除旧缓存');
+    const diskWorkspaceB = {
+      projectId: 'project-hydration',
+      revision: 'B',
+      photos: [{ id: 'photo-B' }]
+    };
+    const successfulReadWithCache = resolveWorkspaceHydrationSource({
+      activeProjectId: 'project-hydration',
+      forceDiskReload: false,
+      cachedSession: cachedSessionA,
+      snapshotResult: {
+        success: true,
+        found: true,
+        snapshot: { workspace: diskWorkspaceB }
+      }
+    });
+    equal(successfulReadWithCache.canUseCachedSession, false, '存在磁盘快照时不得用缓存 A 覆盖磁盘结果');
+    equal(successfulReadWithCache.workspace.revision, 'B', '权威磁盘快照应优先于旧缓存 A');
+    const successfulRead = resolveWorkspaceHydrationSource({
+      activeProjectId: 'project-hydration',
+      forceDiskReload,
+      cachedSession: cachedSessionA,
+      snapshotResult: {
+        success: true,
+        found: true,
+        snapshot: { workspace: diskWorkspaceB }
+      }
+    });
+    equal(successfulRead.authoritative, true, '第二次磁盘读取成功后应恢复权威工作台');
+    equal(successfulRead.canUseCachedSession, false, '强制重载期间不得重新采用旧缓存 A');
+    equal(successfulRead.workspace.revision, 'B', '第二次进入必须采用磁盘版本 B');
+    forceDiskReload = false;
+    cachedSession = successfulRead.workspace;
+    let savedWorkspace = null;
+    const saver = createDebouncedSnapshotSaver({
+      save: async (workspace) => {
+        savedWorkspace = workspace;
+        return { success: true };
+      }
+    });
+    saver.setEnabled(true);
+    await saver.flush(cachedSession);
+    equal(savedWorkspace.revision, 'B', '权威恢复后的自动保存不得被旧版本 A 覆盖');
     scenarioCount += 1;
   }
 
@@ -16363,7 +16435,8 @@ async function checkSourceContracts() {
     markiHookSource,
     markiRecoverySectionSource,
     markiClientSource,
-    mainCssSource
+    mainCssSource,
+    recoveryExecutionSource
   ] = await Promise.all([
     fs.readFile(path.join(process.cwd(), 'electron/main.cjs'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'electron/preload.cjs'), 'utf8'),
@@ -16377,7 +16450,8 @@ async function checkSourceContracts() {
     fs.readFile(path.join(process.cwd(), 'src/hooks/useMarkiPhotoWorkspace.js'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/components/MarkiPhotoRecoverySection.jsx'), 'utf8'),
     fs.readFile(path.join(process.cwd(), 'src/utils/markiClient.js'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'src/styles/main.css'), 'utf8')
+    fs.readFile(path.join(process.cwd(), 'src/styles/main.css'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'src/utils/markiRecoveryExecution.js'), 'utf8')
   ]);
   const invokedChannels = new Set([...preloadSource.matchAll(/ipcRenderer\.invoke\(['"]([^'"]+)['"]/g)].map((match) => match[1]));
   const handledChannels = new Set([...mainSource.matchAll(/ipcMain\.handle\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]));
@@ -16456,10 +16530,23 @@ async function checkSourceContracts() {
   assert.equal(workspaceSource.includes('sortWorkspaceSessionCacheByProject.delete(projectCacheKey)'), true, '同步阻断必须清除当前项目内存工作台缓存');
   assert.equal(workspaceSource.includes('forceDiskReloadByProject'), true, '同步阻断后必须标记当前项目强制从磁盘重载');
   assert.equal(workspaceSource.includes('sessionSnapshotRef.current = null'), true, '同步阻断必须清除当前项目会话快照引用');
+  assert.equal(workspaceSource.includes('function invalidateWorkspaceAuthority()'), true, 'hydration 失败必须使用统一权威状态失效函数');
+  assert.equal(workspaceSource.includes('invalidateWorkspaceAuthority();'), true, '快照读取失败和同步失败必须触发权威状态失效');
+  assert.equal(workspaceSource.includes('resolveWorkspaceHydrationSource'), true, '工作台初始化必须经过统一磁盘/缓存来源决策');
   assert.equal(workspaceSource.includes("workspaceHydrationState === 'ready'"), true, '自动保存必须要求权威 hydration ready');
   assert.equal(workspaceSource.includes("setWorkspaceHydrationState('failed')"), true, '快照读取失败必须进入 hydration failed 状态');
   assert.equal(workspaceSource.includes("workspaceHydrationStateRef.current === 'ready'"), true, '卸载和立即保存必须复用 hydration ready 闸门');
   assert.equal(workspaceSource.includes('recovery.refreshNonce'), true, '撤销成功后恢复候选必须触发重新巡检');
+  assert.equal(workspaceSource.includes('consumeMarkiRecoveryRefreshNonce'), true, '恢复 refreshNonce 必须经过一次性消费工具');
+  assert.equal(recoveryExecutionSource.includes('当前工作台保存失败，已停止恢复以避免覆盖未保存内容。'), true, '恢复前保存失败必须显示安全停止提示');
+  assert.equal(
+    markiHookSource.includes('runMarkiRecoveryWithWorkspaceSnapshot'),
+    true,
+    '恢复服务调用必须经过当前 renderer 工作台保存前置编排'
+  );
+  assert.equal(markiHookSource.includes('marki_recovery_token_invalid'), true, '恢复令牌失效时必须处理旧选择');
+  assert.equal(markiHookSource.includes('marki_recovery_record_changed'), true, '来源记录变化时必须处理旧选择');
+  assert.equal(markiHookSource.includes('setRecoveryRefreshNonce(0)'), true, '项目切换清理时必须丢弃旧项目的 refreshNonce');
   assert.equal(markiRecoverySectionSource.includes('workspace_file_repairable'), true, '恢复区必须区分工作池文件可修复状态');
   assert.equal(markiRecoverySectionSource.includes('recoverableSelectedTokens'), true, '恢复选中按钮必须只提交可恢复令牌');
   assert.equal(markiRecoverySectionSource.includes('repairableSelectedTokens'), true, '修复选中按钮必须只提交可修复令牌');
@@ -16520,6 +16607,12 @@ async function checkSortWorkspaceToolbar(root) {
   );
   const recoveryModule = await import(
     pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiRecoveryDialog.js')).href
+  );
+  const refreshModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiRecoveryRefresh.js')).href
+  );
+  const recoveryExecutionModule = await import(
+    pathToFileURL(path.resolve(process.cwd(), 'src/utils/markiRecoveryExecution.js')).href
   );
   let scenarioCount = 0;
   let assertionCount = 0;
@@ -16984,6 +17077,78 @@ async function checkSortWorkspaceToolbar(root) {
     ['r'],
     '修复全部只能提交唯一的可修复令牌'
   );
+
+  scenarioCount += 1;
+  let handledNonce = 0;
+  let pendingRefresh = false;
+  let refreshCount = 0;
+  const runRecoveryRefreshEffect = (nonce, recoveryBusy) => {
+    const decision = refreshModule.consumeMarkiRecoveryRefreshNonce(nonce, handledNonce);
+    if (decision.shouldRefresh) {
+      handledNonce = decision.handledNonce;
+      pendingRefresh = true;
+    }
+    if (pendingRefresh && !recoveryBusy) {
+      pendingRefresh = false;
+      refreshCount += 1;
+    }
+  };
+  runRecoveryRefreshEffect(1, false);
+  runRecoveryRefreshEffect(1, true);
+  runRecoveryRefreshEffect(1, false);
+  equal(refreshCount, 1, '同一 refreshNonce 在 busy false/true/false 期间只能刷新一次');
+  equal(handledNonce, 1, 'refreshNonce=1 完成后必须记录已消费值');
+  runRecoveryRefreshEffect(1, false);
+  equal(refreshCount, 1, '其他 rerender 不得重复消费旧 refreshNonce');
+  runRecoveryRefreshEffect(2, false);
+  runRecoveryRefreshEffect(2, true);
+  runRecoveryRefreshEffect(2, false);
+  equal(refreshCount, 2, 'refreshNonce=2 只能新增一次刷新');
+  equal(handledNonce, 2, '下一次撤销产生的新 nonce 必须被记录');
+
+  scenarioCount += 1;
+  const currentRecoveryWorkspace = {
+    projectId: 'project-recovery',
+    form: { remarks: '最新人工备注' },
+    selectedIds: ['photo-latest'],
+    activePhotoId: 'photo-latest'
+  };
+  const executionOrder = [];
+  let recoveryCallCount = 0;
+  const recovered = await recoveryExecutionModule.runMarkiRecoveryWithWorkspaceSnapshot({
+    workspaceReady: true,
+    currentWorkspace: currentRecoveryWorkspace,
+    activeProjectId: 'project-recovery',
+    saveWorkspaceSnapshot: async (workspace) => {
+      executionOrder.push(`save:${workspace.form.remarks}`);
+      return { success: true };
+    },
+    recover: async () => {
+      executionOrder.push('recover');
+      recoveryCallCount += 1;
+      return { success: true, recoveredCount: 1 };
+    }
+  });
+  equal(recovered.success, true, '工作台保存成功后才允许执行恢复');
+  deepEqual(executionOrder, ['save:最新人工备注', 'recover'], '恢复顺序必须先保存最新 renderer 工作台再调用主进程');
+  const failureOrder = [];
+  const failedRecovery = await recoveryExecutionModule.runMarkiRecoveryWithWorkspaceSnapshot({
+    workspaceReady: true,
+    currentWorkspace: currentRecoveryWorkspace,
+    activeProjectId: 'project-recovery',
+    saveWorkspaceSnapshot: async () => {
+      failureOrder.push('save');
+      return { success: false };
+    },
+    recover: async () => {
+      failureOrder.push('recover');
+      recoveryCallCount += 1;
+      return { success: true };
+    }
+  });
+  equal(failedRecovery.error.code, 'marki_recovery_snapshot_save_failed', '保存失败必须安全停止恢复');
+  deepEqual(failureOrder, ['save'], '保存失败时不得调用主进程恢复');
+  equal(recoveryCallCount, 1, '保存失败不得增加恢复调用次数');
   equal(
     recoveryModule.buildMarkiRecoveryCompletionNotice({
       recoveredCount: 2,
@@ -17060,7 +17225,7 @@ async function checkSortWorkspaceToolbar(root) {
   sourceCheck(pageSource.includes('readSortWorkspaceManualDraft'), '手工恢复必须先完成安全解析');
   sourceCheck(pageSource.includes('saveAutomaticSnapshotImmediately(restoredWorkspace)'), '手工恢复成功前必须先写自动快照');
 
-  check(scenarioCount === 16, '照片池工具栏闭环应执行十六个真实行为场景');
+  check(scenarioCount === 18, '照片池工具栏闭环应执行十八个真实行为场景');
   console.log(
     `照片池工具栏闭环自检通过：${scenarioCount} 个行为场景，${assertionCount} 个行为断言，${sourceContractCount} 个源码契约断言。`
   );

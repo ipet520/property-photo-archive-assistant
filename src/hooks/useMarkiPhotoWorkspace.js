@@ -35,6 +35,7 @@ import {
   buildMarkiRecoveryCompletionNotice,
   summarizeMarkiRecoveryCandidates
 } from '../utils/markiRecoveryDialog.js';
+import { runMarkiRecoveryWithWorkspaceSnapshot } from '../utils/markiRecoveryExecution.js';
 
 const SESSION_STORAGE_KEY = 'marki-photo-import-session-v1';
 const MAX_MEMBER_PAGES = 100;
@@ -131,6 +132,7 @@ export default function useMarkiPhotoWorkspace({
     setRecoveryCandidates([]);
     setSelectedRecoveryTokens([]);
     setRecoveryNotice({ type: 'idle', text: '' });
+    setRecoveryRefreshNonce(0);
     setRecoveryBusy(false);
     updateBusy('');
     updateReadyBatchRefreshing(false);
@@ -279,20 +281,49 @@ export default function useMarkiPhotoWorkspace({
         .filter(Boolean)
     ));
     if (recoveryBusy || safeRecoveryTokens.length === 0) return { success: false };
+    const currentWorkspace = recoveryContextRef.current.getCurrentWorkspace?.();
+    if (
+      projectStateRef.current?.workspaceReady !== true
+      || projectStateRef.current?.workspaceSyncBlocked === true
+      || !currentWorkspace
+      || currentWorkspace.projectId !== activeProject?.projectId
+    ) {
+      const error = {
+        code: 'marki_recovery_workspace_not_ready',
+        message: '当前工作台尚未恢复完成，请稍后重试。'
+      };
+      setRecoveryNotice({ type: 'warning', text: error.message });
+      recoveryContextRef.current.onWorkspaceStatus?.({ type: 'warning', text: error.message });
+      return { success: false, error };
+    }
     const executionToken = executionGenerationRef.current;
+    if (projectStateRef.current) projectStateRef.current.recoveryBusy = true;
     setRecoveryBusy(true);
     setRecoveryNotice({ type: 'idle', text: '正在恢复选中的 Marki 照片...' });
     recoveryContextRef.current.onWorkspaceStatus?.({ type: 'idle', text: '正在恢复已下载的马克照片...' });
     try {
-      const result = await recoverMarkiWorkbenchCandidates({
-        recoveryTokens: safeRecoveryTokens,
-        activeProject
+      const result = await runMarkiRecoveryWithWorkspaceSnapshot({
+        workspaceReady: projectStateRef.current?.workspaceReady === true,
+        workspaceSyncBlocked: projectStateRef.current?.workspaceSyncBlocked === true,
+        currentWorkspace,
+        activeProjectId: activeProject?.projectId,
+        saveWorkspaceSnapshot: recoveryContextRef.current.saveWorkspaceSnapshot,
+        recover: () => recoverMarkiWorkbenchCandidates({
+          recoveryTokens: safeRecoveryTokens,
+          activeProject
+        })
       });
       if (!isCurrentExecution(executionToken)) return result;
       if (result?.success !== true) {
-        const message = result?.error?.message || '恢复已下载 Marki 照片失败，请重试。';
-        setRecoveryNotice({ type: 'error', text: message });
-        recoveryContextRef.current.onWorkspaceStatus?.({ type: 'error', text: message });
+        const errorCode = result?.error?.code;
+        const staleCandidate = ['marki_recovery_token_invalid', 'marki_recovery_record_changed'].includes(errorCode);
+        const message = staleCandidate
+          ? '恢复候选已变化，请刷新恢复列表后重试。'
+          : result?.error?.message || '恢复已下载 Marki 照片失败，请重试。';
+        if (staleCandidate) setSelectedRecoveryTokens([]);
+        const notice = { type: staleCandidate ? 'warning' : 'error', text: message };
+        setRecoveryNotice(notice);
+        recoveryContextRef.current.onWorkspaceStatus?.(notice);
         return result;
       }
       const recoveredTokens = new Set(safeRecoveryTokens);
@@ -357,6 +388,7 @@ export default function useMarkiPhotoWorkspace({
       recoveryContextRef.current.onWorkspaceStatus?.({ type: 'error', text: '恢复已下载马克照片失败，请重试。' });
       return { success: false, error: { code: 'marki_recovery_failed', message: notice.text } };
     } finally {
+      if (projectStateRef.current) projectStateRef.current.recoveryBusy = false;
       if (isCurrentExecution(executionToken)) setRecoveryBusy(false);
     }
   }, [activeProject, isCurrentExecution, recoveryBusy, selectedRecoveryTokens]);

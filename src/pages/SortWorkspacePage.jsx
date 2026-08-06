@@ -62,8 +62,10 @@ import {
   persistMarkiWorkbenchImport,
   persistProjectPhotoFolder,
   prepareWorkspaceAfterPhotoAppend,
-  readSortWorkspaceManualDraft
+  readSortWorkspaceManualDraft,
+  resolveWorkspaceHydrationSource
 } from '../utils/sortWorkspaceSnapshot.js';
+import { consumeMarkiRecoveryRefreshNonce } from '../utils/markiRecoveryRefresh.js';
 import {
   buildArchiveFormSeed,
   buildArchiveSuggestion,
@@ -223,6 +225,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const processedMarkiImportRequestNoncesRef = useRef(new Set());
   const pendingMarkiFocusPhotoIdRef = useRef('');
   const pendingMarkiRecoveryRefreshRef = useRef(false);
+  const handledMarkiRecoveryRefreshNonceRef = useRef(0);
   const markiWorkbenchStateRef = useRef(null);
   const automaticSnapshotSaverRef = useRef(null);
   const workspaceSyncBlockedRef = useRef(false);
@@ -326,14 +329,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [markiPanelOpen, setMarkiPanelOpen] = useState(false);
   const [markiPanelTab, setMarkiPanelTab] = useState('query');
 
-  function blockWorkspaceSync(notice = {}) {
-    workspaceSyncBlockedRef.current = true;
+  function invalidateWorkspaceAuthority() {
     forceDiskReloadByProject.add(projectCacheKey);
     sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
     cachedSessionRef.current = null;
     sessionSnapshotRef.current = null;
+    markiWorkbenchStateRef.current = null;
+    workspaceHydrationStateRef.current = 'failed';
     automaticSnapshotSaverRef.current?.cancel();
     automaticSnapshotSaverRef.current?.setEnabled(false);
+    setWorkspaceHydrationState('failed');
+  }
+
+  function blockWorkspaceSync(notice = {}) {
+    workspaceSyncBlockedRef.current = true;
+    invalidateWorkspaceAuthority();
     setWorkspaceSyncBlocked(true);
     setStatus({
       type: 'error',
@@ -489,21 +499,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
       const restoredArchiveRoot = projectDirectoryResult.archiveRootDirectory;
-      const snapshotWorkspace = snapshotResult?.snapshot?.workspace;
-      const snapshotProjectMatches = snapshotResult?.found !== true
-        || snapshotWorkspace?.projectId === activeProject?.projectId;
-      const authoritativeSnapshot = snapshotResult?.success === true && snapshotProjectMatches;
-      const canUseCachedSession = Boolean(
-        cachedSession
-        && cachedSession.projectId === activeProject?.projectId
-        && !forceDiskReloadByProject.has(projectCacheKey)
-      );
-      const restoredFromSnapshot = !canUseCachedSession
-        && authoritativeSnapshot
-        && snapshotResult?.found === true;
-      const restoredWorkspace = canUseCachedSession
-        ? cachedSession
-        : snapshotWorkspace || {};
+      const hydrationSource = resolveWorkspaceHydrationSource({
+        activeProjectId: activeProject?.projectId,
+        forceDiskReload: forceDiskReloadByProject.has(projectCacheKey),
+        cachedSession,
+        snapshotResult
+      });
+      const authoritativeSnapshot = hydrationSource.authoritative;
+      const restoredFromSnapshot = hydrationSource.restoredFromSnapshot;
+      const restoredWorkspace = hydrationSource.workspace;
       const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
       const restoredPhotoEntry = await inspectProjectPhotoFolder(
         restoredPhotoFolder,
@@ -624,20 +628,16 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         setWorkspaceHydrationState('ready');
         automaticSnapshotSaverRef.current?.setEnabled(true);
       } else {
-        automaticSnapshotSaverRef.current?.cancel();
-        automaticSnapshotSaverRef.current?.setEnabled(false);
-        setWorkspaceHydrationState('failed');
+        invalidateWorkspaceAuthority();
       }
       hasHydratedSessionRef.current = true;
       setIsSessionHydrated(true);
     }).catch(() => {
       const safeConfigs = withRuntimeConfigFallback(null);
       setConfigs(safeConfigs);
-      setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs, activeProject));
+      invalidateWorkspaceAuthority();
+      setForm(reconcileForm(defaultForm, safeConfigs, activeProject));
       setStatus({ type: 'error', text: '配置或工作台状态加载失败，已使用安全默认值。' });
-      automaticSnapshotSaverRef.current?.cancel();
-      automaticSnapshotSaverRef.current?.setEnabled(false);
-      setWorkspaceHydrationState('failed');
       hasHydratedSessionRef.current = true;
       setIsSessionHydrated(true);
     });
@@ -1298,11 +1298,17 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, [navigationRequest?.nonce]);
 
   useEffect(() => {
-    if (
-      markiWorkspace.recovery.refreshNonce > 0
-      && markiPanelOpen
-      && markiPanelTab === 'recovery'
-    ) {
+    handledMarkiRecoveryRefreshNonceRef.current = 0;
+    pendingMarkiRecoveryRefreshRef.current = false;
+  }, [activeProject?.projectId]);
+
+  useEffect(() => {
+    const refreshDecision = consumeMarkiRecoveryRefreshNonce(
+      markiWorkspace.recovery.refreshNonce,
+      handledMarkiRecoveryRefreshNonceRef.current
+    );
+    if (refreshDecision.shouldRefresh) {
+      handledMarkiRecoveryRefreshNonceRef.current = refreshDecision.handledNonce;
       pendingMarkiRecoveryRefreshRef.current = true;
     }
     if (

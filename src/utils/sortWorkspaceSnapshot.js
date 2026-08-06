@@ -78,6 +78,33 @@ export function buildSortWorkspaceSnapshotWorkspace(state = {}) {
   };
 }
 
+export function resolveWorkspaceHydrationSource({
+  activeProjectId = '',
+  forceDiskReload = false,
+  cachedSession = null,
+  snapshotResult = null
+} = {}) {
+  const projectId = String(activeProjectId || '').trim();
+  const found = snapshotResult?.found === true;
+  const snapshotWorkspace = snapshotResult?.snapshot?.workspace || null;
+  const hasWorkspace = !found || Boolean(snapshotWorkspace);
+  const projectMatches = !found
+    || Boolean(snapshotWorkspace && String(snapshotWorkspace.projectId || '').trim() === projectId);
+  const authoritative = snapshotResult?.success === true && hasWorkspace && projectMatches;
+  const canUseCachedSession = Boolean(
+    authoritative
+    && !found
+    && !forceDiskReload
+    && cachedSession?.projectId === projectId
+  );
+  return {
+    authoritative,
+    canUseCachedSession,
+    restoredFromSnapshot: authoritative && found && !canUseCachedSession,
+    workspace: canUseCachedSession ? cachedSession : snapshotWorkspace || {}
+  };
+}
+
 export function createDebouncedSnapshotSaver({
   save,
   delayMs = 500,
