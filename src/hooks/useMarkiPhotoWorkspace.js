@@ -71,6 +71,7 @@ export default function useMarkiPhotoWorkspace({
   const [selectedRecoveryTokens, setSelectedRecoveryTokens] = useState([]);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState({ type: 'idle', text: '' });
+  const [recoveryRefreshNonce, setRecoveryRefreshNonce] = useState(0);
   const mountedRef = useRef(true);
   const executionGenerationRef = useRef(0);
   const projectStateRef = useRef(null);
@@ -186,6 +187,7 @@ export default function useMarkiPhotoWorkspace({
     const currentWorkspace = recoveryContextRef.current.getCurrentWorkspace?.();
     if (
       projectStateRef.current?.workspaceReady !== true
+      || projectStateRef.current?.workspaceSyncBlocked === true
       || !currentWorkspace
       || currentWorkspace.projectId !== activeProject?.projectId
     ) {
@@ -685,6 +687,10 @@ export default function useMarkiPhotoWorkspace({
           recoveryContextRef.current.onWorkspaceSyncBlocked?.(safeNotice);
           return;
         }
+        setRecoveryCandidates([]);
+        setSelectedRecoveryTokens([]);
+        setRecoveryNotice({ type: 'idle', text: '撤销已完成，恢复区待刷新。' });
+        setRecoveryRefreshNonce((value) => value + 1);
       }
       await Promise.all([loadImportRecords(), loadReadyBatches()]);
       if (!isCurrentExecution(executionToken)) return;
@@ -820,13 +826,14 @@ export default function useMarkiPhotoWorkspace({
       selectedTokens: selectedRecoveryTokens,
       busy: recoveryBusy,
       notice: recoveryNotice,
+      refreshNonce: recoveryRefreshNonce,
       onToggle: toggleRecoverySelection,
       onRefresh: scanRecoveryCandidates,
-      onRecoverSelected: () => recoverCandidates(selectedRecoveryTokens.filter((token) => (
+      onRecoverSelected: (tokens = selectedRecoveryTokens) => recoverCandidates(tokens.filter((token) => (
         recoveryCandidates.some((item) => item.recoveryToken === token && item.status === 'recoverable')
       ))),
       onRecoverAll: recoverCandidates,
-      onRepairSelected: () => recoverCandidates(selectedRecoveryTokens.filter((token) => (
+      onRepairSelected: (tokens = selectedRecoveryTokens) => recoverCandidates(tokens.filter((token) => (
         recoveryCandidates.some((item) => item.recoveryToken === token && item.status === 'workspace_file_repairable')
       ))),
       onRepairAll: recoverCandidates

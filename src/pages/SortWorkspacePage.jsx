@@ -186,6 +186,7 @@ const pendingOrganizeStatuses = new Set(['recognition_empty', 'recognized', 'sug
 
 const sortDraftAvailableKey = 'property-photo-sort-draft-available';
 const sortWorkspaceSessionCacheByProject = new Map();
+const forceDiskReloadByProject = new Set();
 
 function normalizeStatusFilter(filter) {
   return filter === 'assigned' ? 'unarchived' : (filter || 'all');
@@ -207,9 +208,15 @@ function restoreAutomaticSnapshotPhotos(snapshotPhotos) {
 export default function SortWorkspacePage({ archiveState, onNavigate, navigationRequest }) {
   const activeProject = archiveState?.activeProject;
   const projectCacheKey = activeProject?.projectId || '';
+  const forceDiskReload = forceDiskReloadByProject.has(projectCacheKey);
   const rightPanelRef = useRef(null);
   const photoBrowserRef = useRef(null);
-  const cachedSessionRef = useRef(sortWorkspaceSessionCacheByProject.get(projectCacheKey) || null);
+  const initialCachedSession = forceDiskReload
+    ? null
+    : sortWorkspaceSessionCacheByProject.get(projectCacheKey) || null;
+  const cachedSessionRef = useRef(
+    initialCachedSession?.projectId === projectCacheKey ? initialCachedSession : null
+  );
   const sessionSnapshotRef = useRef(cachedSessionRef.current);
   const hasHydratedSessionRef = useRef(false);
   const recoveredArchiveRootsRef = useRef(new Set());
@@ -219,6 +226,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const markiWorkbenchStateRef = useRef(null);
   const automaticSnapshotSaverRef = useRef(null);
   const workspaceSyncBlockedRef = useRef(false);
+  const workspaceHydrationStateRef = useRef('loading');
   const isSortWorkspaceMountedRef = useRef(true);
   const photoFolderResolutionRef = useRef(0);
   const moreMenuRef = useRef(null);
@@ -227,12 +235,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     automaticSnapshotSaverRef.current = createDebouncedSnapshotSaver({
       delayMs: 500,
       save: async (workspace) => {
-        if (workspaceSyncBlockedRef.current) {
+        if (
+          workspaceSyncBlockedRef.current
+          || workspaceHydrationStateRef.current !== 'ready'
+          || !workspace
+          || workspace.projectId !== activeProject?.projectId
+        ) {
           return {
             success: false,
             error: {
-              code: 'sort_workspace_sync_blocked',
-              message: '当前界面未同步，已停止自动保存。'
+              code: workspaceSyncBlockedRef.current
+                ? 'sort_workspace_sync_blocked'
+                : 'sort_workspace_hydration_not_ready',
+              message: workspaceSyncBlockedRef.current
+                ? '当前界面未同步，已停止自动保存。'
+                : '当前工作台尚未完成权威恢复，已停止自动保存。'
             }
           };
         }
@@ -261,6 +278,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
   const cachedSession = cachedSessionRef.current || {};
   const [isSessionHydrated, setIsSessionHydrated] = useState(false);
+  const [workspaceHydrationState, setWorkspaceHydrationState] = useState('loading');
+  workspaceHydrationStateRef.current = workspaceHydrationState;
   const [configs, setConfigs] = useState(null);
   const [settings, setSettings] = useState(null);
   const [photoFolder, setPhotoFolder] = useState('');
@@ -309,6 +328,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   function blockWorkspaceSync(notice = {}) {
     workspaceSyncBlockedRef.current = true;
+    forceDiskReloadByProject.add(projectCacheKey);
+    sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
+    cachedSessionRef.current = null;
+    sessionSnapshotRef.current = null;
     automaticSnapshotSaverRef.current?.cancel();
     automaticSnapshotSaverRef.current?.setEnabled(false);
     setWorkspaceSyncBlocked(true);
@@ -319,6 +342,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   const workspaceReady = Boolean(
+    workspaceHydrationState === 'ready'
+    &&
+    !workspaceSyncBlocked
+    &&
     isSessionHydrated
     && hasHydratedSessionRef.current
     && markiWorkbenchStateRef.current
@@ -369,10 +396,28 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     isSortWorkspaceMountedRef.current = true;
     return () => {
       isSortWorkspaceMountedRef.current = false;
-      void automaticSnapshotSaverRef.current?.flush();
+      if (
+        !workspaceSyncBlockedRef.current
+        && workspaceHydrationStateRef.current === 'ready'
+      ) {
+        void automaticSnapshotSaverRef.current?.flush();
+      } else {
+        automaticSnapshotSaverRef.current?.cancel();
+      }
       automaticSnapshotSaverRef.current?.setEnabled(false);
     };
   }, []);
+
+  function writeSessionCache(snapshot) {
+    if (
+      workspaceSyncBlockedRef.current
+      || forceDiskReloadByProject.has(projectCacheKey)
+      || workspaceHydrationStateRef.current !== 'ready'
+    ) return false;
+    sessionSnapshotRef.current = snapshot;
+    sortWorkspaceSessionCacheByProject.set(projectCacheKey, snapshot);
+    return true;
+  }
 
   async function loadActiveProjectSnapshot() {
     if (typeof window.archiveAssistant.inspectLegacySortWorkspaceSnapshot !== 'function') {
@@ -444,8 +489,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       const loadedSettings = loadedRuntimeConfiguration?.settings;
       const safeConfigs = withRuntimeConfigFallback(loadedConfigs);
       const restoredArchiveRoot = projectDirectoryResult.archiveRootDirectory;
-      const restoredFromSnapshot = !cachedSession && snapshotResult?.success === true && snapshotResult?.found === true;
-      const restoredWorkspace = cachedSession || snapshotResult?.snapshot?.workspace || {};
+      const snapshotWorkspace = snapshotResult?.snapshot?.workspace;
+      const snapshotProjectMatches = snapshotResult?.found !== true
+        || snapshotWorkspace?.projectId === activeProject?.projectId;
+      const authoritativeSnapshot = snapshotResult?.success === true && snapshotProjectMatches;
+      const canUseCachedSession = Boolean(
+        cachedSession
+        && cachedSession.projectId === activeProject?.projectId
+        && !forceDiskReloadByProject.has(projectCacheKey)
+      );
+      const restoredFromSnapshot = !canUseCachedSession
+        && authoritativeSnapshot
+        && snapshotResult?.found === true;
+      const restoredWorkspace = canUseCachedSession
+        ? cachedSession
+        : snapshotWorkspace || {};
       const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
       const restoredPhotoEntry = await inspectProjectPhotoFolder(
         restoredPhotoFolder,
@@ -561,14 +619,25 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       } else if (!cachedSession?.status && restoredPhotoFolder) {
         setStatus({ type: 'warning', text: '当前项目照片来源目录不可用，请重新选择。' });
       }
+      if (authoritativeSnapshot) {
+        forceDiskReloadByProject.delete(projectCacheKey);
+        setWorkspaceHydrationState('ready');
+        automaticSnapshotSaverRef.current?.setEnabled(true);
+      } else {
+        automaticSnapshotSaverRef.current?.cancel();
+        automaticSnapshotSaverRef.current?.setEnabled(false);
+        setWorkspaceHydrationState('failed');
+      }
       hasHydratedSessionRef.current = true;
-      automaticSnapshotSaverRef.current?.setEnabled(Boolean(cachedSession) || snapshotResult?.success === true);
       setIsSessionHydrated(true);
     }).catch(() => {
       const safeConfigs = withRuntimeConfigFallback(null);
       setConfigs(safeConfigs);
       setForm(reconcileForm(cachedSessionRef.current?.form || defaultForm, safeConfigs, activeProject));
       setStatus({ type: 'error', text: '配置或工作台状态加载失败，已使用安全默认值。' });
+      automaticSnapshotSaverRef.current?.cancel();
+      automaticSnapshotSaverRef.current?.setEnabled(false);
+      setWorkspaceHydrationState('failed');
       hasHydratedSessionRef.current = true;
       setIsSessionHydrated(true);
     });
@@ -634,7 +703,12 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }, [archiveRoot, isSessionHydrated]);
 
   useEffect(() => {
-    if (!isSessionHydrated || !hasHydratedSessionRef.current) return;
+    if (
+      !isSessionHydrated
+      || !hasHydratedSessionRef.current
+      || workspaceHydrationState !== 'ready'
+      || workspaceSyncBlocked
+    ) return;
     const snapshot = {
       projectId: activeProject.projectId,
       projectName: activeProject.projectName,
@@ -670,8 +744,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       rightPanelMode,
       batchPreparationUndo
     };
-    sessionSnapshotRef.current = snapshot;
-    sortWorkspaceSessionCacheByProject.set(projectCacheKey, snapshot);
+    writeSessionCache(snapshot);
   }, [
     photoFolder,
     archiveRoot,
@@ -704,11 +777,18 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     recognitionMessage,
     rightPanelMode,
     batchPreparationUndo,
-    isSessionHydrated
+    isSessionHydrated,
+    workspaceHydrationState,
+    workspaceSyncBlocked
   ]);
 
   useEffect(() => () => {
-    if (sessionSnapshotRef.current) {
+    if (
+      sessionSnapshotRef.current
+      && !workspaceSyncBlockedRef.current
+      && workspaceHydrationStateRef.current === 'ready'
+      && !forceDiskReloadByProject.has(projectCacheKey)
+    ) {
       sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
     }
   }, []);
@@ -1148,8 +1228,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
                 ? true
                 : Boolean(sessionSnapshotRef.current?.hasUnsavedChanges)
             };
-            sessionSnapshotRef.current = nextSession;
-            sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
+            writeSessionCache(nextSession);
             if (merged.stats.addedCount > 0 && workspace.smartSortViewMode !== 'smartSortGroup') {
               pendingMarkiFocusPhotoIdRef.current = merged.addedPhotoIds[0];
             }
@@ -1220,6 +1299,13 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
 
   useEffect(() => {
     if (
+      markiWorkspace.recovery.refreshNonce > 0
+      && markiPanelOpen
+      && markiPanelTab === 'recovery'
+    ) {
+      pendingMarkiRecoveryRefreshRef.current = true;
+    }
+    if (
       !pendingMarkiRecoveryRefreshRef.current
       || !markiPanelOpen
       || markiPanelTab !== 'recovery'
@@ -1238,7 +1324,14 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         pendingMarkiRecoveryRefreshRef.current = true;
       }
     });
-  }, [activeProject?.projectId, isSessionHydrated, markiPanelOpen, markiPanelTab, markiWorkspace.recovery.busy]);
+  }, [
+    activeProject?.projectId,
+    isSessionHydrated,
+    markiPanelOpen,
+    markiPanelTab,
+    markiWorkspace.recovery.busy,
+    markiWorkspace.recovery.refreshNonce
+  ]);
 
   useEffect(() => {
     if (!isSessionHydrated || navigationRequest?.action !== 'appendMarkiImportBatch') return undefined;
@@ -1366,12 +1459,21 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function saveAutomaticSnapshotImmediately(workspace) {
-    if (workspaceSyncBlockedRef.current) {
+    if (
+      workspaceSyncBlockedRef.current
+      || workspaceHydrationStateRef.current !== 'ready'
+      || !workspace
+      || workspace.projectId !== activeProject?.projectId
+    ) {
       return {
         success: false,
         error: {
-          code: 'sort_workspace_sync_blocked',
-          message: '当前界面未同步，已停止自动保存。'
+          code: workspaceSyncBlockedRef.current
+            ? 'sort_workspace_sync_blocked'
+            : 'sort_workspace_hydration_not_ready',
+          message: workspaceSyncBlockedRef.current
+            ? '当前界面未同步，已停止自动保存。'
+            : '当前工作台尚未完成权威恢复，已停止自动保存。'
         }
       };
     }
@@ -1446,8 +1548,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       ...restoredWorkspace,
       hasUnsavedChanges: true
     };
-    sessionSnapshotRef.current = nextSession;
-    sortWorkspaceSessionCacheByProject.set(projectCacheKey, nextSession);
+    writeSessionCache(nextSession);
     if (restoredActivePhotoId) pendingMarkiFocusPhotoIdRef.current = restoredActivePhotoId;
     const restoredPhotoFolder = String(restoredWorkspace.photoFolder || '').trim();
     setPhotoFolder(restoredPhotoFolder);
@@ -1833,12 +1934,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setPhotoFolder(selectedEntry.photoFolder);
     setLocalPhotoSourceInspection(selectedEntry.inspection);
     markiWorkbenchStateRef.current = persistedWorkspace;
-    sessionSnapshotRef.current = {
+    writeSessionCache({
       ...(sessionSnapshotRef.current || {}),
       ...persistedWorkspace,
       hasUnsavedChanges: true
-    };
-    sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+    });
     markChanged();
     try {
       const runtimeConfiguration = await window.archiveAssistant.saveRuntimeDirectory(
@@ -1894,12 +1994,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setPhotoFolder('');
       setLocalPhotoSourceInspection(null);
       markiWorkbenchStateRef.current = persistedWorkspace;
-      sessionSnapshotRef.current = {
+      writeSessionCache({
         ...(sessionSnapshotRef.current || {}),
         ...persistedWorkspace,
         hasUnsavedChanges: true
-      };
-      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      });
       markChanged();
       setStatus({
         type: 'success',
@@ -2011,12 +2110,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
       setEditingPhotoId('');
       markiWorkbenchStateRef.current = scannedWorkspace;
-      sessionSnapshotRef.current = {
+      writeSessionCache({
         ...(sessionSnapshotRef.current || {}),
         ...scannedWorkspace,
         hasUnsavedChanges: true
-      };
-      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      });
       markChanged();
       const {
         retainedMarkiCount,
@@ -2319,12 +2417,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
         activePhotoId: nextActivePhotoId
       });
       markiWorkbenchStateRef.current = nextWorkspace;
-      sessionSnapshotRef.current = {
+      writeSessionCache({
         ...(sessionSnapshotRef.current || {}),
         ...nextWorkspace,
         hasUnsavedChanges: true
-      };
-      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      });
       const snapshotResult = await saveAutomaticSnapshotImmediately(nextWorkspace);
       if (snapshotResult?.success !== true) {
         setStatus({ type: 'warning', text: '智拣结果已保留在当前工作台，但自动快照保存失败，请稍后重试。' });
@@ -2437,12 +2534,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setActiveSmartSortGroupId(nextActiveSmartSortGroupId);
     setForm(nextForm);
     markiWorkbenchStateRef.current = nextWorkspace;
-    sessionSnapshotRef.current = {
+    writeSessionCache({
       ...(sessionSnapshotRef.current || {}),
       ...nextWorkspace,
       hasUnsavedChanges: true
-    };
-    sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+    });
     setSmartSortMessage({ type: 'idle', text: '已选照片的智拣结果已重置；未选中照片及其分组保持不变。' });
     setRecognitionMessage({
       type: 'success',
@@ -3271,12 +3367,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       setHasSavedDraft(true);
       window.localStorage.setItem(sortDraftAvailableKey, 'true');
       setHasUnsavedChanges(false);
-      sessionSnapshotRef.current = {
+      writeSessionCache({
         ...(sessionSnapshotRef.current || {}),
         ...restoredWorkspace,
         hasUnsavedChanges: false
-      };
-      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      });
       const missingCount = loadedPhotos.filter((photo) => photo.originalMissing).length;
       setStatus({
         type: missingCount ? 'warning' : 'success',
@@ -3381,12 +3476,11 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       }
       setPhotos(restored);
       markiWorkbenchStateRef.current = relocatedWorkspace;
-      sessionSnapshotRef.current = {
+      writeSessionCache({
         ...(sessionSnapshotRef.current || {}),
         ...relocatedWorkspace,
         hasUnsavedChanges: true
-      };
-      sortWorkspaceSessionCacheByProject.set(projectCacheKey, sessionSnapshotRef.current);
+      });
       invalidateBatchPreparationUndo();
       markChanged();
       const remainingLocalCount = missingLocalPhotos.length - restoredCount;

@@ -84,23 +84,37 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
         const projectOptions = Array.isArray(configs?.projectOptions) ? configs.projectOptions : [];
         const existingBySourceKey = new Map(
           workspace.photos
-            .filter((photo) => normalizeText(photo?.sourceKey))
+            .filter((photo) => (
+              photo?.sourceType === 'marki_api'
+              && normalizeText(photo?.sourceKey)
+            ))
             .map((photo) => [normalizeText(photo.sourceKey), photo])
         );
         const importRoot = getMarkiImportRoot(paths.documentsPath);
         const orgIds = await listOrganizationIds(dependencies.fs, importRoot);
         const nextCandidates = [];
+        const processedWorkspaceSourceKeys = new Set();
 
         for (const orgId of orgIds) {
           let manifest;
           try {
             manifest = await dependencies.loadManifest(paths.documentsPath, orgId);
           } catch {
-            nextCandidates.push(createInvalidCandidate(orgId));
+            const hasWorkspacePhotoForOrg = workspace.photos.some((photo) => (
+              photo?.sourceType === 'marki_api'
+              && parseMarkiSourceKey(photo?.sourceKey)?.orgId === orgId
+            ));
+            if (!hasWorkspacePhotoForOrg) nextCandidates.push(createInvalidCandidate(orgId));
             continue;
           }
-          for (const invalid of manifest.invalidRecords || []) {
-            nextCandidates.push(createInvalidCandidate(orgId, invalid.index));
+          const hasWorkspacePhotoForOrg = workspace.photos.some((photo) => (
+            photo?.sourceType === 'marki_api'
+            && parseMarkiSourceKey(photo?.sourceKey)?.orgId === orgId
+          ));
+          if (!hasWorkspacePhotoForOrg) {
+            for (const invalid of manifest.invalidRecords || []) {
+              nextCandidates.push(createInvalidCandidate(orgId, invalid.index));
+            }
           }
           const importedRecords = (manifest.records || [])
             .filter((record) => record.importStatus === 'imported');
@@ -119,17 +133,50 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
             })
           });
           for (const record of importedRecords) {
-            nextCandidates.push(await inspectRecoveryRecord({
+            const sourceKey = normalizeText(record?.sourceKey);
+            if (sourceKey && processedWorkspaceSourceKeys.has(sourceKey)) continue;
+            const existingPhoto = existingBySourceKey.get(record.sourceKey) || null;
+            let candidate = await inspectRecoveryRecord({
               dependencies,
               documentsPath: paths.documentsPath,
               importRoot,
               record,
-              existingPhoto: existingBySourceKey.get(record.sourceKey) || null,
+              existingPhoto,
               activeProject: paths.activeProject,
               projectOptions,
               assignedProject: sourceStatuses.assignedProjectBySourceKey?.[record.sourceKey] || null
-            }));
+            });
+            if (existingPhoto && candidate.status === 'invalid_record') {
+              candidate = await inspectUnmatchedWorkspacePhoto({
+                dependencies,
+                documentsPath: paths.documentsPath,
+                importRoot,
+                photo: existingPhoto,
+                activeProject: paths.activeProject,
+                projectOptions,
+                skipManifest: true
+              });
+            }
+            nextCandidates.push(candidate);
+            if (sourceKey) processedWorkspaceSourceKeys.add(sourceKey);
           }
+        }
+
+        for (const photo of workspace.photos.filter((item) => (
+          item?.sourceType === 'marki_api'
+          && normalizeText(item?.sourceKey)
+        ))) {
+          const sourceKey = normalizeText(photo.sourceKey);
+          if (processedWorkspaceSourceKeys.has(sourceKey)) continue;
+          nextCandidates.push(await inspectUnmatchedWorkspacePhoto({
+            dependencies,
+            documentsPath: paths.documentsPath,
+            importRoot,
+            photo,
+            activeProject: paths.activeProject,
+            projectOptions
+          }));
+          processedWorkspaceSourceKeys.add(sourceKey);
         }
 
         candidateRecords.clear();
@@ -523,6 +570,82 @@ async function inspectCurrentWorkspaceFile(dependencies, photo, expectedSha256 =
       inspection: null
     };
   }
+}
+
+async function inspectUnmatchedWorkspacePhoto({
+  dependencies,
+  documentsPath,
+  importRoot,
+  photo,
+  activeProject,
+  projectOptions,
+  skipManifest = false
+}) {
+  const sourceKey = normalizeText(photo?.sourceKey);
+  const base = {
+    orgId: '',
+    momentId: '',
+    sourceKey,
+    sourceMetadataRef: '',
+    record: null,
+    metadata: null,
+    download: null,
+    capturedAt: normalizeText(photo?.capturedAt),
+    photographerName: '',
+    projectName: normalizeText(photo?.projectName),
+    assignedProject: null,
+    projectAssignmentSource: ''
+  };
+  if (isArchivedWorkbenchPhoto(photo)) {
+    return { ...base, status: 'already_archived' };
+  }
+
+  const parsedSourceKey = parseMarkiSourceKey(sourceKey);
+  if (!parsedSourceKey) {
+    return { ...base, status: 'workspace_file_unresolved' };
+  }
+  base.orgId = parsedSourceKey.orgId;
+  base.momentId = parsedSourceKey.momentId;
+
+  const currentHealth = await inspectCurrentWorkspaceFile(
+    dependencies,
+    photo,
+    normalizeText(photo?.fileHealth?.expectedSha256) || normalizeText(photo?.sha256)
+  );
+  const fallbackStatus = workspaceHealthStatus(currentHealth.status);
+  if (skipManifest) return { ...base, status: fallbackStatus };
+  let manifest;
+  try {
+    manifest = await dependencies.loadManifest(documentsPath, parsedSourceKey.orgId);
+  } catch {
+    return { ...base, status: fallbackStatus };
+  }
+  const record = (manifest.records || []).find((item) => item?.sourceKey === sourceKey);
+  if (!record || record.importStatus !== 'imported') {
+    return { ...base, status: fallbackStatus };
+  }
+  return inspectRecoveryRecord({
+    dependencies,
+    documentsPath,
+    importRoot,
+    record,
+    existingPhoto: photo,
+    activeProject,
+    projectOptions,
+    assignedProject: null
+  });
+}
+
+function parseMarkiSourceKey(sourceKey) {
+  const match = /^marki_api:([^:]+):([^:]+)$/.exec(normalizeText(sourceKey));
+  if (!match || !/^\d+$/.test(match[1])) return null;
+  return { orgId: match[1], momentId: match[2] };
+}
+
+function workspaceHealthStatus(status) {
+  if (status === 'missing') return 'workspace_file_missing';
+  if (status === 'corrupted') return 'workspace_file_corrupted';
+  return 'workspace_file_unresolved';
 }
 
 function sameFileInspection(left, right) {
