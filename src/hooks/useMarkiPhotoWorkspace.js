@@ -47,6 +47,9 @@ export default function useMarkiPhotoWorkspace({
   saveWorkspaceSnapshot,
   restoreWorkspaceSnapshot,
   onWorkspaceStatus,
+  onWorkspaceSyncBlocked,
+  workspaceReady = false,
+  workspaceSyncBlocked = false,
   externalBusy = false,
   enabled = true
 } = {}) {
@@ -79,16 +82,19 @@ export default function useMarkiPhotoWorkspace({
   }
 
   projectStateRef.current = {
-    busy: Boolean(busy || externalBusy),
+    busy: Boolean(busy || externalBusy || workspaceSyncBlocked),
     isRefreshingReadyBatches,
     recoveryBusy,
+    workspaceReady: workspaceReady === true,
+    workspaceSyncBlocked: workspaceSyncBlocked === true,
     sessionId: session?.sessionId || ''
   };
   recoveryContextRef.current = {
     getCurrentWorkspace,
     saveWorkspaceSnapshot,
     restoreWorkspaceSnapshot,
-    onWorkspaceStatus
+    onWorkspaceStatus,
+    onWorkspaceSyncBlocked
   };
 
   const updateBusy = useCallback((value) => {
@@ -135,6 +141,7 @@ export default function useMarkiPhotoWorkspace({
       projectStateRef.current?.busy
       || projectStateRef.current?.isRefreshingReadyBatches
       || projectStateRef.current?.recoveryBusy
+      || projectStateRef.current?.workspaceSyncBlocked
     ),
     flush: async () => ({ success: true }),
     clear: clearProjectState
@@ -176,6 +183,19 @@ export default function useMarkiPhotoWorkspace({
   const scanRecoveryCandidates = useCallback(async () => {
     if (projectStateRef.current?.recoveryBusy) return { success: false };
     const executionToken = executionGenerationRef.current;
+    const currentWorkspace = recoveryContextRef.current.getCurrentWorkspace?.();
+    if (
+      projectStateRef.current?.workspaceReady !== true
+      || !currentWorkspace
+      || currentWorkspace.projectId !== activeProject?.projectId
+    ) {
+      const error = {
+        code: 'marki_recovery_workspace_not_ready',
+        message: '当前工作台尚未恢复完成，请稍后重试。'
+      };
+      setRecoveryNotice({ type: 'warning', text: error.message });
+      return { success: false, error };
+    }
     setRecoveryBusy(true);
     setRecoveryNotice({ type: 'idle', text: '正在核对本机已下载照片...' });
     recoveryContextRef.current.onWorkspaceStatus?.({
@@ -183,7 +203,6 @@ export default function useMarkiPhotoWorkspace({
       text: '正在核对已下载的马克照片...'
     });
     try {
-      const currentWorkspace = recoveryContextRef.current.getCurrentWorkspace?.();
       const saveSnapshot = recoveryContextRef.current.saveWorkspaceSnapshot;
       const snapshotResult = typeof saveSnapshot === 'function'
         ? await saveSnapshot(currentWorkspace)
@@ -211,13 +230,18 @@ export default function useMarkiPhotoWorkspace({
       const items = Array.isArray(result.items) ? result.items : [];
       const summary = summarizeMarkiRecoveryCandidates(items);
       const recoverableCount = summary.recoverable;
-      const abnormalCount = summary.missingFile + summary.abnormal;
+      const repairableCount = summary.workspaceFileRepairable;
+      const abnormalCount = summary.missingFile
+        + summary.workspaceFileMissing
+        + summary.workspaceFileCorrupted
+        + summary.workspaceFileUnresolved
+        + summary.abnormal;
       const recoveryText = recoverableCount > 0
-        ? `发现 ${recoverableCount} 张可恢复照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常` : ''}。`
-        : `当前没有可恢复照片${abnormalCount > 0 ? `，检测到 ${abnormalCount} 项异常` : ''}。`;
+        ? `发现 ${recoverableCount} 张可恢复照片${repairableCount > 0 ? `，${repairableCount} 张工作池文件可修复` : ''}${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常` : ''}。`
+        : `当前没有可恢复照片${repairableCount > 0 ? `，发现 ${repairableCount} 张工作池文件可修复` : ''}${abnormalCount > 0 ? `，检测到 ${abnormalCount} 项异常` : ''}。`;
       const statusText = recoverableCount > 0
-        ? `发现 ${recoverableCount} 张已下载但不在工作台的马克照片${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常需核对` : ''}。`
-        : `没有发现可恢复的马克照片${abnormalCount > 0 ? `；检测到 ${abnormalCount} 项异常来源资料` : ''}。`;
+        ? `发现 ${recoverableCount} 张已下载但不在工作台的马克照片${repairableCount > 0 ? `，${repairableCount} 张工作池文件可修复` : ''}${abnormalCount > 0 ? `，另有 ${abnormalCount} 项异常需核对` : ''}。`
+        : `没有发现可恢复的马克照片${repairableCount > 0 ? `；发现 ${repairableCount} 张工作池文件可修复` : ''}${abnormalCount > 0 ? `；检测到 ${abnormalCount} 项异常来源资料` : ''}。`;
       setRecoveryCandidates(items);
       setSelectedRecoveryTokens([]);
       setRecoveryNotice({ type: abnormalCount > 0 ? 'warning' : 'success', text: recoveryText });
@@ -283,11 +307,13 @@ export default function useMarkiPhotoWorkspace({
         return result;
       }
       const snapshotResult = await window.archiveAssistant?.loadSortWorkspaceSnapshot?.(activeProject);
+      const restoredWorkspace = snapshotResult?.snapshot?.workspace;
       if (
         !isCurrentExecution(executionToken)
         || snapshotResult?.success !== true
         || snapshotResult?.found !== true
-        || !snapshotResult.snapshot?.workspace
+        || !restoredWorkspace
+        || restoredWorkspace.projectId !== activeProject?.projectId
       ) {
         const notice = {
           type: 'warning',
@@ -295,9 +321,20 @@ export default function useMarkiPhotoWorkspace({
         };
         setRecoveryNotice(notice);
         recoveryContextRef.current.onWorkspaceStatus?.(notice);
+        recoveryContextRef.current.onWorkspaceSyncBlocked?.(notice);
         return result;
       }
-      recoveryContextRef.current.restoreWorkspaceSnapshot?.(snapshotResult.snapshot.workspace);
+      const restoreResult = recoveryContextRef.current.restoreWorkspaceSnapshot?.(restoredWorkspace);
+      if (restoreResult?.success === false) {
+        const notice = {
+          type: 'warning',
+          text: '马克照片已写入自动快照，但当前界面未能同步，请重新进入照片分拣工作台。'
+        };
+        setRecoveryNotice(notice);
+        recoveryContextRef.current.onWorkspaceStatus?.(notice);
+        recoveryContextRef.current.onWorkspaceSyncBlocked?.(notice);
+        return result;
+      }
       setRecoveryCandidates((current) => current.map((item) => (
         recoveredTokens.has(item.recoveryToken)
           ? { ...item, status: 'already_in_workbench' }
@@ -322,45 +359,49 @@ export default function useMarkiPhotoWorkspace({
     }
   }, [activeProject, isCurrentExecution, recoveryBusy, selectedRecoveryTokens]);
 
-  const loadAllMembers = useCallback(async (teamId) => {
+  const loadAllMembers = useCallback(async (teamId, { manageBusy = true } = {}) => {
     const executionToken = executionGenerationRef.current;
-    updateBusy('members');
+    if (manageBusy) updateBusy('members');
     const allMembers = [];
     const seenMembers = new Set();
     const seenCursors = new Set();
     let next = '';
     let hasMore = true;
-    for (let page = 0; page < MAX_MEMBER_PAGES && hasMore; page += 1) {
-      const result = await listMarkiMembers({ teamId, ...(next ? { next } : {}) });
-      if (!isCurrentExecution(executionToken)) return;
-      if (!result?.success) {
-        updateBusy('');
-        setNotice({ type: 'error', text: result?.error?.message || '成员列表读取失败。' });
-        return;
+    try {
+      for (let page = 0; page < MAX_MEMBER_PAGES && hasMore; page += 1) {
+        const result = await listMarkiMembers({ teamId, ...(next ? { next } : {}) });
+        if (!isCurrentExecution(executionToken)) return { success: false, stale: true };
+        if (!result?.success) {
+          setNotice({ type: 'error', text: result?.error?.message || '成员列表读取失败。' });
+          return result;
+        }
+        for (const member of result.members || []) {
+          const uid = String(member.uid || '');
+          if (!uid || seenMembers.has(uid)) continue;
+          seenMembers.add(uid);
+          allMembers.push(member);
+        }
+        hasMore = result.hasMore === true;
+        const cursor = String(result.next || '');
+        if (hasMore && (!cursor || seenCursors.has(cursor))) {
+          const error = { success: false, error: { code: 'marki_member_pagination_invalid', message: '成员分页信息异常，请重新选择团队。' } };
+          setNotice({ type: 'error', text: error.error.message });
+          return error;
+        }
+        if (cursor) seenCursors.add(cursor);
+        next = cursor;
       }
-      for (const member of result.members || []) {
-        const uid = String(member.uid || '');
-        if (!uid || seenMembers.has(uid)) continue;
-        seenMembers.add(uid);
-        allMembers.push(member);
+      if (hasMore) {
+        const error = { success: false, error: { code: 'marki_member_limit_reached', message: '成员数量超过当前页面读取上限，请缩小查询范围。' } };
+        setNotice({ type: 'error', text: error.error.message });
+        return error;
       }
-      hasMore = result.hasMore === true;
-      const cursor = String(result.next || '');
-      if (hasMore && (!cursor || seenCursors.has(cursor))) {
-        updateBusy('');
-        setNotice({ type: 'error', text: '成员分页信息异常，请重新选择团队。' });
-        return;
-      }
-      if (cursor) seenCursors.add(cursor);
-      next = cursor;
-    }
-    if (hasMore) {
-      setNotice({ type: 'error', text: '成员数量超过当前页面读取上限，请缩小查询范围。' });
-    } else {
       setMembers(allMembers);
       setNotice({ type: 'success', text: `已读取 ${allMembers.length} 名成员。` });
+      return { success: true, members: allMembers };
+    } finally {
+      if (manageBusy && isCurrentExecution(executionToken)) updateBusy('');
     }
-    if (isCurrentExecution(executionToken)) updateBusy('');
   }, [isCurrentExecution, updateBusy]);
 
   const abandonCurrentSession = useCallback(async () => {
@@ -599,57 +640,114 @@ export default function useMarkiPhotoWorkspace({
     if (confirmMessage && !window.confirm(confirmMessage)) return;
     const executionToken = executionGenerationRef.current;
     updateBusy('record');
-    const result = await action(batchId, activeProject);
-    if (!isCurrentExecution(executionToken)) return;
-    updateBusy('');
-    if (!result?.success) {
-      setNotice({ type: 'error', text: result?.error?.message || '导入记录操作失败。' });
-      return;
-    }
-    await Promise.all([loadImportRecords(), loadReadyBatches()]);
-    if (!isCurrentExecution(executionToken)) return;
-    if (session?.sessionId) {
-      const refreshed = await getMarkiPhotoQuerySession(session.sessionId);
+    try {
+      if (action === undoMarkiImportBatch && typeof saveWorkspaceSnapshot === 'function') {
+        const preUndoSnapshot = await saveWorkspaceSnapshot(getCurrentWorkspace?.());
+        if (!isCurrentExecution(executionToken)) return;
+        if (preUndoSnapshot?.success !== true) {
+          setNotice({ type: 'error', text: '当前工作台保存失败，已取消撤销以避免状态覆盖。' });
+          return;
+        }
+      }
+      const result = await action(batchId, activeProject);
       if (!isCurrentExecution(executionToken)) return;
-      if (refreshed?.success) setSession(refreshed);
+      if (!result?.success) {
+        setNotice({ type: 'error', text: result?.error?.message || '导入记录操作失败。' });
+        return;
+      }
+      if (action === undoMarkiImportBatch) {
+        const snapshotResult = await window.archiveAssistant?.loadSortWorkspaceSnapshot?.(activeProject);
+        const workspace = snapshotResult?.snapshot?.workspace;
+        if (
+          !isCurrentExecution(executionToken)
+          || snapshotResult?.success !== true
+          || snapshotResult?.found !== true
+          || !workspace
+          || workspace.projectId !== activeProject?.projectId
+        ) {
+          const safeNotice = {
+            type: 'error',
+            text: '撤销已保存，但当前界面未能同步，请重新进入照片分拣工作台。'
+          };
+          setNotice(safeNotice);
+          recoveryContextRef.current.onWorkspaceStatus?.(safeNotice);
+          recoveryContextRef.current.onWorkspaceSyncBlocked?.(safeNotice);
+          return;
+        }
+        const restoreResult = recoveryContextRef.current.restoreWorkspaceSnapshot?.(workspace);
+        if (restoreResult?.success === false) {
+          const safeNotice = {
+            type: 'error',
+            text: '撤销已保存，但当前界面未能同步，请重新进入照片分拣工作台。'
+          };
+          setNotice(safeNotice);
+          recoveryContextRef.current.onWorkspaceStatus?.(safeNotice);
+          recoveryContextRef.current.onWorkspaceSyncBlocked?.(safeNotice);
+          return;
+        }
+      }
+      await Promise.all([loadImportRecords(), loadReadyBatches()]);
+      if (!isCurrentExecution(executionToken)) return;
+      if (session?.sessionId) {
+        const refreshed = await getMarkiPhotoQuerySession(session.sessionId);
+        if (!isCurrentExecution(executionToken)) return;
+        if (refreshed?.success) setSession(refreshed);
+      }
+      setSelectedTokens([]);
+      setNotice({
+        type: 'success',
+        text: action === undoMarkiImportBatch
+          ? `撤销完成：已从工作池移除 ${Number(result.removedCount) || 0} 张照片。`
+          : action === cleanupMarkiImportCache
+            ? `缓存清理完成：删除 ${Number(result.removedCount) || 0} 个安全缓存，跳过 ${Number(result.skippedCount) || 0} 个。`
+            : '导入记录已清除；已进入工作池的照片保持不变。'
+      });
+    } catch {
+      if (isCurrentExecution(executionToken)) {
+        setNotice({ type: 'error', text: '导入记录操作失败，请重试。' });
+      }
+    } finally {
+      if (isCurrentExecution(executionToken)) updateBusy('');
     }
-    setSelectedTokens([]);
-    setNotice({
-      type: 'success',
-      text: action === undoMarkiImportBatch
-        ? `撤销完成：已从工作池移除 ${Number(result.removedCount) || 0} 张照片。`
-        : action === cleanupMarkiImportCache
-          ? `缓存清理完成：删除 ${Number(result.removedCount) || 0} 个安全缓存，跳过 ${Number(result.skippedCount) || 0} 个。`
-          : '导入记录已清除；已进入工作池的照片保持不变。'
-    });
   }
 
   async function retryImportRecord(record) {
     if (isBusy) return;
     const executionToken = executionGenerationRef.current;
     updateBusy('retry');
-    const nextFilters = buildRecordRetryFilters(record, initialFilters);
-    await abandonCurrentSession();
-    if (!isCurrentExecution(executionToken)) return;
-    setFilters(nextFilters);
-    setMembers([]);
-    if (nextFilters.teamId) {
-      await loadAllMembers(nextFilters.teamId);
+    try {
+      const nextFilters = buildRecordRetryFilters(record, initialFilters);
+      await abandonCurrentSession();
       if (!isCurrentExecution(executionToken)) return;
+      setFilters(nextFilters);
+      setMembers([]);
+      if (nextFilters.teamId) {
+        const membersResult = await loadAllMembers(nextFilters.teamId, { manageBusy: false });
+        if (!isCurrentExecution(executionToken)) return;
+        if (membersResult?.success !== true) return;
+      }
+      const result = await startMarkiPhotoQuerySession(buildQueryInput(nextFilters));
+      if (!isCurrentExecution(executionToken)) {
+        if (result?.sessionId) await destroyMarkiPhotoQuerySession(result.sessionId);
+        return;
+      }
+      if (!result?.success) {
+        setNotice({ type: 'error', text: result?.error?.message || '失败照片重新查询失败。' });
+        return;
+      }
+      setSession(result);
+      setNotice({ type: 'info', text: '已按原查询条件重新读取照片，并筛选为可重试项。请选择后点击“导入到照片池”。' });
+    } catch {
+      if (isCurrentExecution(executionToken)) {
+        setNotice({ type: 'error', text: '失败照片重新查询失败，请重试。' });
+      }
+    } finally {
+      if (isCurrentExecution(executionToken)) updateBusy('');
     }
-    const result = await startMarkiPhotoQuerySession(buildQueryInput(nextFilters));
-    if (!isCurrentExecution(executionToken)) return;
-    updateBusy('');
-    if (!result?.success) {
-      setNotice({ type: 'error', text: result?.error?.message || '失败照片重新查询失败。' });
-      return;
-    }
-    setSession(result);
-    setNotice({ type: 'info', text: '已按原查询条件重新读取照片，并筛选为可重试项。请选择后点击“导入到照片池”。' });
   }
 
   const configuredReady = configured === true;
-  const isBusy = Boolean(busy || externalBusy);
+  const isBusy = Boolean(busy || externalBusy || workspaceSyncBlocked);
   const rawQueryResults = session?.photos || [];
   const projectAwareQueryResults = useMemo(() => rawQueryResults.map((photo) => ({
     ...photo,
@@ -724,8 +822,14 @@ export default function useMarkiPhotoWorkspace({
       notice: recoveryNotice,
       onToggle: toggleRecoverySelection,
       onRefresh: scanRecoveryCandidates,
-      onRecoverSelected: () => recoverCandidates(selectedRecoveryTokens),
-      onRecoverAll: recoverCandidates
+      onRecoverSelected: () => recoverCandidates(selectedRecoveryTokens.filter((token) => (
+        recoveryCandidates.some((item) => item.recoveryToken === token && item.status === 'recoverable')
+      ))),
+      onRecoverAll: recoverCandidates,
+      onRepairSelected: () => recoverCandidates(selectedRecoveryTokens.filter((token) => (
+        recoveryCandidates.some((item) => item.recoveryToken === token && item.status === 'workspace_file_repairable')
+      ))),
+      onRepairAll: recoverCandidates
     }
   };
 }

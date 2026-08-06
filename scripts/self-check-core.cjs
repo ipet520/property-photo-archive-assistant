@@ -9264,6 +9264,10 @@ async function checkMarkiWorkbenchRehydration(root) {
     assert.equal(Boolean(condition), true, message);
     counters.assertionCount += 1;
   };
+  const deepEqual = (actual, expected, message) => {
+    assert.deepEqual(actual, expected, message);
+    counters.assertionCount += 1;
+  };
   const scenario = () => {
     counters.scenarioCount += 1;
   };
@@ -9396,6 +9400,37 @@ async function checkMarkiWorkbenchRehydration(root) {
     orgId: '6107',
     momentId: 'already-archived'
   });
+  const workspaceMissing = await createImportedFixture({
+    orgId: '6110',
+    momentId: 'workspace-missing'
+  });
+  const workspaceCorrupted = await createImportedFixture({
+    orgId: '6111',
+    momentId: 'workspace-corrupted'
+  });
+  const workspaceMissingSource = await createImportedFixture({
+    orgId: '6112',
+    momentId: 'workspace-source-missing',
+    withFile: false
+  });
+  const workspaceCorruptedSource = await createImportedFixture({
+    orgId: '6113',
+    momentId: 'workspace-source-corrupted',
+    withFile: false
+  });
+  const workspaceUnresolved = await createImportedFixture({
+    orgId: '6114',
+    momentId: 'workspace-unresolved',
+    withFile: false
+  });
+  const currentMissingPath = path.join(root, 'workspace-missing-current.jpg');
+  const currentCorruptedPath = path.join(root, 'workspace-corrupted-current.jpg');
+  const currentMissingSourcePath = path.join(root, 'workspace-source-missing-current.jpg');
+  const currentCorruptedSourcePath = path.join(root, 'workspace-source-corrupted-current.jpg');
+  const currentUnresolvedPath = path.join(root, 'workspace-unresolved-current.jpg');
+  await fs.writeFile(currentCorruptedPath, Buffer.from('not-a-jpeg'));
+  await fs.writeFile(currentCorruptedSourcePath, Buffer.from('not-a-jpeg'));
+  await fs.writeFile(currentUnresolvedPath, workspaceUnresolved.jpeg);
 
   const initialWorkspace = {
     ...createEmptyWorkspace(),
@@ -9467,6 +9502,97 @@ async function checkMarkiWorkbenchRehydration(root) {
       ? 'marki_structured_confirmed'
       : 'active_project_context'
   }));
+  const repairPhotoId = 'marki-workspace-missing';
+  const repairPhoto = {
+    id: repairPhotoId,
+    originalPath: currentMissingPath,
+    originalName: workspaceMissing.fileName,
+    extension: '.jpg',
+    size: workspaceMissing.inspection.size,
+    width: workspaceMissing.inspection.width,
+    height: workspaceMissing.inspection.height,
+    sha256: workspaceMissing.inspection.sha256,
+    modifiedAt: '2026-07-18T03:00:00.000Z',
+    capturedAt: '2026-07-18T02:00:00.000Z',
+    selected: true,
+    sortStatus: 'suggestion_ready',
+    archiveInfo: null,
+    previewInfo: null,
+    archiveResult: null,
+    originalMissing: true,
+    sourceType: 'marki_api',
+    sourceKey: workspaceMissing.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(workspaceMissing.orgId, workspaceMissing.momentId),
+    ...rehydrateProject,
+    projectAssignmentSource: 'marki_structured_confirmed'
+  };
+  const corruptedPhoto = {
+    ...repairPhoto,
+    id: 'marki-workspace-corrupted',
+    originalPath: currentCorruptedPath,
+    sourceKey: workspaceCorrupted.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(workspaceCorrupted.orgId, workspaceCorrupted.momentId),
+    originalMissing: false
+  };
+  const missingSourcePhoto = {
+    ...repairPhoto,
+    id: 'marki-workspace-source-missing',
+    originalPath: currentMissingSourcePath,
+    sourceKey: workspaceMissingSource.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(workspaceMissingSource.orgId, workspaceMissingSource.momentId),
+    originalMissing: true
+  };
+  const corruptedSourcePhoto = {
+    ...repairPhoto,
+    id: 'marki-workspace-source-corrupted',
+    originalPath: currentCorruptedSourcePath,
+    sourceKey: workspaceCorruptedSource.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(workspaceCorruptedSource.orgId, workspaceCorruptedSource.momentId),
+    originalMissing: false
+  };
+  const unresolvedPhoto = {
+    ...repairPhoto,
+    id: 'marki-workspace-unresolved',
+    originalPath: currentUnresolvedPath,
+    sourceKey: workspaceUnresolved.sourceKey,
+    sourceMetadataRef: buildMarkiSourceMetadataRef(workspaceUnresolved.orgId, workspaceUnresolved.momentId),
+    originalMissing: false
+  };
+  initialWorkspace.photos.push(
+    corruptedPhoto,
+    missingSourcePhoto,
+    corruptedSourcePhoto,
+    unresolvedPhoto,
+    repairPhoto
+  );
+  initialWorkspace.selectedIds = [repairPhotoId];
+  initialWorkspace.activePhotoId = repairPhotoId;
+  initialWorkspace.recognitionResultsByPhoto[repairPhotoId] = {
+    source: 'marki_api',
+    providerType: 'structured_data',
+    sourceAwareProcessing: { strategy: 'platform_only' }
+  };
+  initialWorkspace.watermarkRecordsByPhoto[repairPhotoId] = {
+    date: '2026-07-18',
+    project: '测试小区',
+    workContent: '设施巡查'
+  };
+  initialWorkspace.archiveSuggestionsByPhoto[repairPhotoId] = {
+    suggestedFields: { 项目: '测试小区', 工作内容: '设施巡查' }
+  };
+  initialWorkspace.form = {
+    project: '修复前项目',
+    remarks: '修复前表单'
+  };
+  initialWorkspace.photoDraftByPhotoId[repairPhotoId] = {
+    remarks: '修复前人工备注'
+  };
+  initialWorkspace.smartSortResult = {
+    groups: [{ id: 'repair-group', name: '修复前分组', photoIds: [repairPhotoId] }]
+  };
+  initialWorkspace.groupDraftByGroupId = {
+    'repair-group': { remarks: '修复前组草稿' }
+  };
   await fs.writeFile(initialWorkspace.photos[0].originalPath, createTestJpeg(1, 1));
   check(
     (await saveSortWorkspaceSnapshot(
@@ -9676,6 +9802,10 @@ async function checkMarkiWorkbenchRehydration(root) {
   check(scanResult.counts.corrupted_file === 1, '应识别文件校验异常');
   check(scanResult.counts.missing_metadata === 1, '应识别来源元数据缺失');
   check(scanResult.counts.invalid_record === 1, '损坏记录应逐条隔离');
+  check(scanResult.counts.workspace_file_repairable === 2, '应识别当前工作池中可由可信 JPG 修复的照片');
+  check(scanResult.counts.workspace_file_missing === 1, '可信来源缺失且工作池原图缺失时应标记 workspace_file_missing');
+  check(scanResult.counts.workspace_file_corrupted === 1, '可信来源缺失且工作池原图损坏时应标记 workspace_file_corrupted');
+  check(scanResult.counts.workspace_file_unresolved === 1, '可信来源缺失但工作池文件仍存在时应标记 workspace_file_unresolved');
   scenario();
 
   check(
@@ -9739,7 +9869,7 @@ async function checkMarkiWorkbenchRehydration(root) {
     { activeProject: rehydrateProject }
   );
   check(recoveredSnapshot.success && recoveredSnapshot.found, '恢复后自动快照应可重新加载');
-  check(recoveredSnapshot.snapshot.workspace.photos.length === 4, '恢复后应保留三张旧照片并新增一张');
+  check(recoveredSnapshot.snapshot.workspace.photos.length === 9, '恢复后应保留全部既有工作池照片并新增一张');
   check(recoveredSnapshot.snapshot.workspace.photos[0].id === 'local-existing', '本地 OCR 照片对象和顺序必须保持');
   scenario();
 
@@ -9811,7 +9941,7 @@ async function checkMarkiWorkbenchRehydration(root) {
     (await loadSortWorkspaceSnapshot(
       userDataPath,
       { activeProject: rehydrateProject }
-    )).snapshot.workspace.photos.length === 4,
+    )).snapshot.workspace.photos.length === 9,
     '重复恢复不得生成重复照片'
   );
   scenario();
@@ -9843,6 +9973,70 @@ async function checkMarkiWorkbenchRehydration(root) {
     scanResult.items.some((item) => item.projectName === '测试小区' && item.status === 'recoverable'),
     '损坏记录不得阻断同清单其他可恢复记录'
   );
+  scenario();
+
+  const repairCandidate = rescan.items.find((item) => item.status === 'workspace_file_repairable');
+  const repairSnapshotBefore = (await loadSortWorkspaceSnapshot(
+    userDataPath,
+    { activeProject: rehydrateProject }
+  )).snapshot.workspace;
+  const repairPhotoBefore = repairSnapshotBefore.photos.find((photo) => photo.id === repairPhotoId);
+  const repairArtifactsBefore = {
+    recognition: repairSnapshotBefore.recognitionResultsByPhoto[repairPhotoId],
+    watermark: repairSnapshotBefore.watermarkRecordsByPhoto[repairPhotoId],
+    suggestion: repairSnapshotBefore.archiveSuggestionsByPhoto[repairPhotoId],
+    form: repairSnapshotBefore.form,
+    selectedIds: repairSnapshotBefore.selectedIds,
+    activePhotoId: repairSnapshotBefore.activePhotoId,
+    photoDraft: repairSnapshotBefore.photoDraftByPhotoId[repairPhotoId],
+    groupDraft: repairSnapshotBefore.groupDraftByGroupId['repair-group'],
+    smartSort: repairSnapshotBefore.smartSortResult
+  };
+  const repairResult = await service.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    activeProject: rehydrateProject,
+    recoveryTokens: [repairCandidate.recoveryToken]
+  });
+  const repairSnapshotAfter = (await loadSortWorkspaceSnapshot(
+    userDataPath,
+    { activeProject: rehydrateProject }
+  )).snapshot.workspace;
+  const repairSnapshotRawAfter = JSON.parse(await fs.readFile(
+    getSortWorkspaceSnapshotPath(userDataPath, rehydrateProject),
+    'utf8'
+  )).workspace;
+  const repairedPhoto = repairSnapshotAfter.photos.find((photo) => photo.id === repairPhotoId);
+  const rawRepairedPhoto = repairSnapshotRawAfter.photos.find((photo) => photo.id === repairPhotoId);
+  check(repairResult.success && repairResult.status === 'repaired' && repairResult.repairedCount === 1, `工作池缺失文件应使用可信来源 JPG 完成原位修复：${JSON.stringify(repairResult)}`);
+  check(
+    repairedPhoto.sourceKey === repairPhotoBefore.sourceKey
+      && (await fs.realpath(repairedPhoto.originalPath)).toLowerCase() === (await fs.realpath(workspaceMissing.localPath)).toLowerCase(),
+    '文件修复不得改变照片 id/sourceKey 且应指向可信来源文件'
+  );
+  check(rawRepairedPhoto.fileHealth.healthStatus === 'healthy' && rawRepairedPhoto.originalMissing === false, '文件修复后持久化健康状态必须为 healthy');
+  deepEqual(repairSnapshotAfter.recognitionResultsByPhoto[repairPhotoId], repairArtifactsBefore.recognition, '文件修复不得改动 platform recognition');
+  deepEqual(repairSnapshotAfter.watermarkRecordsByPhoto[repairPhotoId], repairArtifactsBefore.watermark, '文件修复不得改动 watermark');
+  deepEqual(repairSnapshotAfter.archiveSuggestionsByPhoto[repairPhotoId], repairArtifactsBefore.suggestion, '文件修复不得改动 suggestion');
+  deepEqual(repairSnapshotAfter.form, repairArtifactsBefore.form, '文件修复不得改动当前表单');
+  deepEqual(repairSnapshotAfter.selectedIds, repairArtifactsBefore.selectedIds, '文件修复不得改动照片选择');
+  check(repairSnapshotAfter.activePhotoId === repairArtifactsBefore.activePhotoId, '文件修复不得改动当前照片');
+  deepEqual(repairSnapshotAfter.photoDraftByPhotoId[repairPhotoId], repairArtifactsBefore.photoDraft, '文件修复不得改动照片草稿');
+  deepEqual(repairSnapshotAfter.groupDraftByGroupId['repair-group'], repairArtifactsBefore.groupDraft, '文件修复不得改动组草稿');
+  deepEqual(repairSnapshotAfter.smartSortResult, repairArtifactsBefore.smartSort, '文件修复不得改动分组 membership');
+  scenario();
+
+  const unresolvedCandidate = rescan.items.find((item) => item.status === 'workspace_file_unresolved');
+  const unresolvedSnapshotPath = getSortWorkspaceSnapshotPath(userDataPath, rehydrateProject);
+  const unresolvedSnapshotBefore = await fs.readFile(unresolvedSnapshotPath);
+  const unresolvedResult = await service.recoverMarkiWorkbenchCandidates({
+    documentsPath,
+    userDataPath,
+    activeProject: rehydrateProject,
+    recoveryTokens: [unresolvedCandidate.recoveryToken]
+  });
+  check(unresolvedResult.success === false && unresolvedResult.error.code === 'marki_recovery_token_invalid', '无法确认的工作池文件不得伪装成可修复项');
+  check((await fs.readFile(unresolvedSnapshotPath)).equals(unresolvedSnapshotBefore), '无法确认时不得修改工作台快照');
   scenario();
 
   const unavailableSnapshotService = createMarkiWorkbenchRehydrateService({
@@ -10037,7 +10231,7 @@ async function checkMarkiWorkbenchRehydration(root) {
   counters.sourceContractCount += 1;
   scenario();
 
-  check(counters.scenarioCount === 27, '历史 Marki 工作台恢复应完整执行 27 个边界场景');
+  check(counters.scenarioCount === 29, '历史 Marki 工作台恢复应完整执行 29 个边界场景');
   console.log(
     `历史 Marki 工作台恢复自检通过：${counters.scenarioCount} 个行为场景，${counters.assertionCount} 个断言，其中 ${counters.sourceContractCount} 个源码契约断言。`
   );
@@ -16152,6 +16346,15 @@ async function checkSourceContracts() {
   assert.equal(markiHookSource.includes('recoveryCandidates'), true, '统一 Marki hook 应持有恢复候选状态');
   assert.equal(markiHookSource.includes('scanRecoveryCandidates'), true, '统一 Marki hook 应持有恢复扫描操作');
   assert.equal(markiHookSource.includes('recoverCandidates'), true, '统一 Marki hook 应持有令牌恢复操作');
+  assert.equal(markiHookSource.includes('workspaceReady'), true, '统一 Marki hook 必须接收 hydration 完成闸门');
+  assert.equal(markiHookSource.includes('marki_recovery_workspace_not_ready'), true, '恢复扫描未完成 hydration 时必须安全拒绝');
+  assert.equal(markiHookSource.includes("loadAllMembers(nextFilters.teamId, { manageBusy: false })"), true, '失败重试加载成员不得清除外层 retry busy');
+  assert.equal(markiHookSource.includes('destroyMarkiPhotoQuerySession(result.sessionId)'), true, '项目切换或卸载后必须销毁未接管的重试会话');
+  assert.equal(markiHookSource.includes('撤销已保存，但当前界面未能同步，请重新进入照片分拣工作台。'), true, '撤销快照与界面不同步必须显示安全提示');
+  assert.equal(workspaceSource.includes('pendingMarkiRecoveryRefreshRef'), true, '恢复入口必须等待工作台 hydration 后再扫描');
+  assert.equal(workspaceSource.includes('workspaceSyncBlockedRef.current'), true, '撤销同步失败后必须阻断旧 renderer 自动保存');
+  assert.equal(workspaceSource.includes('onWorkspaceSyncBlocked: blockWorkspaceSync'), true, '页面必须接收统一工作台同步阻断回调');
+  assert.equal(markiRecoverySectionSource.includes('workspace_file_repairable'), true, '恢复区必须区分工作池文件可修复状态');
   assert.equal(workspaceSource.includes('markiRecoveryCandidates'), false, '工作台页面不得保留第二套 Marki 恢复状态');
   assert.equal(markiPanelSource.includes('selectionToken'), true, '统一面板选择只能使用不透明 selectionToken');
   assert.equal(
@@ -16648,6 +16851,10 @@ async function checkSortWorkspaceToolbar(root) {
     alreadyInWorkbench: 1,
     alreadyArchived: 1,
     missingFile: 1,
+    workspaceFileMissing: 0,
+    workspaceFileCorrupted: 0,
+    workspaceFileRepairable: 0,
+    workspaceFileUnresolved: 0,
     abnormal: 2
   }, '恢复弹窗应逐项统计五类安全状态');
   deepEqual(
@@ -16667,6 +16874,15 @@ async function checkSortWorkspaceToolbar(root) {
     }),
     '恢复完成：新增 2 张，跳过重复 1 张，失败 1 张。',
     '恢复完成反馈必须包含新增、重复和失败统计'
+  );
+  equal(
+    recoveryModule.buildMarkiRecoveryCompletionNotice({
+      status: 'repaired',
+      repairedCount: 2,
+      skippedCount: 1
+    }),
+    '修复完成：恢复工作池文件 2 张，跳过 1 张。',
+    '工作池文件修复反馈必须与历史照片恢复反馈区分'
   );
 
   scenarioCount += 1;

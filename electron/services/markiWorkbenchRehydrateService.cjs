@@ -29,6 +29,10 @@ const RECOVERY_STATUSES = Object.freeze([
   'recoverable',
   'already_in_workbench',
   'already_archived',
+  'workspace_file_missing',
+  'workspace_file_corrupted',
+  'workspace_file_repairable',
+  'workspace_file_unresolved',
   'missing_file',
   'corrupted_file',
   'missing_metadata',
@@ -164,7 +168,7 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
         const recoveryTokens = normalizeRecoveryTokens(input);
         const selectedCandidates = recoveryTokens.map((token) => {
           const candidate = candidateRecords.get(token);
-          if (!candidate || candidate.status !== 'recoverable') {
+          if (!candidate || !['recoverable', 'workspace_file_repairable'].includes(candidate.status)) {
             throw new MarkiWorkbenchRehydrateError(
               'marki_recovery_token_invalid',
               '恢复选择已失效，请重新扫描后再试。'
@@ -172,10 +176,25 @@ function createMarkiWorkbenchRehydrateService(defaultOptions = {}) {
           }
           return candidate;
         });
+        const selectedStatuses = new Set(selectedCandidates.map((candidate) => candidate.status));
+        if (selectedStatuses.size > 1) {
+          throw new MarkiWorkbenchRehydrateError(
+            'marki_recovery_mixed_selection',
+            '请分别处理可恢复照片和工作池文件修复项。'
+          );
+        }
         const snapshotResult = await dependencies.loadSnapshot(paths.userDataPath, {
           activeProject: paths.activeProject
         });
         const currentWorkspace = resolveWorkspace(snapshotResult);
+        if (selectedStatuses.has('workspace_file_repairable')) {
+          return repairExistingWorkspaceCandidates({
+            dependencies,
+            paths,
+            currentWorkspace,
+            selectedCandidates
+          });
+        }
         const existingSourceKeys = new Set(
           currentWorkspace.photos
             .map((photo) => normalizeText(photo?.sourceKey))
@@ -338,13 +357,8 @@ async function inspectRecoveryRecord({
     assignedProject: assignedProject || null,
     projectAssignmentSource: ''
   };
-  if (existingPhoto) {
-    return {
-      ...base,
-      status: isArchivedWorkbenchPhoto(existingPhoto)
-        ? 'already_archived'
-        : 'already_in_workbench'
-    };
+  if (existingPhoto && isArchivedWorkbenchPhoto(existingPhoto)) {
+    return { ...base, status: 'already_archived' };
   }
   if (
     !base.orgId
@@ -355,30 +369,63 @@ async function inspectRecoveryRecord({
     return { ...base, status: 'invalid_record' };
   }
 
-  let resolvedFile;
+  let trustedDownload;
   try {
-    resolvedFile = await resolveTrustedDownloadFile(
-      dependencies.fs,
+    trustedDownload = await inspectTrustedDownload({
+      dependencies,
       importRoot,
-      base.orgId,
-      base.momentId,
-      record.downloadInfo
-    );
+      orgId: base.orgId,
+      momentId: base.momentId,
+      downloadInfo: record.downloadInfo
+    });
   } catch (error) {
+    if (existingPhoto) {
+      const currentHealth = await inspectCurrentWorkspaceFile(
+        dependencies,
+        existingPhoto,
+        normalizeText(existingPhoto.fileHealth?.expectedSha256) || normalizeText(existingPhoto.sha256)
+      );
+      return {
+        ...base,
+        status: currentHealth.status === 'missing'
+          ? 'workspace_file_missing'
+          : currentHealth.status === 'corrupted'
+            ? 'workspace_file_corrupted'
+            : 'workspace_file_unresolved'
+      };
+    }
     return {
       ...base,
-      status: error?.code === 'ENOENT' ? 'missing_file' : 'invalid_record'
+      status: error?.code === 'ENOENT'
+        ? 'missing_file'
+        : ['marki_recovery_path_invalid', 'marki_recovery_file_invalid'].includes(error?.code)
+          ? 'invalid_record'
+          : 'corrupted_file'
     };
   }
 
-  let inspection;
-  try {
-    inspection = await dependencies.inspectJpeg(resolvedFile.localPath);
-    assertDownloadInfoMatches(record.downloadInfo, inspection);
-  } catch (error) {
+  if (existingPhoto) {
+    const currentHealth = await inspectCurrentWorkspaceFile(
+      dependencies,
+      existingPhoto,
+      trustedDownload.inspection.sha256
+    );
+    if (
+      currentHealth.status === 'healthy'
+      && currentHealth.inspection
+      && sameFileInspection(currentHealth.inspection, trustedDownload.inspection)
+    ) {
+      return {
+        ...base,
+        status: 'already_in_workbench',
+        download: trustedDownload.download
+      };
+    }
     return {
       ...base,
-      status: error?.code === 'ENOENT' ? 'missing_file' : 'corrupted_file'
+      status: 'workspace_file_repairable',
+      download: trustedDownload.download,
+      currentFileHealth: currentHealth
     };
   }
 
@@ -424,23 +471,193 @@ async function inspectRecoveryRecord({
     status: 'recoverable',
     sourceMetadataRef: expectedMetadataRef,
     metadata,
-    download: {
-      sourceKey: base.sourceKey,
-      importStatus: 'imported',
-      localPath: resolvedFile.localPath,
-      relativePath: record.downloadInfo.relativePath,
-      fileName: record.downloadInfo.fileName,
-      size: inspection.size,
-      width: inspection.width,
-      height: inspection.height,
-      sha256: inspection.sha256,
-      completedAt: record.downloadInfo.completedAt
-    },
+    download: trustedDownload.download,
     capturedAt: normalizeText(metadata.capturedAt) || formatPostTime(metadata.postTime),
     photographerName: findMetadataValue(metadata.parsedEntries, '上传人'),
     projectName: sourceProjectText,
     projectAssignmentSource: projectAssignment.projectAssignmentSource,
     assignedProject: projectAssignment.assignedProject
+  };
+}
+
+async function inspectTrustedDownload({ dependencies, importRoot, orgId, momentId, downloadInfo }) {
+  const resolvedFile = await resolveTrustedDownloadFile(
+    dependencies.fs,
+    importRoot,
+    orgId,
+    momentId,
+    downloadInfo
+  );
+  const inspection = await dependencies.inspectJpeg(resolvedFile.localPath);
+  assertDownloadInfoMatches(downloadInfo, inspection);
+  return {
+    localPath: resolvedFile.localPath,
+    inspection,
+    download: {
+      sourceKey: buildMarkiSourceKey(orgId, momentId),
+      importStatus: 'imported',
+      localPath: resolvedFile.localPath,
+      relativePath: downloadInfo.relativePath,
+      fileName: downloadInfo.fileName,
+      size: inspection.size,
+      width: inspection.width,
+      height: inspection.height,
+      sha256: inspection.sha256,
+      completedAt: downloadInfo.completedAt
+    }
+  };
+}
+
+async function inspectCurrentWorkspaceFile(dependencies, photo, expectedSha256 = '') {
+  const localPath = normalizeText(photo?.originalPath);
+  if (!localPath || !path.isAbsolute(localPath)) return { status: 'missing', inspection: null };
+  try {
+    const inspection = await dependencies.inspectJpeg(localPath);
+    if (expectedSha256 && normalizeText(inspection?.sha256).toLowerCase() !== expectedSha256.toLowerCase()) {
+      return { status: 'corrupted', inspection };
+    }
+    return { status: 'healthy', inspection };
+  } catch (error) {
+    return {
+      status: error?.code === 'ENOENT' ? 'missing' : 'corrupted',
+      inspection: null
+    };
+  }
+}
+
+function sameFileInspection(left, right) {
+  return Boolean(
+    left
+    && right
+    && Number(left.size) === Number(right.size)
+    && Number(left.width) === Number(right.width)
+    && Number(left.height) === Number(right.height)
+    && normalizeText(left.sha256).toLowerCase() === normalizeText(right.sha256).toLowerCase()
+  );
+}
+
+async function repairExistingWorkspaceCandidates({ dependencies, paths, currentWorkspace, selectedCandidates }) {
+  const configs = await dependencies.loadConfigs(paths.documentsPath);
+  const projectOptions = Array.isArray(configs?.projectOptions) ? configs.projectOptions : [];
+  const manifestCache = new Map();
+  const photos = Array.isArray(currentWorkspace.photos) ? [...currentWorkspace.photos] : [];
+  let repairedCount = 0;
+  let skippedCount = 0;
+
+  for (const candidate of selectedCandidates) {
+    const photoIndex = photos.findIndex((photo) => photo?.sourceKey === candidate.sourceKey);
+    if (photoIndex < 0) {
+      throw new MarkiWorkbenchRehydrateError(
+        'marki_recovery_token_invalid',
+        '工作池照片已变化，请重新扫描后再试。'
+      );
+    }
+    const existingPhoto = photos[photoIndex];
+    let manifest = manifestCache.get(candidate.orgId);
+    if (!manifest) {
+      manifest = await dependencies.loadManifest(paths.documentsPath, candidate.orgId);
+      manifestCache.set(candidate.orgId, manifest);
+    }
+    const record = (manifest.records || []).find((item) => item.sourceKey === candidate.sourceKey);
+    if (!record || record.importStatus !== 'imported') {
+      throw new MarkiWorkbenchRehydrateError(
+        'marki_recovery_record_changed',
+        '马克来源记录已变化，请重新扫描后再试。'
+      );
+    }
+    const inspected = await inspectRecoveryRecord({
+      dependencies,
+      documentsPath: paths.documentsPath,
+      importRoot: getMarkiImportRoot(paths.documentsPath),
+      record,
+      existingPhoto,
+      activeProject: paths.activeProject,
+      projectOptions,
+      assignedProject: candidate.assignedProject
+    });
+    if (inspected.status === 'already_in_workbench') {
+      skippedCount += 1;
+      continue;
+    }
+    if (inspected.status !== 'workspace_file_repairable' || !inspected.download) {
+      throw new MarkiWorkbenchRehydrateError(
+        `marki_recovery_${inspected.status}`,
+        '工作池文件当前无法安全修复，请重新扫描后再试。'
+      );
+    }
+    photos[photoIndex] = buildRepairedWorkspacePhoto(existingPhoto, inspected.download);
+    repairedCount += 1;
+  }
+
+  if (repairedCount === 0) {
+    for (const candidate of selectedCandidates) candidate.status = 'already_in_workbench';
+    return {
+      success: true,
+      status: 'nothing_to_recover',
+      recoveredCount: 0,
+      repairedCount: 0,
+      duplicateCount: skippedCount,
+      conflictCount: 0,
+      skippedCount
+    };
+  }
+
+  const nextWorkspace = {
+    ...currentWorkspace,
+    projectId: paths.activeProject.projectId,
+    projectName: paths.activeProject.projectName,
+    photos
+  };
+  const snapshotSaveResult = await dependencies.saveSnapshot(
+    paths.userDataPath,
+    nextWorkspace,
+    { activeProject: paths.activeProject }
+  );
+  if (snapshotSaveResult?.success !== true) {
+    throw new MarkiWorkbenchRehydrateError(
+      'marki_recovery_snapshot_save_failed',
+      '文件修复结果未写入工作台，请重试。'
+    );
+  }
+  for (const candidate of selectedCandidates) candidate.status = 'already_in_workbench';
+  return {
+    success: true,
+    status: 'repaired',
+    recoveredCount: 0,
+    repairedCount,
+    duplicateCount: skippedCount,
+    conflictCount: 0,
+    skippedCount
+  };
+}
+
+function buildRepairedWorkspacePhoto(photo, download) {
+  return {
+    ...photo,
+    originalPath: download.localPath,
+    originalName: download.fileName,
+    extension: '.jpg',
+    size: Number(download.size) || 0,
+    width: Number(download.width) || 0,
+    height: Number(download.height) || 0,
+    sha256: download.sha256,
+    originalMissing: false,
+    fileHealth: {
+      resolvedPath: download.localPath,
+      exists: true,
+      isFile: true,
+      readable: true,
+      size: Number(download.size) || 0,
+      sizeValid: Number(download.size) > 0,
+      mimeType: 'image/jpeg',
+      extensionSupported: true,
+      decodable: true,
+      currentSha256: download.sha256,
+      expectedSha256: download.sha256,
+      fingerprintMatches: true,
+      healthStatus: 'healthy',
+      failureReason: ''
+    }
   };
 }
 

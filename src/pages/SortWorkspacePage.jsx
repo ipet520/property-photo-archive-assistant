@@ -215,8 +215,10 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const recoveredArchiveRootsRef = useRef(new Set());
   const processedMarkiImportRequestNoncesRef = useRef(new Set());
   const pendingMarkiFocusPhotoIdRef = useRef('');
+  const pendingMarkiRecoveryRefreshRef = useRef(false);
   const markiWorkbenchStateRef = useRef(null);
   const automaticSnapshotSaverRef = useRef(null);
+  const workspaceSyncBlockedRef = useRef(false);
   const isSortWorkspaceMountedRef = useRef(true);
   const photoFolderResolutionRef = useRef(0);
   const moreMenuRef = useRef(null);
@@ -225,6 +227,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     automaticSnapshotSaverRef.current = createDebouncedSnapshotSaver({
       delayMs: 500,
       save: async (workspace) => {
+        if (workspaceSyncBlockedRef.current) {
+          return {
+            success: false,
+            error: {
+              code: 'sort_workspace_sync_blocked',
+              message: '当前界面未同步，已停止自动保存。'
+            }
+          };
+        }
         try {
           if (typeof window.archiveAssistant?.saveSortWorkspaceSnapshot !== 'function') {
             return {
@@ -272,6 +283,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [showConfirm, setShowConfirm] = useState(false);
   const [status, setStatus] = useState(() => cachedSession.status || { type: 'idle', text: '请选择照片文件夹并扫描照片。' });
   const [isBusy, setIsBusy] = useState(false);
+  const [workspaceSyncBlocked, setWorkspaceSyncBlocked] = useState(false);
   const [page, setPage] = useState(() => Number(cachedSession.page) || 1);
   const [pageSize, setPageSize] = useState(() => Number(cachedSession.pageSize) || 50);
   const [smartSortResult, setSmartSortResult] = useState(() => cachedSession.smartSortResult || null);
@@ -295,6 +307,24 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   const [markiPanelOpen, setMarkiPanelOpen] = useState(false);
   const [markiPanelTab, setMarkiPanelTab] = useState('query');
 
+  function blockWorkspaceSync(notice = {}) {
+    workspaceSyncBlockedRef.current = true;
+    automaticSnapshotSaverRef.current?.cancel();
+    automaticSnapshotSaverRef.current?.setEnabled(false);
+    setWorkspaceSyncBlocked(true);
+    setStatus({
+      type: 'error',
+      text: notice.text || '当前界面未能同步，请重新进入照片分拣工作台。'
+    });
+  }
+
+  const workspaceReady = Boolean(
+    isSessionHydrated
+    && hasHydratedSessionRef.current
+    && markiWorkbenchStateRef.current
+    && markiWorkbenchStateRef.current.projectId === activeProject?.projectId
+  );
+
   const markiWorkspace = useMarkiPhotoWorkspace({
     archiveState,
     enabled: markiPanelInitialized,
@@ -303,6 +333,9 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     saveWorkspaceSnapshot: saveAutomaticSnapshotImmediately,
     restoreWorkspaceSnapshot: applyAutomaticSnapshotWorkspace,
     onWorkspaceStatus: setStatus,
+    onWorkspaceSyncBlocked: blockWorkspaceSync,
+    workspaceReady,
+    workspaceSyncBlocked,
     externalBusy: isBusy
   });
 
@@ -696,6 +729,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
       sortWorkspaceSessionCacheByProject.delete(projectCacheKey);
       sessionSnapshotRef.current = null;
       markiWorkbenchStateRef.current = null;
+      workspaceSyncBlockedRef.current = false;
+      setWorkspaceSyncBlocked(false);
       await markiWorkspace.controller.clear();
     }
   }), [
@@ -704,7 +739,8 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     isRecognitionBusy,
     isSmartSortBusy,
     markiWorkspace.controller,
-    projectCacheKey
+    projectCacheKey,
+    workspaceSyncBlocked
   ]);
 
   useEffect(() => {
@@ -975,7 +1011,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   });
   const recognitionSummary = useMemo(() => summarizeRecognitionResults(recognitionResultsByPhoto), [recognitionResultsByPhoto]);
   const markiPanelBusy = markiWorkspace.controller.isBusy();
-  const batchActionsBusy = isBusy || isRecognitionBusy || isSmartSortBusy || markiPanelBusy;
+  const batchActionsBusy = workspaceSyncBlocked || isBusy || isRecognitionBusy || isSmartSortBusy || markiPanelBusy;
   const smartSortProgressVisible = isRecognitionBusy || isSmartSortBusy;
   const smartSortProgressPercent = isSmartSortBusy
     ? 92
@@ -1179,8 +1215,30 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setMarkiPanelInitialized(true);
     setMarkiPanelTab(navigationRequest.payload?.tab || 'query');
     setMarkiPanelOpen(true);
-    if (navigationRequest.payload?.tab === 'recovery') void markiWorkspace.recovery.onRefresh();
+    if (navigationRequest.payload?.tab === 'recovery') pendingMarkiRecoveryRefreshRef.current = true;
   }, [navigationRequest?.nonce]);
+
+  useEffect(() => {
+    if (
+      !pendingMarkiRecoveryRefreshRef.current
+      || !markiPanelOpen
+      || markiPanelTab !== 'recovery'
+      || markiWorkspace.recovery.busy
+    ) return;
+    const workspace = markiWorkbenchStateRef.current;
+    if (
+      !isSessionHydrated
+      || !hasHydratedSessionRef.current
+      || !workspace
+      || workspace.projectId !== activeProject?.projectId
+    ) return;
+    pendingMarkiRecoveryRefreshRef.current = false;
+    void markiWorkspace.recovery.onRefresh().then((result) => {
+      if (result?.error?.code === 'marki_recovery_workspace_not_ready') {
+        pendingMarkiRecoveryRefreshRef.current = true;
+      }
+    });
+  }, [activeProject?.projectId, isSessionHydrated, markiPanelOpen, markiPanelTab, markiWorkspace.recovery.busy]);
 
   useEffect(() => {
     if (!isSessionHydrated || navigationRequest?.action !== 'appendMarkiImportBatch') return undefined;
@@ -1308,6 +1366,15 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
   }
 
   async function saveAutomaticSnapshotImmediately(workspace) {
+    if (workspaceSyncBlockedRef.current) {
+      return {
+        success: false,
+        error: {
+          code: 'sort_workspace_sync_blocked',
+          message: '当前界面未同步，已停止自动保存。'
+        }
+      };
+    }
     const result = await automaticSnapshotSaverRef.current.flush(workspace);
     if (result?.success === true) {
       automaticSnapshotSaverRef.current.setEnabled(true);
@@ -1414,6 +1481,7 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setViewMode(restoredWorkspace.viewMode || 'grid');
     setPage(Math.max(1, Number(restoredWorkspace.page) || 1));
     setHasUnsavedChanges(true);
+    return { success: true, workspace: restoredWorkspace };
   }
 
   function closeMoreMenu() {
@@ -1425,18 +1493,18 @@ export default function SortWorkspacePage({ archiveState, onNavigate, navigation
     setMarkiPanelInitialized(true);
     setMarkiPanelTab(tab);
     setMarkiPanelOpen(true);
-    if (tab === 'recovery') void markiWorkspace.recovery.onRefresh();
+    if (tab === 'recovery') pendingMarkiRecoveryRefreshRef.current = true;
   }
 
   function changeMarkiPanelTab(tab) {
     setMarkiPanelTab(tab);
-    if (tab === 'recovery' && markiWorkspace.recovery.items.length === 0 && !markiWorkspace.recovery.busy) {
-      void markiWorkspace.recovery.onRefresh();
-    }
+    pendingMarkiRecoveryRefreshRef.current = tab === 'recovery'
+      && markiWorkspace.recovery.items.length === 0;
   }
 
   function closeMarkiPanel() {
     if (batchActionsBusy) return;
+    pendingMarkiRecoveryRefreshRef.current = false;
     setMarkiPanelOpen(false);
   }
 
