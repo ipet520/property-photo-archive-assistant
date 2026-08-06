@@ -9102,13 +9102,23 @@ async function checkSortWorkspaceSnapshot(root) {
   }
 
   {
+    const projectId = 'project-hydration';
     const cachedSessionA = {
-      projectId: 'project-hydration',
+      projectId,
       revision: 'A',
-      photos: [{ id: 'photo-A' }]
+      photos: [{ id: 'photo-A', smartSortStatus: 'completed' }],
+      photoDraftByPhotoId: { 'photo-A': { remarks: '最新照片草稿 A' } },
+      groupDraftByGroupId: { 'group-A': { workContent: '最新分组草稿 A' } },
+      form: { projectId, projectName: '当前项目 A', workContent: '最新表单 A' },
+      selectedIds: ['photo-A'],
+      activePhotoId: 'photo-A',
+      smartSortResult: {
+        status: 'created',
+        groups: [{ id: 'group-A', photoIds: ['photo-A'] }]
+      }
     };
     const failedRead = resolveWorkspaceHydrationSource({
-      activeProjectId: 'project-hydration',
+      activeProjectId: projectId,
       forceDiskReload: false,
       cachedSession: cachedSessionA,
       snapshotResult: {
@@ -9127,13 +9137,35 @@ async function checkSortWorkspaceSnapshot(root) {
     }
     equal(forceDiskReload, true, '磁盘快照失败后必须设置强制重载标记');
     equal(cachedSession, null, '磁盘快照失败后必须清除旧缓存');
+    const failedForcedRead = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: true,
+      cachedSession: cachedSessionA,
+      snapshotResult: {
+        success: false,
+        found: true,
+        snapshot: null
+      }
+    });
+    equal(failedForcedRead.authoritative, false, '强制重载磁盘读取失败时不得恢复缓存 A');
+    equal(failedForcedRead.canUseCachedSession, false, '强制重载磁盘读取失败时不得允许缓存回退');
+    scenarioCount += 1;
     const diskWorkspaceB = {
-      projectId: 'project-hydration',
+      projectId,
       revision: 'B',
-      photos: [{ id: 'photo-B' }]
+      photos: [{ id: 'photo-B', smartSortStatus: 'not_run' }],
+      photoDraftByPhotoId: { 'photo-B': { remarks: '磁盘照片草稿 B' } },
+      groupDraftByGroupId: { 'group-B': { workContent: '磁盘分组草稿 B' } },
+      form: { projectId, projectName: '磁盘项目 B', workContent: '磁盘表单 B' },
+      selectedIds: ['photo-B'],
+      activePhotoId: 'photo-B',
+      smartSortResult: {
+        status: 'created',
+        groups: [{ id: 'group-B', photoIds: ['photo-B'] }]
+      }
     };
     const successfulReadWithCache = resolveWorkspaceHydrationSource({
-      activeProjectId: 'project-hydration',
+      activeProjectId: projectId,
       forceDiskReload: false,
       cachedSession: cachedSessionA,
       snapshotResult: {
@@ -9142,11 +9174,14 @@ async function checkSortWorkspaceSnapshot(root) {
         snapshot: { workspace: diskWorkspaceB }
       }
     });
-    equal(successfulReadWithCache.canUseCachedSession, false, '存在磁盘快照时不得用缓存 A 覆盖磁盘结果');
-    equal(successfulReadWithCache.workspace.revision, 'B', '权威磁盘快照应优先于旧缓存 A');
+    equal(successfulReadWithCache.authoritative, true, '正常重入时合法磁盘读取仍应证明工作台来源可用');
+    equal(successfulReadWithCache.canUseCachedSession, true, '正常重入且缓存可信时应优先使用缓存 A');
+    equal(successfulReadWithCache.restoredFromSnapshot, false, '正常重入使用缓存时不得标记为磁盘恢复');
+    deepEqual(successfulReadWithCache.workspace, cachedSessionA, '正常重入不得用旧磁盘 B 覆盖缓存 A 的完整状态');
+    scenarioCount += 1;
     const successfulRead = resolveWorkspaceHydrationSource({
-      activeProjectId: 'project-hydration',
-      forceDiskReload,
+      activeProjectId: projectId,
+      forceDiskReload: true,
       cachedSession: cachedSessionA,
       snapshotResult: {
         success: true,
@@ -9154,21 +9189,84 @@ async function checkSortWorkspaceSnapshot(root) {
         snapshot: { workspace: diskWorkspaceB }
       }
     });
-    equal(successfulRead.authoritative, true, '第二次磁盘读取成功后应恢复权威工作台');
+    equal(successfulRead.authoritative, true, '强制重载读取成功后应恢复权威工作台');
     equal(successfulRead.canUseCachedSession, false, '强制重载期间不得重新采用旧缓存 A');
-    equal(successfulRead.workspace.revision, 'B', '第二次进入必须采用磁盘版本 B');
-    forceDiskReload = false;
-    cachedSession = successfulRead.workspace;
-    let savedWorkspace = null;
-    const saver = createDebouncedSnapshotSaver({
+    equal(successfulRead.restoredFromSnapshot, true, '强制重载成功后应标记为磁盘恢复');
+    deepEqual(successfulRead.workspace, diskWorkspaceB, '强制重载必须采用磁盘版本 B 的完整状态');
+    scenarioCount += 1;
+
+    const noSnapshotWithCache = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: false,
+      cachedSession: cachedSessionA,
+      snapshotResult: { success: true, found: false, snapshot: null }
+    });
+    equal(noSnapshotWithCache.authoritative, true, '无磁盘快照但读取成功时应允许使用可信缓存');
+    equal(noSnapshotWithCache.canUseCachedSession, true, '无磁盘快照且缓存可信时应使用缓存 A');
+    deepEqual(noSnapshotWithCache.workspace, cachedSessionA, '无磁盘快照时应保留缓存 A 的完整状态');
+    scenarioCount += 1;
+
+    const noSnapshotWithoutCache = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: false,
+      cachedSession: null,
+      snapshotResult: { success: true, found: false, snapshot: null }
+    });
+    equal(noSnapshotWithoutCache.authoritative, true, '无磁盘快照且读取成功时应建立权威空工作台');
+    equal(noSnapshotWithoutCache.canUseCachedSession, false, '没有缓存时不得伪造缓存来源');
+    deepEqual(noSnapshotWithoutCache.workspace, {}, '无磁盘快照且无缓存时应返回空工作台');
+    scenarioCount += 1;
+
+    const noSnapshotForced = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: true,
+      cachedSession: cachedSessionA,
+      snapshotResult: { success: true, found: false, snapshot: null }
+    });
+    equal(noSnapshotForced.authoritative, true, '强制重载无磁盘快照时读取结果仍可作为权威空工作台');
+    equal(noSnapshotForced.canUseCachedSession, false, '强制重载无磁盘快照时不得回退使用缓存 A');
+    deepEqual(noSnapshotForced.workspace, {}, '强制重载无磁盘快照时应使用空工作台');
+    scenarioCount += 1;
+
+    let diskWorkspace = diskWorkspaceB;
+    let releaseSave;
+    let saveStartedResolve;
+    const saveStarted = new Promise((resolve) => {
+      saveStartedResolve = resolve;
+    });
+    const saveRelease = new Promise((resolve) => {
+      releaseSave = resolve;
+    });
+    const delayedSaver = createDebouncedSnapshotSaver({
       save: async (workspace) => {
-        savedWorkspace = workspace;
+        saveStartedResolve();
+        await saveRelease;
+        diskWorkspace = workspace;
         return { success: true };
       }
     });
-    saver.setEnabled(true);
-    await saver.flush(cachedSession);
-    equal(savedWorkspace.revision, 'B', '权威恢复后的自动保存不得被旧版本 A 覆盖');
+    delayedSaver.setEnabled(true);
+    const pendingFlush = delayedSaver.flush(cachedSessionA);
+    await saveStarted;
+    const hydrationDuringFlush = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: false,
+      cachedSession: cachedSessionA,
+      snapshotResult: { success: true, found: true, snapshot: { workspace: diskWorkspace } }
+    });
+    equal(hydrationDuringFlush.canUseCachedSession, true, '卸载 flush 未完成时新页面仍应优先使用缓存 A');
+    deepEqual(hydrationDuringFlush.workspace, cachedSessionA, '卸载 flush 竞态中不得恢复旧磁盘 B');
+    releaseSave();
+    await pendingFlush;
+    deepEqual(diskWorkspace, cachedSessionA, '延迟 flush 完成后磁盘应写入完整缓存 A');
+    const hydrationAfterFlush = resolveWorkspaceHydrationSource({
+      activeProjectId: projectId,
+      forceDiskReload: false,
+      cachedSession: cachedSessionA,
+      snapshotResult: { success: true, found: true, snapshot: { workspace: diskWorkspace } }
+    });
+    equal(hydrationAfterFlush.canUseCachedSession, true, 'flush 完成后正常重入仍应允许可信缓存优先');
+    deepEqual(hydrationAfterFlush.workspace, cachedSessionA, '后续自动保存和重入不得把状态回退到 B');
     scenarioCount += 1;
   }
 

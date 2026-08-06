@@ -91,11 +91,15 @@ export function resolveWorkspaceHydrationSource({
   const projectMatches = !found
     || Boolean(snapshotWorkspace && String(snapshotWorkspace.projectId || '').trim() === projectId);
   const authoritative = snapshotResult?.success === true && hasWorkspace && projectMatches;
+  const validCachedSession = Boolean(
+    projectId
+    && cachedSession
+    && String(cachedSession.projectId || '').trim() === projectId
+  );
   const canUseCachedSession = Boolean(
     authoritative
-    && !found
     && !forceDiskReload
-    && cachedSession?.projectId === projectId
+    && validCachedSession
   );
   return {
     authoritative,
